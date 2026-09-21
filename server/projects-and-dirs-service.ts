@@ -541,3 +541,52 @@ export function readFileContent(filePath: string): { success: boolean; content?:
     return { success: false, error: `Erro ao ler arquivo: ${err.message}` };
   }
 }
+
+export function overwriteProjects(projects: ProjectItem[]): void {
+  const store = loadStore();
+  store.projects = projects;
+  if (!store.projects.some((p) => p.id === store.activeProjectId)) {
+    store.activeProjectId = store.projects[0]?.id;
+  }
+  saveStore(store);
+  sysLog.info('PROJECT', `Projetos sobrescritos via restauração de backup (${projects.length} projetos)`);
+}
+
+export function overwriteSessions(sessions: SessionItem[]): void {
+  const store = loadStore();
+  store.sessions = sessions;
+  saveStore(store);
+  sysLog.info('PROJECT', `Sessões e histórico de chat sobrescritos via restauração de backup (${sessions.length} sessões)`);
+}
+
+export function overwriteAuthorizedDirs(dirs: string[]): void {
+  const store = loadStore();
+  store.authorizedDirs = dirs.map((d) => resolveLocalPath(d)).filter((d) => fs.existsSync(d));
+  if (store.authorizedDirs.length === 0) {
+    store.authorizedDirs.push(os.homedir());
+  }
+  saveStore(store);
+  sysLog.info('PROJECT', `Diretórios autorizados sobrescritos via restauração (${store.authorizedDirs.length} diretórios)`);
+}
+
+export function resetProjectsAndSessions(): void {
+  const initialWorkspace = os.homedir();
+  const initialProject: ProjectItem = {
+    id: 'proj_default',
+    name: 'Projeto Principal',
+    description: 'Workspace principal do Gemini CLI',
+    associatedDirs: [initialWorkspace],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const store: AppDataStore = {
+    projects: [initialProject],
+    authorizedDirs: [initialWorkspace],
+    activeProjectId: initialProject.id,
+    sessions: [],
+  };
+
+  saveStore(store);
+  sysLog.warn('SYSTEM', 'Projetos e histórico de sessões redefinidos para os padrões de fábrica.');
+}

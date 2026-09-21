@@ -17,17 +17,34 @@ import {
   FileCode,
   Sparkles,
   Bot,
+  Brain,
+  Cpu,
   AlertTriangle,
   Loader2,
   Sliders,
   Eye,
   EyeOff,
 } from 'lucide-react';
-import { ChatMessage, ToolCallStep, CommandConfig, AgentConfig, ProjectItem, AuthorizedDir, SkillConfig, McpConfig } from '../types.js';
+import { ChatMessage, ToolCallStep, CommandConfig, AgentConfig, ProjectItem, AuthorizedDir, SkillConfig, McpConfig, ThinkingLevel } from '../types.js';
 import { DEFAULT_AGENTS } from '../constants/defaultAgents.js';
 import { RawPayloadViewer } from './RawPayloadViewer.js';
 import { getRawInspectionData } from '../utils/rawPayloadUtils.js';
 import { TokenMonitorBar } from './TokenMonitorBar.js';
+
+export const isThinkingSupported = (model?: string): boolean => {
+  if (!model) return true;
+  const m = model.toLowerCase();
+  if (
+    m.includes('embedding') ||
+    m.includes('tts') ||
+    m.includes('veo') ||
+    m.includes('lyria') ||
+    (m.includes('transcribe') && !m.includes('extended-thinking'))
+  ) {
+    return false;
+  }
+  return true;
+};
 
 interface ChatViewProps {
   messages: ChatMessage[];
@@ -38,6 +55,8 @@ interface ChatViewProps {
   agents: AgentConfig[];
   selectedAgentId: string;
   onSelectAgent: (id: string) => void;
+  thinkingLevel?: ThinkingLevel;
+  onSelectThinkingLevel?: (level: ThinkingLevel) => void;
   onPlayTts: (text: string, messageId: string) => void;
   currentlyNarratingId: string | null;
   onStopTts: () => void;
@@ -62,6 +81,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   agents,
   selectedAgentId,
   onSelectAgent,
+  thinkingLevel = 'medium',
+  onSelectThinkingLevel,
   onPlayTts,
   currentlyNarratingId,
   onStopTts,
@@ -634,24 +655,88 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
 
           {/* Active Context & Settings Row (Below Input Box) */}
-          <div className="flex flex-wrap items-center justify-between text-xs text-zinc-500 px-0.5 gap-1.5">
-            {/* Left side: Agent select */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-medium text-zinc-400">Agente:</span>
-              <div className="flex items-center gap-1 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800/80 dark:hover:bg-zinc-800 px-2 py-0.5 rounded-lg border border-zinc-200 dark:border-zinc-700 transition">
-                <Bot className="w-3 h-3 text-blue-500 shrink-0" />
-                <select
-                  value={selectedAgentId}
-                  onChange={(e) => onSelectAgent(e.target.value)}
-                  className="bg-transparent text-[10px] font-bold text-zinc-800 dark:text-zinc-200 outline-none pr-1 cursor-pointer"
-                >
-                  {(agents && agents.length > 0 ? agents : DEFAULT_AGENTS).map((agent) => (
-                    <option key={agent.id} value={agent.id} className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
-                      {agent.displayName || agent.name} ({agent.model})
-                    </option>
-                  ))}
-                </select>
+          <div className="flex flex-wrap items-center justify-between text-xs text-zinc-500 px-0.5 gap-2">
+            {/* Left side: Agent select and Thinker Button */}
+            <div className="flex items-center flex-wrap gap-2">
+              {/* Agent selector */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-medium text-zinc-400">Agente:</span>
+                <div className="flex items-center gap-1 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800/80 dark:hover:bg-zinc-800 px-2 py-0.5 rounded-lg border border-zinc-200 dark:border-zinc-700 transition">
+                  <Bot className="w-3 h-3 text-blue-500 shrink-0" />
+                  <select
+                    value={selectedAgentId}
+                    onChange={(e) => onSelectAgent(e.target.value)}
+                    className="bg-transparent text-[10px] font-bold text-zinc-800 dark:text-zinc-200 outline-none pr-1 cursor-pointer"
+                  >
+                    {(agents && agents.length > 0 ? agents : DEFAULT_AGENTS).map((agent) => (
+                      <option key={agent.id} value={agent.id} className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
+                        {agent.displayName || agent.name} ({agent.model})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
+
+              {/* Thinker Button and Level Selector */}
+              {(() => {
+                const supportsThinking = isThinkingSupported(currentAgent?.model);
+                const currentLevel: ThinkingLevel = (thinkingLevel === 'low' || thinkingLevel === 'high' || thinkingLevel === 'medium') ? thinkingLevel : 'medium';
+                return (
+                  <div className="flex items-center gap-1.5" id="thinker-control-container">
+                    <div
+                      id="thinker-button-wrapper"
+                      className={`flex items-center gap-1.5 px-2 py-0.5 rounded-lg border transition text-[10px] font-semibold ${
+                        !supportsThinking
+                          ? 'bg-zinc-100 dark:bg-zinc-800/40 text-zinc-400 dark:text-zinc-600 border-zinc-200 dark:border-zinc-800/50 cursor-not-allowed opacity-60'
+                          : currentLevel === 'high'
+                          ? 'bg-purple-50/90 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200/80 dark:border-purple-800/60 shadow-2xs'
+                          : currentLevel === 'low'
+                          ? 'bg-blue-50/90 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200/80 dark:border-blue-800/60 shadow-2xs'
+                          : 'bg-indigo-50/90 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-200/80 dark:border-indigo-800/60 shadow-2xs'
+                      }`}
+                      title={
+                        !supportsThinking
+                          ? `O modelo (${currentAgent?.model || 'atual'}) não suporta controle de thinkingLevel`
+                          : `Thinker: ${currentLevel.toUpperCase()} (Nível de Raciocínio Explícito)`
+                      }
+                    >
+                      <Brain
+                        className={`w-3.5 h-3.5 shrink-0 ${
+                          !supportsThinking
+                            ? 'text-zinc-400'
+                            : currentLevel === 'high'
+                            ? 'text-purple-600 dark:text-purple-400'
+                            : currentLevel === 'low'
+                            ? 'text-blue-600 dark:text-blue-400'
+                            : 'text-indigo-600 dark:text-indigo-400'
+                        }`}
+                      />
+                      <span className="font-bold tracking-tight">Thinker:</span>
+                      <select
+                        id="thinker-level-select"
+                        disabled={!supportsThinking}
+                        value={currentLevel}
+                        onChange={(e) => {
+                          if (onSelectThinkingLevel) {
+                            onSelectThinkingLevel(e.target.value as ThinkingLevel);
+                          }
+                        }}
+                        className="bg-transparent font-bold outline-none cursor-pointer text-[10px] pr-0.5"
+                      >
+                        <option value="low" className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
+                          Low (Rápido)
+                        </option>
+                        <option value="medium" className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
+                          Medium (Balanceado)
+                        </option>
+                        <option value="high" className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
+                          High (Profundo)
+                        </option>
+                      </select>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Right side: Clickable Approval Mode Selector */}

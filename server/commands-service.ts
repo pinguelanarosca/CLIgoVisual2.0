@@ -155,3 +155,26 @@ export function deleteCommand(commandName: string, targetDir?: string): boolean 
   }
   return false;
 }
+
+export function resetDefaultCommands(targetDir?: string): CommandConfig[] {
+  const commandsDir = getCommandsDirectory(targetDir);
+  if (fs.existsSync(commandsDir)) {
+    fs.rmSync(commandsDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(commandsDir, { recursive: true });
+  for (const cmd of DEFAULT_COMMANDS) {
+    saveCommandToFile(cmd, targetDir);
+  }
+  return DEFAULT_COMMANDS;
+}
+
+export function overwriteCommands(commands: CommandConfig[], targetDir?: string): void {
+  const commandsDir = getCommandsDirectory(targetDir);
+  if (fs.existsSync(commandsDir)) {
+    fs.rmSync(commandsDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(commandsDir, { recursive: true });
+  for (const cmd of commands) {
+    saveCommandToFile(cmd, targetDir);
+  }
+}

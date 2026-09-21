@@ -26,6 +26,7 @@ import {
   SessionItem,
   ChatMessage,
   AudioSettings,
+  ThinkingLevel,
 } from './types.js';
 import { DEFAULT_AGENTS } from './constants/defaultAgents.js';
 import { buildEffectiveSystemPrompt } from './utils/systemPromptUtils.js';
@@ -93,6 +94,24 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Thinker Control State (low | medium | high)
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('gemini_gui_thinking_level');
+      if (saved === 'low' || saved === 'medium' || saved === 'high') {
+        return saved;
+      }
+    }
+    return 'medium';
+  });
+
+  const handleSelectThinkingLevel = (level: ThinkingLevel) => {
+    setThinkingLevel(level);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('gemini_gui_thinking_level', level);
+    }
+  };
 
   // Modals state
   const [isDirsModalOpen, setIsDirsModalOpen] = useState(false);
@@ -320,7 +339,9 @@ export function App() {
           topP: currentAgent?.topP,
           topK: currentAgent?.topK,
           maxOutputTokens: currentAgent?.maxOutputTokens,
-          thinking: currentAgent?.thinking,
+          thinking: thinkingLevel !== 'off',
+          thinkingLevel,
+          thinking_level: thinkingLevel,
           systemInstructions: currentAgent?.systemInstructions,
           overrideBasePrompt: currentAgent?.overrideBasePrompt,
           baseInstructions: currentAgent?.baseInstructions,
@@ -1060,6 +1081,8 @@ export function App() {
               agents={agents}
               selectedAgentId={selectedAgentId}
               onSelectAgent={setSelectedAgentId}
+              thinkingLevel={thinkingLevel}
+              onSelectThinkingLevel={handleSelectThinkingLevel}
               onPlayTts={handlePlayTts}
               currentlyNarratingId={currentlyNarratingId}
               onStopTts={handleStopTts}

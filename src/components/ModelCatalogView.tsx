@@ -123,48 +123,63 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
 
   const sections = [
     {
-      group: 'text',
-      title: 'Modelos de Texto Geral',
+      group: 'stable',
+      title: '1. Modelos Estáveis (Produção)',
       icon: Cpu,
-      desc: 'Ordem de prioridade recomendada para raciocínio, geração e tarefas textuais.',
-      priorityNote: 'Prioridade: 3.8 Flash → 3.7 → 3.6 → 3.5 → 3 → 3.1 Flash Lite → 2.5 Flash → 2.5 Flash Lite → 3.5 Flash Lite.',
+      desc: 'Modelos de produção estáveis para geração de texto, raciocínio, auditoria e tarefas do sistema.',
+      priorityNote: 'Prioridade recomendada: 3.8 Flash → 3.7 → 3.6 → 3.5 → 3 → 3.1 Flash Lite → 2.5 Flash → 2.5 Flash Lite → 3.5 Flash Lite.',
     },
     {
-      group: 'audio',
-      title: 'Voz, Transcrição e Áudio em Tempo Real',
-      icon: Mic,
-      desc: 'Modelos STT, TTS e áudio bidirecional.',
+      group: 'preview',
+      title: '2. Modelos Preview & Especializados',
+      icon: Boxes,
+      desc: 'Modelos preview de raciocínio avançado, geração e edição de imagens, geração de vídeos, geração musical e robótica.',
       subdivisions: [
-        { label: 'Transcrição (STT)', chain: 'Gemini 3.5 Transcribe Live → 3.5 Transcribe' },
-        { label: 'Tradução de voz', chain: 'Gemini 3.5 Live Translate' },
-        { label: 'Conversação áudio', chain: 'Gemini 3 Flash Live → 2.5 Flash Audio Dialog' },
-        { label: 'Síntese de voz (TTS)', chain: 'Gemini 3.1 Flash TTS → 2.5 Flash TTS' },
+        { label: 'Raciocínio & STEM', chain: 'gemini-3.1-pro-preview' },
+        { label: 'Geração de Imagens', chain: 'gemini-3.1-flash-image (Nano Banana 2) → gemini-3.1-flash-lite-image → gemini-3-pro-image' },
+        { label: 'Geração de Vídeo', chain: 'veo-3.1-generate-preview (4K) → veo-3.1-lite-generate-preview (1080p)' },
+        { label: 'Geração Musical', chain: 'lyria-3-clip-preview (30s) → lyria-3-pro-preview (completo)' },
+        { label: 'Embodied AI / Robótica', chain: 'gemini-robotics-er-2-preview' },
       ],
     },
     {
-      group: 'agents',
-      title: 'Agentes e Automação',
-      icon: Bot,
-      desc: 'Antigravity para workflows de automação contínua.',
-    },
-    {
-      group: 'robotics',
-      title: 'Robótica (Embodied AI)',
-      icon: Boxes,
-      desc: 'Modelos para tarefas espaciais e robóticas.',
+      group: 'audio',
+      title: '3. Áudio, Voz e API Live',
+      icon: Mic,
+      desc: 'Modelos oficiais para transcrição STT, síntese TTS e sessões contínuas via Live API.',
+      subdivisions: [
+        { label: 'Transcrição STT', chain: 'gemini-3.5-transcribe (estático) → gemini-3.5-transcribe-live (ao vivo)' },
+        { label: 'Síntese de Voz TTS', chain: 'gemini-3.1-flash-tts-preview (Kore, Puck, Charon, Fenrir, Zephyr)' },
+        { label: 'Live API em Tempo Real', chain: 'gemini-3.8-live → gemini-3.8-live-extended-thinking' },
+        { label: 'Tradução Simultânea', chain: 'gemini-3.5-transcribe-live (Live API)' },
+      ],
     },
     {
       group: 'embeddings',
-      title: 'Embeddings e Vetores',
+      title: '4. Embeddings & Busca Semântica',
       icon: Database,
-      desc: 'Representação vetorial densa para indexação e busca semântica.',
-      priorityNote: 'Ordem: Embedding 2 → Embedding 1',
+      desc: 'Representação vetorial densa para indexação de código, RAG e busca semântica.',
+      priorityNote: 'Ordem de preferência: gemini-embedding-2-preview → text-embedding-004',
+    },
+    {
+      group: 'agents',
+      title: '5. Agentes & Automação',
+      icon: Bot,
+      desc: 'Motores nativos dedicados para agentes autônomos e fluxos contínuos de desenvolvimento e pesquisa.',
+      subdivisions: [
+        { label: 'Automação & Orquestração', chain: 'antigravity (motor autônomo nativo)' },
+        { label: 'Pesquisa Analítica', chain: 'deep-research (investigações aprofundadas multi-fonte)' },
+      ],
     },
     {
       group: 'gemma',
-      title: 'Modelos Abertos (Gemma)',
+      title: '6. Modelos Abertos (Gemma)',
       icon: Binary,
-      desc: 'Pesos abertos para inferência local de alto desempenho.',
+      desc: 'Pesos abertos para inferência local de alto desempenho e auditoria descentralizada.',
+      subdivisions: [
+        { label: 'Alta Densidade', chain: 'gemma-4-31b' },
+        { label: 'Balanceado', chain: 'gemma-4-26b' },
+      ],
     },
   ];
 
@@ -448,7 +463,25 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                           {item.rpd}
                         </td>
                         <td className="py-1.5 px-2.5 text-center">
-                          <span className="inline-block px-1.5 py-0.2 rounded text-[9px] font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400">
+                          <span
+                            className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-medium ${
+                              item.category === 'Estável'
+                                ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300'
+                                : item.category === 'Preview'
+                                ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300'
+                                : item.category === 'API Live'
+                                ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
+                                : item.category === 'Áudio'
+                                ? 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300'
+                                : item.category === 'Embeddings'
+                                ? 'bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300'
+                                : item.category === 'Agents'
+                                ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300'
+                                : item.category === 'Gemma'
+                                ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300'
+                                : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
+                            }`}
+                          >
                             {item.category}
                           </span>
                         </td>

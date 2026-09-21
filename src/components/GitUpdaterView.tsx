@@ -28,6 +28,7 @@ import {
   GitUpdateResult,
   SystemRebuildResult,
 } from '../types';
+import { BackupAndResetSection } from './BackupAndResetSection';
 
 interface GitUpdaterViewProps {
   onRefreshGlobalStatus?: () => void;
@@ -671,6 +672,9 @@ npm start
           )}
         </div>
       )}
+
+      {/* Backup, Restore and Factory Reset Section */}
+      <BackupAndResetSection onRefreshGlobalStatus={onRefreshGlobalStatus} />
 
       {/* Manual Terminal Commands for Ubuntu */}
       <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/90 shadow-xs space-y-2.5">

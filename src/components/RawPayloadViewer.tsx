@@ -272,9 +272,13 @@ export const RawPayloadViewer: React.FC<RawPayloadViewerProps> = ({ data, isUser
                   <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
                     <span className="text-zinc-500 text-[10px] block uppercase">thinkingConfig</span>
                     <span className={`font-bold text-sm ${genConfig.thinkingConfig?.includeThoughts ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                      {genConfig.thinkingConfig?.includeThoughts ? 'Ativo' : 'Desativado'}
+                      {genConfig.thinkingConfig?.includeThoughts
+                        ? (genConfig.thinkingConfig?.thinkingLevel || genConfig.thinkingConfig?.thinking_level)
+                          ? `Ativo (${genConfig.thinkingConfig?.thinkingLevel || genConfig.thinkingConfig?.thinking_level})`
+                          : 'Ativo'
+                        : 'Desativado'}
                     </span>
-                    <span className="text-[9px] text-zinc-500 block truncate mt-0.5">
+                    <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.thinkingConfig']?.source}>
                       {genConfig.thinkingConfig?.includeThoughts ? 'Thoughts ON' : 'Padrão'}
                     </span>
                   </div>

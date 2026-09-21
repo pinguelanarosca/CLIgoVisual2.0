@@ -158,3 +158,29 @@ export function renamePolicy(oldFilename: string, newFilename: string, targetDir
   }
 }
 
+export function resetDefaultPolicies(targetDir?: string): PolicyConfig[] {
+  const wsDir = getPoliciesDirectory(targetDir);
+  if (fs.existsSync(wsDir)) {
+    fs.rmSync(wsDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(wsDir, { recursive: true });
+  const defaultFile = path.join(wsDir, 'deny-google-search.toml');
+  fs.writeFileSync(defaultFile, DEFAULT_DENY_GOOGLE_SEARCH_TOML, 'utf8');
+  syncPoliciesToSettings(targetDir);
+  return [{ filename: 'deny-google-search.toml', content: DEFAULT_DENY_GOOGLE_SEARCH_TOML }];
+}
+
+export function overwritePolicies(policies: PolicyConfig[], targetDir?: string): void {
+  const wsDir = getPoliciesDirectory(targetDir);
+  if (fs.existsSync(wsDir)) {
+    fs.rmSync(wsDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(wsDir, { recursive: true });
+  for (const pol of policies) {
+    let fname = pol.filename;
+    if (!fname.endsWith('.toml')) fname += '.toml';
+    fs.writeFileSync(path.join(wsDir, fname), pol.content, 'utf8');
+  }
+  syncPoliciesToSettings(targetDir);
+}
+

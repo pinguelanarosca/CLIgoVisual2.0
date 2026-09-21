@@ -26,6 +26,8 @@ export interface CliStatus {
   approvalMode: 'default' | 'auto_edit' | 'yolo' | 'plan';
 }
 
+export type ThinkingLevel = 'low' | 'medium' | 'high';
+
 export interface AgentConfig {
   id: string;
   name: string;
@@ -45,6 +47,7 @@ export interface AgentConfig {
   topK?: number;
   maxOutputTokens?: number;
   thinking?: boolean;
+  thinkingLevel?: ThinkingLevel;
   conceptualProfile?: string;
   maxTurns?: number;
   statusGrade: StatusGrade;
@@ -140,7 +143,7 @@ export interface FinalApiRequest {
     topP?: number;
     topK?: number;
     maxOutputTokens?: number;
-    thinkingConfig?: { includeThoughts: boolean };
+    thinkingConfig?: { includeThoughts: boolean; thinkingLevel: ThinkingLevel; thinking_level?: ThinkingLevel };
     [key: string]: any;
   };
   tools?: any[];
@@ -286,7 +289,7 @@ export interface ModelCatalogItem {
   tpm: string;
   rpd: string;
   category: string;
-  group: 'text' | 'audio' | 'agents' | 'robotics' | 'embeddings' | 'gemma';
+  group: 'stable' | 'preview' | 'audio' | 'embeddings' | 'agents' | 'gemma' | 'text' | 'robotics';
   groupName: string;
   subFunction?: string;
   description?: string;
@@ -388,5 +391,62 @@ export interface SystemLogEntry {
   message: string;
   source?: string;
   details?: Record<string, any> | string;
+}
+
+export interface BackupSectionOptions {
+  generalSettings: boolean;
+  agents: boolean;
+  chatHistory: boolean;
+  skills: boolean;
+  commands: boolean;
+  mcpServers: boolean;
+  policies: boolean;
+  projects: boolean;
+  authorizedDirs: boolean;
+}
+
+export interface BackupExportData {
+  version: string;
+  appName: string;
+  createdAt: string;
+  metadata: {
+    totalSessions: number;
+    totalAgents: number;
+    totalSkills: number;
+    totalCommands: number;
+    totalMcpServers: number;
+    totalPolicies: number;
+    totalProjects: number;
+    exportedSections: string[];
+  };
+  generalSettings?: {
+    theme?: 'dark' | 'light';
+    approvalMode?: string;
+    cliPath?: string;
+    modelConfigs?: Record<string, any>;
+  };
+  agents?: AgentConfig[];
+  sessions?: SessionItem[];
+  skills?: SkillConfig[];
+  commands?: CommandConfig[];
+  mcpServers?: McpConfig[];
+  policies?: PolicyConfig[];
+  projects?: ProjectItem[];
+  authorizedDirs?: string[];
+  audioSettings?: any;
+  contextSettings?: any;
+}
+
+export interface RestoreBackupResult {
+  success: boolean;
+  message: string;
+  restoredSections: string[];
+  error?: string;
+}
+
+export interface FactoryResetResult {
+  success: boolean;
+  message: string;
+  error?: string;
 }
 

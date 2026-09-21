@@ -507,6 +507,8 @@ export interface CliExecutionParams {
   topK?: number;
   maxOutputTokens?: number;
   thinking?: boolean;
+  thinkingLevel?: 'low' | 'medium' | 'high';
+  thinking_level?: 'low' | 'medium' | 'high';
   systemInstructions?: string;
   overrideBasePrompt?: boolean;
   baseInstructions?: string;
@@ -623,7 +625,7 @@ export function executeGeminiCli(
 
   const chosenModel = requestedModel;
 
-  // Sincronizar dinamicamente parâmetros do modelo (temperature, topP, topK, maxOutputTokens, thinking) no settings.json
+  // Sincronizar dinamicamente parâmetros do modelo (temperature, topP, topK, maxOutputTokens, thinking, thinkingLevel) no settings.json
   try {
     syncAgentsToSettings(cwd, agentId || 'principal', {
       model: chosenModel,
@@ -632,6 +634,7 @@ export function executeGeminiCli(
       topK: params.topK,
       maxOutputTokens: params.maxOutputTokens,
       thinking: params.thinking,
+      thinkingLevel: params.thinkingLevel || params.thinking_level,
     });
   } catch (err) {
     sysLog.warn('CLI', `Aviso ao sincronizar agentes no settings.json: ${err}`);
@@ -759,7 +762,12 @@ export function executeGeminiCli(
   const resolvedTopP = typeof params.topP === 'number' ? params.topP : 0.95;
   const resolvedTopK = typeof params.topK === 'number' ? params.topK : 40;
   const resolvedMaxTokens = typeof params.maxOutputTokens === 'number' ? params.maxOutputTokens : undefined;
-  const resolvedThinking = params.thinking === true;
+  const resolvedThinkingLevel: 'low' | 'medium' | 'high' =
+    (params.thinkingLevel === 'low' || params.thinkingLevel === 'high' || params.thinkingLevel === 'medium')
+      ? params.thinkingLevel
+      : (params.thinking_level === 'low' || params.thinking_level === 'high' || params.thinking_level === 'medium')
+      ? params.thinking_level
+      : 'medium';
 
   const finalApiRequest = {
     model: chosenModel.startsWith('models/') ? chosenModel : `models/${chosenModel}`,
@@ -787,7 +795,11 @@ export function executeGeminiCli(
       topP: resolvedTopP,
       topK: resolvedTopK,
       ...(typeof resolvedMaxTokens === 'number' ? { maxOutputTokens: resolvedMaxTokens } : {}),
-      ...(resolvedThinking ? { thinkingConfig: { includeThoughts: true } } : {}),
+      thinkingConfig: {
+        includeThoughts: true,
+        thinkingLevel: resolvedThinkingLevel,
+        thinking_level: resolvedThinkingLevel,
+      },
     },
     tools: [
       {
@@ -846,10 +858,11 @@ export function executeGeminiCli(
       category: 'Token Limits',
     },
     'generationConfig.thinkingConfig': {
-      value: resolvedThinking ? { includeThoughts: true } : 'Desativado',
-      source: params.thinking !== undefined
-        ? `Configuração de Raciocínio (thinking) do Agente: ${params.thinking}`
-        : 'Desativado por padrão',
+      value: {
+        includeThoughts: true,
+        thinkingLevel: resolvedThinkingLevel,
+      },
+      source: `Nível de Raciocínio explícito selecionado (thinkingLevel: "${resolvedThinkingLevel}", includeThoughts: true)`,
       category: 'Reasoning Mode',
     },
     systemInstruction: {

@@ -79,6 +79,11 @@ import {
   registerSseClient,
   addLog,
 } from './server/logger-service.js';
+import {
+  exportFullSystemBackup,
+  restoreSystemBackup,
+  resetSystemToFactoryDefaults,
+} from './server/backup-reset-service.js';
 
 const PORT = 3000;
 
@@ -676,6 +681,65 @@ priority = 90
       (branch as string) || DEFAULT_GIT_BRANCH
     );
     res.json({ commands: cmds });
+  });
+
+  // 12. Backup, Restore and Factory Reset
+  app.get('/api/system/backup/export', (req, res) => {
+    try {
+      const sectionsParam = req.query.sections as string;
+      const allowedSections = sectionsParam ? sectionsParam.split(',').map((s) => s.trim()) : undefined;
+      const backupData = exportFullSystemBackup(allowedSections);
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="gemini-gui-backup-${Date.now()}.json"`);
+      res.json(backupData);
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        message: `Falha ao exportar backup: ${err.message}`,
+      });
+    }
+  });
+
+  app.post('/api/system/backup/restore', (req, res) => {
+    try {
+      const { backupData, selectedSections } = req.body;
+      if (!backupData) {
+        return res.status(400).json({
+          success: false,
+          message: 'Nenhum dado de backup fornecido no corpo da requisição.',
+        });
+      }
+      const sections = selectedSections || {
+        agents: true,
+        chatHistory: true,
+        skills: true,
+        commands: true,
+        mcpServers: true,
+        policies: true,
+        projects: true,
+        authorizedDirs: true,
+        generalSettings: true,
+      };
+      const result = restoreSystemBackup(backupData, sections);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        message: `Falha ao processar restauração: ${err.message}`,
+      });
+    }
+  });
+
+  app.post('/api/system/reset-factory', (req, res) => {
+    try {
+      const result = resetSystemToFactoryDefaults();
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        message: `Falha ao restaurar padrões de fábrica: ${err.message}`,
+      });
+    }
   });
 
   // 14. Real-time System Logs

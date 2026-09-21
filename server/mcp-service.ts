@@ -235,3 +235,13 @@ export async function testMcpServer(mcp: McpConfig): Promise<{ success: boolean;
   });
 }
 
+export function resetDefaultMcp(targetDir?: string): McpConfig[] {
+  const defaultServers: McpConfig[] = [INITIAL_GITHUB_MCP, INITIAL_EXA_MCP];
+  saveMcpSettings(defaultServers, targetDir);
+  return defaultServers;
+}
+
+export function overwriteMcp(servers: McpConfig[], targetDir?: string): void {
+  saveMcpSettings(servers, targetDir);
+}
+

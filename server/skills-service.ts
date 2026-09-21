@@ -146,3 +146,26 @@ function parseSkillMarkdown(content: string, folderName: string): SkillConfig | 
     statusGrade: 'CONFIGURED',
   };
 }
+
+export function resetDefaultSkills(targetDir?: string): SkillConfig[] {
+  const skillsDir = getSkillsDirectory(targetDir);
+  if (fs.existsSync(skillsDir)) {
+    fs.rmSync(skillsDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(skillsDir, { recursive: true });
+  for (const skill of DEFAULT_SKILLS) {
+    saveSkillToFile(skill, targetDir);
+  }
+  return DEFAULT_SKILLS;
+}
+
+export function overwriteSkills(skills: SkillConfig[], targetDir?: string): void {
+  const skillsDir = getSkillsDirectory(targetDir);
+  if (fs.existsSync(skillsDir)) {
+    fs.rmSync(skillsDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(skillsDir, { recursive: true });
+  for (const skill of skills) {
+    saveSkillToFile(skill, targetDir);
+  }
+}

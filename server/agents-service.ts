@@ -534,12 +534,14 @@ function parseAgentMarkdown(content: string, fallbackName: string, metadata: any
 
 export function resetAllAgentsToDefault(targetDir?: string): AgentConfig[] {
   const agentsDir = getAgentsDirectory(targetDir);
-  if (!fs.existsSync(agentsDir)) {
-    fs.mkdirSync(agentsDir, { recursive: true });
+  if (fs.existsSync(agentsDir)) {
+    fs.rmSync(agentsDir, { recursive: true, force: true });
   }
+  fs.mkdirSync(agentsDir, { recursive: true });
   for (const agent of DEFAULT_AGENTS) {
     saveAgentToFile(agent, targetDir);
   }
+  syncAgentsToSettings(targetDir);
   return loadAgents(targetDir);
 }
 
@@ -597,7 +599,17 @@ export function syncAgentsToSettings(
       if (typeof cfg.topP === 'number') genConfig.topP = cfg.topP;
       if (typeof cfg.topK === 'number') genConfig.topK = cfg.topK;
       if (typeof cfg.maxOutputTokens === 'number') genConfig.maxOutputTokens = cfg.maxOutputTokens;
-      if (cfg.thinking) genConfig.thinkingConfig = { includeThoughts: true };
+      const isThinking = cfg.thinking !== false;
+      if (isThinking) {
+        const thinkingLevel = (cfg.thinkingLevel === 'low' || cfg.thinkingLevel === 'high' || cfg.thinkingLevel === 'medium')
+          ? cfg.thinkingLevel
+          : 'medium';
+        genConfig.thinkingConfig = {
+          includeThoughts: true,
+          thinkingLevel: thinkingLevel,
+          thinking_level: thinkingLevel,
+        };
+      }
       return genConfig;
     };
 
@@ -719,5 +731,18 @@ export function syncAgentsToSettings(
   } catch (err) {
     sysLog.error('AGENT', `Erro ao sincronizar agents com settings.json: ${err}`);
   }
+}
+
+export function overwriteAgents(agents: AgentConfig[], targetDir?: string): AgentConfig[] {
+  const agentsDir = getAgentsDirectory(targetDir);
+  if (fs.existsSync(agentsDir)) {
+    fs.rmSync(agentsDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(agentsDir, { recursive: true });
+  for (const agent of agents) {
+    saveAgentToFile(agent, targetDir);
+  }
+  syncAgentsToSettings(targetDir);
+  return loadAgents(targetDir);
 }
 

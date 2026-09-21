@@ -75,7 +75,10 @@ export function getRawInspectionData(
   const resolvedTopP = typeof agent?.topP === 'number' ? agent.topP : 0.95;
   const resolvedTopK = typeof agent?.topK === 'number' ? agent.topK : 40;
   const resolvedMaxTokens = typeof agent?.maxOutputTokens === 'number' ? agent.maxOutputTokens : undefined;
-  const resolvedThinking = agent?.thinking === true;
+  const resolvedThinkingLevel: 'low' | 'medium' | 'high' =
+    (agent?.thinkingLevel === 'low' || agent?.thinkingLevel === 'high' || agent?.thinkingLevel === 'medium')
+      ? agent.thinkingLevel
+      : 'medium';
 
   const finalApiRequest: FinalApiRequest = msg.finalApiRequest || msg.rawPayloadSent?.finalApiRequest || {
     model: resolvedModel,
@@ -103,7 +106,11 @@ export function getRawInspectionData(
       topP: resolvedTopP,
       topK: resolvedTopK,
       ...(typeof resolvedMaxTokens === 'number' ? { maxOutputTokens: resolvedMaxTokens } : {}),
-      ...(resolvedThinking ? { thinkingConfig: { includeThoughts: true } } : {}),
+      thinkingConfig: {
+        includeThoughts: true,
+        thinkingLevel: resolvedThinkingLevel,
+        thinking_level: resolvedThinkingLevel,
+      },
     },
     tools: [
       {
@@ -160,10 +167,11 @@ export function getRawInspectionData(
       category: 'Token Limits',
     },
     'generationConfig.thinkingConfig': {
-      value: resolvedThinking ? { includeThoughts: true } : 'Desativado',
-      source: agent?.thinking !== undefined
-        ? `Configuração de Raciocínio (thinking) do Agente: ${agent.thinking}`
-        : 'Desativado por padrão',
+      value: {
+        includeThoughts: true,
+        thinkingLevel: resolvedThinkingLevel,
+      },
+      source: `Nível de Raciocínio explícito selecionado (thinkingLevel: "${resolvedThinkingLevel}", includeThoughts: true)`,
       category: 'Reasoning Mode',
     },
     systemInstruction: {

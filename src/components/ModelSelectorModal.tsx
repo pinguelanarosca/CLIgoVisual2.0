@@ -25,12 +25,12 @@ export const ModelSelectorModal: React.FC<ModelSelectorModalProps> = ({
 
   const groups = [
     { id: 'all', label: 'Todos os Modelos', icon: Cpu },
-    { id: 'text', label: '1. Texto Geral (Txt Out)', icon: Cpu },
-    { id: 'audio', label: '2. Voz & Áudio Live', icon: Mic },
-    { id: 'agents', label: '3. Agentes & Automação', icon: Bot },
-    { id: 'robotics', label: '4. Robótica', icon: Boxes },
-    { id: 'embeddings', label: '5. Embeddings', icon: Database },
-    { id: 'gemma', label: '6. Família Gemma', icon: Binary },
+    { id: 'stable', label: '1. Estáveis (Produção)', icon: Cpu },
+    { id: 'preview', label: '2. Preview & Especializados', icon: Boxes },
+    { id: 'audio', label: '3. Áudio, Voz & Live API', icon: Mic },
+    { id: 'embeddings', label: '4. Embeddings', icon: Database },
+    { id: 'agents', label: '5. Agentes & Automação', icon: Bot },
+    { id: 'gemma', label: '6. Modelos Gemma', icon: Binary },
   ];
 
   const filteredModels = MODELS_CATALOG.filter((item) => {
@@ -186,14 +186,20 @@ export const ModelSelectorModal: React.FC<ModelSelectorModalProps> = ({
                       <td className="py-2.5 px-3 text-center">
                         <span
                           className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                            item.category === 'Txt Out'
+                            item.category === 'Estável'
                               ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300'
+                              : item.category === 'Preview'
+                              ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300'
                               : item.category === 'API Live'
                               ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
-                              : item.category === 'Multimod'
-                              ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300'
+                              : item.category === 'Áudio'
+                              ? 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300'
+                              : item.category === 'Embeddings'
+                              ? 'bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300'
                               : item.category === 'Agents'
                               ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300'
+                              : item.category === 'Gemma'
+                              ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300'
                               : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
                           }`}
                         >
