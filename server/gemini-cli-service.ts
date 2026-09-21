@@ -294,36 +294,34 @@ export function isExistingSession(sessionId?: string, workspaceDir?: string): bo
       candidateDirs.push(wsTmp);
     }
 
-    const checkDir = (dir: string, depth = 0): boolean => {
-      if (depth > 5) return false;
+    // Direct shallow checks first
+    for (const cDir of candidateDirs) {
+      if (fs.existsSync(cDir)) {
+        if (
+          fs.existsSync(path.join(cDir, `${normalizedId}.jsonl`)) ||
+          fs.existsSync(path.join(cDir, `${normalizedId}.json`)) ||
+          (sessionId && (fs.existsSync(path.join(cDir, `${sessionId}.jsonl`)) || fs.existsSync(path.join(cDir, `${sessionId}.json`))))
+        ) {
+          knownSessions.add(normalizedId);
+          if (sessionId) knownSessions.add(sessionId);
+          return true;
+        }
+      }
+    }
+
+    const checkDirShallow = (dir: string, depth = 0): boolean => {
+      if (depth > 2) return false;
       if (!fs.existsSync(dir)) return false;
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
-          if (checkDir(fullPath, depth + 1)) return true;
+          if (checkDirShallow(fullPath, depth + 1)) return true;
         } else if (entry.isFile()) {
-          // Direct filename match: <uuid>.jsonl or <uuid>.json
           if (entry.name.startsWith(normalizedId) || (sessionId && entry.name.startsWith(sessionId))) {
             knownSessions.add(normalizedId);
             if (sessionId) knownSessions.add(sessionId);
             return true;
-          }
-          if (entry.name.endsWith('.jsonl') || entry.name.endsWith('.json')) {
-            try {
-              const fd = fs.openSync(fullPath, 'r');
-              const buf = Buffer.alloc(500);
-              const bytesRead = fs.readSync(fd, buf, 0, 500, 0);
-              fs.closeSync(fd);
-              const header = buf.toString('utf8', 0, bytesRead);
-              if (header.includes(normalizedId) || (sessionId && header.includes(sessionId))) {
-                knownSessions.add(normalizedId);
-                if (sessionId) knownSessions.add(sessionId);
-                return true;
-              }
-            } catch {
-              // Ignore reading errors
-            }
           }
         }
       }
@@ -332,7 +330,7 @@ export function isExistingSession(sessionId?: string, workspaceDir?: string): bo
 
     for (const cDir of candidateDirs) {
       if (fs.existsSync(cDir)) {
-        if (checkDir(cDir)) return true;
+        if (checkDirShallow(cDir)) return true;
       }
     }
   } catch {
@@ -636,144 +634,160 @@ export function cancelActiveExecution(): boolean {
   return cancelExecutionById();
 }
 
-export async function runExaHandshakeAndDiscovery(params: CliExecutionParams): Promise<any[]> {
+export const EXA_FALLBACK_TOOLS = [
+  {
+    name: 'web_search_exa',
+    description: 'Perform a neural search of the web using Exa\'s API.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The search query to execute.' },
+        numResults: { type: 'number', description: 'Number of results to return (default: 5).' }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'web_fetch_exa',
+    description: 'Fetch the text content of web pages. Returns clean markdown contents.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        urls: { type: 'array', items: { type: 'string' }, description: 'The URLs to fetch.' }
+      },
+      required: ['urls']
+    }
+  },
+  {
+    name: 'web_search_advanced_exa',
+    description: 'Advanced neural search with filtering capabilities.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The search query.' },
+        includeDomains: { type: 'array', items: { type: 'string' }, description: 'Domains to include.' },
+        excludeDomains: { type: 'array', items: { type: 'string' }, description: 'Domains to exclude.' }
+      },
+      required: ['query']
+    }
+  }
+];
+
+interface ExaDiscoveryCache {
+  tools: any[];
+  timestamp: number;
+  source: 'live' | 'fallback-cache';
+}
+
+let exaCache: ExaDiscoveryCache | null = null;
+let exaDiscoveryInFlight: Promise<any[]> | null = null;
+const EXA_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+
+function triggerBackgroundExaDiscovery(exaMcp: any, apiKey: string): void {
+  if (exaDiscoveryInFlight) return; // No máximo uma execução simultânea
+
+  exaDiscoveryInFlight = (async () => {
+    const targetUrl = exaMcp.url || exaMcp.httpUrl || 'https://mcp.exa.ai/mcp';
+    const controller = new AbortController();
+    // Timeout de 2500ms cobrindo TODO o ciclo: fetch + leitura do corpo + parsing
+    const timer = setTimeout(() => controller.abort(), 2500);
+
+    try {
+      sysLog.info('MCP', '[MCP] background exa discovery starting');
+      const res = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json, text/event-stream',
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'tools/list',
+          params: {},
+          id: 'exa-handshake',
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP Error ${res.status}`);
+      }
+
+      const text = await res.text();
+      let data: any = null;
+
+      if (text.includes('data: ')) {
+        const match = text.match(/data:\s*({.*})/);
+        if (match) {
+          try {
+            data = JSON.parse(match[1]);
+          } catch {}
+        }
+      } else {
+        try {
+          data = JSON.parse(text);
+        } catch {}
+      }
+
+      const tools = data?.result?.tools || [];
+      const resolvedTools = tools.length > 0 ? tools : EXA_FALLBACK_TOOLS;
+      exaCache = {
+        tools: resolvedTools,
+        timestamp: Date.now(),
+        source: 'live',
+      };
+      sysLog.info('MCP', `[MCP] exa background discovery complete: ${resolvedTools.length} tools`);
+      return resolvedTools;
+    } catch (err: any) {
+      const msg = err.name === 'AbortError' ? 'Timeout' : (err.message || 'Erro de conexão');
+      sysLog.warn('MCP', `[MCP] exa background discovery falhou (${msg}), utilizando fallback-cache`);
+      exaCache = {
+        tools: EXA_FALLBACK_TOOLS,
+        timestamp: Date.now(),
+        source: 'fallback-cache',
+      };
+      return EXA_FALLBACK_TOOLS;
+    } finally {
+      clearTimeout(timer);
+      exaDiscoveryInFlight = null;
+    }
+  })();
+}
+
+export function getExaAuditTools(): { tools: any[]; discoverySource: 'live' | 'fallback-cache' } {
   const base = getGuiDataDir();
   const mcpConfigs = loadMcpSettings(base);
   const exaMcp = mcpConfigs.find(m => m.name === 'exa');
 
   if (!exaMcp || exaMcp.enabled === false) {
-    return [];
+    return { tools: [], discoverySource: 'fallback-cache' };
   }
-
-  // Enviar log de configuração encontrada
-  params.onEvent({ type: 'stdout_raw', data: { text: '[MCP] exa configured' } });
-  sysLog.info('MCP', '[MCP] exa configured');
 
   const apiKey = process.env.EXA_API_KEY || '';
   if (!apiKey) {
-    params.onEvent({ type: 'stdout_raw', data: { text: 'MCP Exa indisponível (EXA_API_KEY não configurada)' } });
-    sysLog.warn('MCP', 'MCP Exa indisponível (EXA_API_KEY não configurada no ambiente)');
-    return [];
+    return { tools: [], discoverySource: 'fallback-cache' };
   }
 
-  // Enviar log de conexão iniciando
-  params.onEvent({ type: 'stdout_raw', data: { text: '[MCP] exa connecting' } });
-  sysLog.info('MCP', '[MCP] exa connecting');
-
-  const targetUrl = exaMcp.url || exaMcp.httpUrl || 'https://mcp.exa.ai/mcp';
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
-
-  const fallbackTools = [
-    {
-      name: 'web_search_exa',
-      description: 'Perform a neural search of the web using Exa\'s API.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'The search query to execute.' },
-          numResults: { type: 'number', description: 'Number of results to return (default: 5).' }
-        },
-        required: ['query']
-      }
-    },
-    {
-      name: 'web_fetch_exa',
-      description: 'Fetch the text content of web pages. Returns clean markdown contents.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          urls: { type: 'array', items: { type: 'string' }, description: 'The URLs to fetch.' }
-        },
-        required: ['urls']
-      }
-    },
-    {
-      name: 'web_search_advanced_exa',
-      description: 'Advanced neural search with filtering capabilities.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'The search query.' },
-          includeDomains: { type: 'array', items: { type: 'string' }, description: 'Domains to include.' },
-          excludeDomains: { type: 'array', items: { type: 'string' }, description: 'Domains to exclude.' }
-        },
-        required: ['query']
-      }
-    }
-  ];
-
-  try {
-    const res = await fetch(targetUrl, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json, text/event-stream',
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'tools/list',
-        params: {},
-        id: 'exa-handshake'
-      }),
-      signal: controller.signal
-    });
-    
-    clearTimeout(timer);
-
-    if (res.ok) {
-      try {
-        const text = await res.text();
-        let data: any = null;
-
-        if (text.includes('data: ')) {
-          // Formato SSE (Exa Server) - Extrai o JSON contido após "data:"
-          const match = text.match(/data:\s*({.*})/);
-          if (match) {
-            try {
-              data = JSON.parse(match[1]);
-            } catch {}
-          }
-        } else {
-          // Formato JSON convencional
-          try {
-            data = JSON.parse(text);
-          } catch {}
-        }
-
-        const tools = data?.result?.tools || [];
-        
-        params.onEvent({ type: 'stdout_raw', data: { text: '[MCP] exa connected' } });
-        sysLog.info('MCP', '[MCP] exa connected');
-
-        params.onEvent({ type: 'stdout_raw', data: { text: `[MCP] discovered ${tools.length} tools` } });
-        sysLog.info('MCP', `[MCP] discovered ${tools.length} tools`);
-
-        for (const t of tools) {
-          params.onEvent({ type: 'stdout_raw', data: { text: `[MCP] ${t.name} available` } });
-          sysLog.info('MCP', `[MCP] ${t.name} available`);
-        }
-
-        return tools.length > 0 ? tools : fallbackTools;
-      } catch (parseErr) {
-        params.onEvent({ type: 'stdout_raw', data: { text: '[MCP] exa connected' } });
-        sysLog.info('MCP', '[MCP] exa connected (handled body via fallback)');
-        return fallbackTools;
-      }
-    } else {
-      params.onEvent({ type: 'stdout_raw', data: { text: `MCP Exa indisponível (HTTP Error ${res.status}). Carregando esquema resiliente de fallback...` } });
-      sysLog.warn('MCP', `MCP Exa indisponível (HTTP Error ${res.status}). Carregando esquema resiliente de fallback...`);
-      return fallbackTools;
-    }
-  } catch (err: any) {
-    clearTimeout(timer);
-    const msg = err.name === 'AbortError' ? 'Timeout ao conectar' : err.message || 'Erro de conexão';
-    params.onEvent({ type: 'stdout_raw', data: { text: `MCP Exa indisponível (${msg}). Carregando esquema resiliente de fallback...` } });
-    sysLog.warn('MCP', `MCP Exa indisponível (${msg}). Carregando esquema resiliente de fallback...`);
-    return fallbackTools;
+  const now = Date.now();
+  if (exaCache && (now - exaCache.timestamp < EXA_CACHE_TTL_MS)) {
+    return { tools: exaCache.tools, discoverySource: exaCache.source };
   }
+
+  // Dispara descoberta em background de forma não-bloqueante
+  triggerBackgroundExaDiscovery(exaMcp, apiKey);
+
+  // Retorna imediatamente para auditoria (schema fallback resiliente ou último cache)
+  return {
+    tools: exaCache ? exaCache.tools : EXA_FALLBACK_TOOLS,
+    discoverySource: exaCache ? exaCache.source : 'fallback-cache',
+  };
+}
+
+export async function runExaHandshakeAndDiscovery(params?: CliExecutionParams): Promise<any[]> {
+  const audit = getExaAuditTools();
+  return audit.tools;
 }
 
 export async function resolveEffectiveCliConfig(cwd: string, executionId: string): Promise<string> {
@@ -789,6 +803,9 @@ export async function resolveEffectiveCliConfig(cwd: string, executionId: string
       settings = {};
     }
   }
+
+  // Remove GUI-specific persistence metadata so runtime config complies with strict Gemini CLI schema
+  delete settings.guiMcpServers;
 
   // 2. Garantir mcpServers corretos e habilitados
   if (!settings.mcpServers) {
@@ -957,10 +974,13 @@ export function executeGeminiCli(
     executionId?: string;
   }
 ): { cancel: () => void; executionId: string } {
+  const t0 = performance.now();
   const executionId =
     params.executionId ||
     state?.executionId ||
     `exec_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+  console.log(`[PERF] [${executionId}] request_received`);
 
   let execState = executions.get(executionId);
   if (!execState) {
@@ -1000,13 +1020,24 @@ export function executeGeminiCli(
     try {
       if (execState.cancelled) return;
 
-      // 1. Handshake e descoberta do MCP Exa
-      const mcpTools = await runExaHandshakeAndDiscovery(params);
+      // 1. API key discovery (usando cache / verificação não-bloqueante)
+      if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY) {
+        discoverApiKeyFromLoginEnv(false);
+      }
+      const tApiKey = performance.now();
+      console.log(`[PERF] [${executionId}] api_key_discovery_done=${(tApiKey - t0).toFixed(1)}ms`);
+
+      // 2. Handshake e auditoria MCP Exa (em background / cache não-bloqueante)
+      const { tools: mcpTools, discoverySource } = getExaAuditTools();
+      const tExa = performance.now();
+      console.log(`[PERF] [${executionId}] exa_done=${(tExa - t0).toFixed(1)}ms (source: ${discoverySource})`);
 
       if (execState.cancelled) return;
 
-      // 2. Resolver a configuração efetiva e salvar no settings temporário exclusivo
+      // 3. Resolver a configuração efetiva e salvar no settings temporário exclusivo
       tempSettingsFile = await resolveEffectiveCliConfig(cwd, executionId);
+      const tConfig = performance.now();
+      console.log(`[PERF] [${executionId}] config_done=${(tConfig - t0).toFixed(1)}ms`);
 
       if (execState.cancelled) {
         try { fs.unlinkSync(tempSettingsFile); } catch {}
@@ -1015,10 +1046,11 @@ export function executeGeminiCli(
 
       let cliPath = getResolvedCliPath();
 
+      // 4. Decisão de sessão sem varredura pesada síncrona no disco
       const effectiveSessionId = ensureValidUUID(params.sessionId);
-      const shouldResume = (effectiveSessionId && params.resume !== false)
-        ? (isExistingSession(effectiveSessionId, cwd) || (isRetry && isExistingSession(effectiveSessionId, cwd)))
-        : false;
+      const shouldResume = Boolean(effectiveSessionId && params.resume !== false);
+      const tResume = performance.now();
+      console.log(`[PERF] [${executionId}] resume_decision_done=${(tResume - t0).toFixed(1)}ms (resume: ${shouldResume})`);
       let finalPrompt = params.prompt;
 
       // For new sessions, prepend explicit workspace and directory context so the model knows its working directory
@@ -1067,8 +1099,9 @@ export function executeGeminiCli(
         sysLog.warn('CLI', `Aviso ao sincronizar políticas no settings.json: ${err}`);
       }
 
+      const isDebug = process.env.GEMINI_GUI_DEBUG === '1';
       const args: string[] = [
-        '--debug',
+        ...(isDebug ? ['--debug'] : []),
         '-p', finalPrompt,
         '-o', 'stream-json',
         '--skip-trust',
@@ -1149,10 +1182,6 @@ export function executeGeminiCli(
         } catch (err) {
           sysLog.warn('CLI', `Não foi possível gerar system prompt customizado: ${err}`);
         }
-      }
-
-      if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY) {
-        discoverApiKeyFromLoginEnv(true);
       }
 
       const activeApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -1311,6 +1340,11 @@ export function executeGeminiCli(
           source: 'Prompt do usuário concatenado ao cabeçalho de contexto do workspace e diretórios autorizados',
           category: 'Context & Prompt',
         },
+        mcpTools: {
+          value: `${mcpTools.length} ferramentas`,
+          source: `MCP Exa (${discoverySource === 'live' ? 'Live Discovery Cache' : 'Fallback Cache Resiliente'})`,
+          category: 'MCP & Extensions',
+        },
       };
 
       // Notificar imediatamente o cliente SSE sobre o payload final montado para auditoria
@@ -1324,8 +1358,16 @@ export function executeGeminiCli(
         });
       } catch {}
 
+      const isCwdHome = cwd === os.homedir();
+      const authDirs = params.authorizedDirs || [];
+      const containsHome = authDirs.some(d => d === os.homedir() || d === path.resolve(os.homedir()));
+      sysLog.info('CLI', `[WORKSPACE] cwd: "${cwd}" (isHome: ${isCwdHome}), authorizedDirs: [${authDirs.join(', ')}] (containsHome: ${containsHome})`);
+
       const isPersistent = process.env.GEMINI_GUI_PERSISTENT === '1';
       let child: ChildProcess;
+
+      const tSpawn = performance.now();
+      console.log(`[PERF] [${executionId}] spawn_start=${(tSpawn - t0).toFixed(1)}ms (model: ${chosenModel}, thinking: ${resolvedThinkingLevel}, thinkingActive: ${params.thinking !== false})`);
 
       if (isPersistent && params.sessionId && persistentProcesses.has(params.sessionId)) {
         child = persistentProcesses.get(params.sessionId)!;
@@ -1352,10 +1394,20 @@ export function executeGeminiCli(
       );
 
       let buffer = '';
+      const MAX_STDERR_MEMORY = 64 * 1024; // Limite de 64 KB na memória para evitar memory bloat
       let stderrText = '';
       let reportedErrorText = '';
+      let hasReceivedFirstStdout = false;
+      let hasReceivedFirstAssistantEvent = false;
+      let tFirstStdout = 0;
 
       child.stdout?.on('data', (chunk) => {
+        if (!hasReceivedFirstStdout) {
+          hasReceivedFirstStdout = true;
+          tFirstStdout = performance.now();
+          console.log(`[PERF] [${executionId}] first_stdout=${(tFirstStdout - t0).toFixed(1)}ms (+${(tFirstStdout - tSpawn).toFixed(1)}ms from spawn)`);
+        }
+
         buffer += chunk.toString();
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
@@ -1367,6 +1419,22 @@ export function executeGeminiCli(
           if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
             try {
               const parsed = JSON.parse(trimmed);
+
+              if (!hasReceivedFirstAssistantEvent) {
+                if (
+                  parsed.type === 'message' ||
+                  parsed.type === 'stream_event' ||
+                  parsed.type === 'tool_use' ||
+                  parsed.type === 'content' ||
+                  parsed.candidates ||
+                  parsed.role === 'assistant'
+                ) {
+                  hasReceivedFirstAssistantEvent = true;
+                  const tFirstAssistant = performance.now();
+                  console.log(`[PERF] [${executionId}] first_assistant_event=${(tFirstAssistant - t0).toFixed(1)}ms (+${(tFirstAssistant - tSpawn).toFixed(1)}ms from spawn, +${(tFirstAssistant - tFirstStdout).toFixed(1)}ms from stdout)`);
+                }
+              }
+
               if (parsed.type === 'final_api_request') {
                 const finalReq = parsed.finalApiRequest || parsed.data?.finalApiRequest || parsed;
                 params.onEvent({
@@ -1398,41 +1466,28 @@ export function executeGeminiCli(
         }
       });
 
-      // Ensure logs directory exists
-      const logsDir = path.join(getGuiDataDir(), '.gemini', 'logs');
-      if (!fs.existsSync(logsDir)) {
-        fs.mkdirSync(logsDir, { recursive: true });
+      // Gravação em arquivo de log opcional apenas quando debug ativado
+      let debugLogPath: string | undefined;
+      let logStream: fs.WriteStream | null = null;
+      if (isDebug) {
+        const logsDir = path.join(getGuiDataDir(), '.gemini', 'logs');
+        if (!fs.existsSync(logsDir)) {
+          fs.mkdirSync(logsDir, { recursive: true });
+        }
+        debugLogPath = path.join(logsDir, 'cli-debug.log');
+        logStream = fs.createWriteStream(debugLogPath, { flags: 'w' });
       }
-      const debugLogPath = path.join(logsDir, 'cli-debug.log');
-      
-      // Create write stream for buffered logging
-      const logStream = fs.createWriteStream(debugLogPath, { flags: 'w' });
 
       child.stderr?.on('data', (chunk) => {
         const raw = chunk.toString();
-        stderrText += raw;
-        logStream.write(raw);
-      });
-
-      child.on('close', (code) => {
-        logStream.end();
-        if (systemPromptFile && fs.existsSync(systemPromptFile)) {
-          try { fs.unlinkSync(systemPromptFile); } catch {}
+        if (stderrText.length + raw.length > MAX_STDERR_MEMORY) {
+          stderrText = (stderrText + raw).slice(-MAX_STDERR_MEMORY);
+        } else {
+          stderrText += raw;
         }
-        if (tempSettingsFile && fs.existsSync(tempSettingsFile)) {
-          try { fs.unlinkSync(tempSettingsFile); } catch {}
+        if (logStream) {
+          logStream.write(raw);
         }
-        if (code !== 0 && stderrText.includes("No previous sessions found")) {
-          sysLog.warn('CLI', `Sessão ${params.sessionId} não encontrada, limpando cache.`);
-          if (params.sessionId) knownSessions.delete(params.sessionId);
-        }
-        params.onEvent({ 
-          type: 'stderr_debug_complete', 
-          data: { 
-            text: stderrText, 
-            logFile: debugLogPath 
-          } 
-        });
       });
 
       child.on('error', (err: any) => {
@@ -1459,6 +1514,30 @@ export function executeGeminiCli(
       });
 
       child.on('close', (code, signal) => {
+        const tDone = performance.now();
+        console.log(`[PERF] [${executionId}] process_done=${(tDone - t0).toFixed(1)}ms (code: ${code ?? 0})`);
+
+        if (logStream) {
+          logStream.end();
+        }
+        if (systemPromptFile && fs.existsSync(systemPromptFile)) {
+          try { fs.unlinkSync(systemPromptFile); } catch {}
+        }
+        if (tempSettingsFile && fs.existsSync(tempSettingsFile)) {
+          try { fs.unlinkSync(tempSettingsFile); } catch {}
+        }
+        if (code !== 0 && stderrText.includes("No previous sessions found")) {
+          sysLog.warn('CLI', `Sessão ${params.sessionId} não encontrada, limpando cache.`);
+          if (params.sessionId) knownSessions.delete(params.sessionId);
+        }
+        params.onEvent({ 
+          type: 'stderr_debug_complete', 
+          data: { 
+            text: stderrText, 
+            logFile: isDebug ? debugLogPath : undefined 
+          } 
+        });
+
         if (execState.childProcess === child) {
           execState.childProcess = null;
         }

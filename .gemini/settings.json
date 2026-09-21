@@ -1,0 +1,247 @@
+{
+  "mcpServers": {},
+  "modelConfigs": {
+    "customAliases": {
+      "worker": {
+        "modelConfig": {
+          "model": "gemini-3.1-flash-lite",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "gemini-3.1-flash-lite": {
+        "modelConfig": {
+          "model": "gemini-3.1-flash-lite",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "architect": {
+        "modelConfig": {
+          "model": "gemini-3.6-flash",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "gemini-3.6-flash": {
+        "modelConfig": {
+          "model": "gemini-3.6-flash",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "auditor": {
+        "modelConfig": {
+          "model": "gemini-3.8-flash",
+          "generateContentConfig": {
+            "temperature": 0.1,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "gemini-3.8-flash": {
+        "modelConfig": {
+          "model": "gemini-3.8-flash",
+          "generateContentConfig": {
+            "temperature": 0.1,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "investigator": {
+        "modelConfig": {
+          "model": "gemini-3.7-flash",
+          "generateContentConfig": {
+            "temperature": 0.1,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "gemini-3.7-flash": {
+        "modelConfig": {
+          "model": "gemini-3.7-flash",
+          "generateContentConfig": {
+            "temperature": 0.1,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "principal": {
+        "modelConfig": {
+          "model": "gemini-3.5-flash-lite",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "gemini-3.5-flash-lite": {
+        "modelConfig": {
+          "model": "gemini-3.5-flash-lite",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "tester": {
+        "modelConfig": {
+          "model": "gemini-3-flash",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      "gemini-3-flash": {
+        "modelConfig": {
+          "model": "gemini-3-flash",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      }
+    },
+    "overrides": [
+      {
+        "match": {
+          "overrideScope": "core"
+        },
+        "modelConfig": {
+          "model": "gemini-3.5-flash-lite",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      {
+        "match": {
+          "model": "gemini-3.1-flash-lite"
+        },
+        "modelConfig": {
+          "model": "gemini-3.1-flash-lite",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      {
+        "match": {
+          "model": "gemini-3.1-flash-lite",
+          "overrideScope": "core"
+        },
+        "modelConfig": {
+          "model": "gemini-3.5-flash-lite",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      {
+        "match": {
+          "overrideScope": "architect"
+        },
+        "modelConfig": {
+          "model": "gemini-3.6-flash",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      {
+        "match": {
+          "overrideScope": "auditor"
+        },
+        "modelConfig": {
+          "model": "gemini-3.8-flash",
+          "generateContentConfig": {
+            "temperature": 0.1,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      {
+        "match": {
+          "overrideScope": "investigator"
+        },
+        "modelConfig": {
+          "model": "gemini-3.7-flash",
+          "generateContentConfig": {
+            "temperature": 0.1,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      {
+        "match": {
+          "overrideScope": "principal"
+        },
+        "modelConfig": {
+          "model": "gemini-3.5-flash-lite",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      {
+        "match": {
+          "overrideScope": "tester"
+        },
+        "modelConfig": {
+          "model": "gemini-3-flash",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      },
+      {
+        "match": {
+          "overrideScope": "worker"
+        },
+        "modelConfig": {
+          "model": "gemini-3.1-flash-lite",
+          "generateContentConfig": {
+            "temperature": 0.2,
+            "topP": 0.95,
+            "topK": 40
+          }
+        }
+      }
+    ]
+  }
+}

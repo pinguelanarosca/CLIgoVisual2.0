@@ -4,6 +4,9 @@ import path from 'node:path';
 import os from 'node:os';
 
 let hasDiscovered = false;
+let lastDiscoveryResult: 'found' | 'not_found' | 'none' = 'none';
+let lastDiscoveryTime = 0;
+const DISCOVERY_NEGATIVE_TTL_MS = 5 * 60 * 1000; // 5 minutes negative cache TTL
 
 function extractKeyFromString(content: string): string | null {
   if (!content) return null;
@@ -76,10 +79,21 @@ function getCandidateHomeDirs(): string[] {
 }
 
 export function discoverApiKeyFromLoginEnv(forceRefresh = false): void {
-  if (hasDiscovered && !forceRefresh) return;
-  if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) {
+  const existingKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (existingKey && existingKey.trim()) {
     hasDiscovered = true;
+    lastDiscoveryResult = 'found';
+    lastDiscoveryTime = Date.now();
     return;
+  }
+
+  const now = Date.now();
+  if (!forceRefresh) {
+    if (lastDiscoveryResult === 'found') return;
+    if (lastDiscoveryResult === 'not_found' && (now - lastDiscoveryTime < DISCOVERY_NEGATIVE_TTL_MS)) {
+      return;
+    }
+    if (hasDiscovered) return;
   }
 
   const candidateHomes = getCandidateHomeDirs();
@@ -122,6 +136,8 @@ export function discoverApiKeyFromLoginEnv(forceRefresh = false): void {
             process.env.GEMINI_API_KEY = foundKey;
             console.log(`[SYSTEM] GEMINI_API_KEY descoberta em: ${filePath}`);
             hasDiscovered = true;
+            lastDiscoveryResult = 'found';
+            lastDiscoveryTime = Date.now();
             return;
           }
         } catch {}
@@ -144,6 +160,8 @@ export function discoverApiKeyFromLoginEnv(forceRefresh = false): void {
           process.env.GEMINI_API_KEY = foundKey;
           console.log(`[SYSTEM] GEMINI_API_KEY descoberta em: ${sysFile}`);
           hasDiscovered = true;
+          lastDiscoveryResult = 'found';
+          lastDiscoveryTime = Date.now();
           return;
         }
       } catch {}
@@ -179,9 +197,16 @@ export function discoverApiKeyFromLoginEnv(forceRefresh = false): void {
           process.env.GEMINI_API_KEY = geminiKey;
           console.log('[SYSTEM] GEMINI_API_KEY descoberta com sucesso via shell interativo.');
           hasDiscovered = true;
+          lastDiscoveryResult = 'found';
+          lastDiscoveryTime = Date.now();
           return;
         }
       }
     } catch {}
   }
+
+  // Not found in this scan
+  hasDiscovered = true;
+  lastDiscoveryResult = 'not_found';
+  lastDiscoveryTime = Date.now();
 }

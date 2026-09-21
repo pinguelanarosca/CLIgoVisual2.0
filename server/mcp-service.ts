@@ -44,41 +44,67 @@ export function getSettingsFilePath(targetDir?: string): string {
 export function loadMcpSettings(targetDir?: string): McpConfig[] {
   const settingsFile = getSettingsFilePath(targetDir);
   let mcpServers: Record<string, any> = {};
+  let guiMcpServers: Record<string, any> = {};
 
   if (fs.existsSync(settingsFile)) {
     try {
       const raw = fs.readFileSync(settingsFile, 'utf8');
       const parsed = JSON.parse(raw);
       mcpServers = parsed.mcpServers || {};
+      guiMcpServers = parsed.guiMcpServers || {};
     } catch {
       mcpServers = {};
+      guiMcpServers = {};
     }
   }
 
   let modified = false;
 
-  if (!mcpServers.github) {
-    mcpServers.github = {
+  // Import existing mcpServers into guiMcpServers if guiMcpServers is missing them
+  for (const [name, server] of Object.entries<any>(mcpServers)) {
+    if (!guiMcpServers[name]) {
+      guiMcpServers[name] = {
+        ...server,
+        enabled: server.enabled !== false,
+      };
+      modified = true;
+    }
+  }
+
+  // GitHub MCP default: only initialize if it never existed in either guiMcpServers or mcpServers
+  if (!guiMcpServers.github) {
+    guiMcpServers.github = {
       command: INITIAL_GITHUB_MCP.command,
       args: INITIAL_GITHUB_MCP.args,
       env: INITIAL_GITHUB_MCP.env,
+      enabled: true,
     };
     modified = true;
   }
 
-  if (!mcpServers.exa || !mcpServers.exa.trust || !mcpServers.exa.headers || !mcpServers.exa.headers['Accept']) {
-    mcpServers.exa = {
+  // Exa MCP default: only initialize if it never existed in either guiMcpServers or mcpServers
+  if (!guiMcpServers.exa) {
+    guiMcpServers.exa = {
       url: INITIAL_EXA_MCP.url,
       type: INITIAL_EXA_MCP.type,
       trust: INITIAL_EXA_MCP.trust,
       headers: INITIAL_EXA_MCP.headers,
       env: INITIAL_EXA_MCP.env,
+      enabled: true,
     };
+    modified = true;
+  } else if (!guiMcpServers.exa.headers || !guiMcpServers.exa.headers['Accept']) {
+    // Preserve required headers for SSE Exa support without altering enabled status
+    guiMcpServers.exa.headers = {
+      ...INITIAL_EXA_MCP.headers,
+      ...(guiMcpServers.exa.headers || {}),
+    };
+    guiMcpServers.exa.trust = true;
     modified = true;
   }
 
   const list: McpConfig[] = [];
-  for (const [name, server] of Object.entries<any>(mcpServers)) {
+  for (const [name, server] of Object.entries<any>(guiMcpServers)) {
     list.push({
       name,
       command: server.command,
@@ -119,28 +145,43 @@ export function saveMcpSettings(servers: McpConfig[], targetDir?: string) {
   }
 
   const mcpServers: Record<string, any> = {};
+  const guiMcpServers: Record<string, any> = {};
+
   for (const s of servers) {
+    const fullConfig: any = {
+      enabled: s.enabled !== false,
+      env: s.env || {},
+    };
+    if (s.command) fullConfig.command = s.command;
+    if (s.args && s.args.length > 0) fullConfig.args = s.args;
+    if (s.url) fullConfig.url = s.url;
+    else if (s.httpUrl) fullConfig.httpUrl = s.httpUrl;
+    if (s.type) fullConfig.type = s.type;
+    if (s.trust !== undefined) fullConfig.trust = s.trust;
+    if (s.headers) fullConfig.headers = s.headers;
+
+    // Preserved for GUI state (including disabled MCPs)
+    guiMcpServers[s.name] = fullConfig;
+
+    // Only enabled MCPs enter settings.mcpServers for Gemini CLI runtime
     if (s.enabled !== false) {
-      const serverConfig: any = {
+      const runtimeConfig: any = {
         env: s.env || {},
       };
+      if (s.command) runtimeConfig.command = s.command;
+      if (s.args && s.args.length > 0) runtimeConfig.args = s.args;
+      if (s.url) runtimeConfig.url = s.url;
+      else if (s.httpUrl) runtimeConfig.httpUrl = s.httpUrl;
+      if (s.type) runtimeConfig.type = s.type;
+      if (s.trust !== undefined) runtimeConfig.trust = s.trust;
+      if (s.headers) runtimeConfig.headers = s.headers;
 
-      if (s.command) serverConfig.command = s.command;
-      if (s.args && s.args.length > 0) serverConfig.args = s.args;
-      if (s.url) {
-        serverConfig.url = s.url;
-      } else if (s.httpUrl) {
-        serverConfig.httpUrl = s.httpUrl;
-      }
-      if (s.type) serverConfig.type = s.type;
-      if (s.trust !== undefined) serverConfig.trust = s.trust;
-      if (s.headers) serverConfig.headers = s.headers;
-
-      mcpServers[s.name] = serverConfig;
+      mcpServers[s.name] = runtimeConfig;
     }
   }
 
   settings.mcpServers = mcpServers;
+  settings.guiMcpServers = guiMcpServers;
   fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2), 'utf8');
 }
 
