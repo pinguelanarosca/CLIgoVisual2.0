@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { GitAppStatus, GitCommitInfo, GitUpdateCheckResult, GitUpdateResult } from '../src/types.js';
 import { sysLog } from './logger-service.js';
 
-export const DEFAULT_GIT_REPO_URL = 'https://github.com/pinguelanarosca/CLIgoVisual';
+export const DEFAULT_GIT_REPO_URL = 'https://github.com/pinguelanarosca/CLIgoVisual2.0';
 export const DEFAULT_GIT_BRANCH = 'main';
 
 function getGitVersion(): string | undefined {

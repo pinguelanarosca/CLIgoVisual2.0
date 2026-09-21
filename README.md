@@ -25,7 +25,7 @@ Interface gráfica e ambiente de trabalho profissional para o **Gemini CLI (v0.5
 ## 📦 Instalação, Atualização, Reset e Desinstalação
 
 ### 1. Instalação / Atualização Oficial (`install.sh`)
-O instalador oficial baixa/clona automaticamente a versão mais recente do repositório GitHub (`https://github.com/pinguelanarosca/CLIgoVisual`), instala todas as dependências, compila o aplicativo e registra os executáveis e atalhos do sistema. É **idempotente** e pode ser executado para instalar do zero ou atualizar uma versão existente.
+O instalador oficial baixa/clona automaticamente a versão mais recente do repositório GitHub (`https://github.com/pinguelanarosca/CLIgoVisual2.0`), instala todas as dependências, compila o aplicativo e registra os executáveis e atalhos do sistema. É **idempotente** e pode ser executado para instalar do zero ou atualizar uma versão existente.
 
 ```bash
 sudo ./install.sh

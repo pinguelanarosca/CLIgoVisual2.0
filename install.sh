@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-REPO_URL="https://github.com/pinguelanarosca/CLIgoVisual"
+REPO_URL="https://github.com/pinguelanarosca/CLIgoVisual2.0"
 INSTALL_DIR="/opt/gemini-gui"
 TEMP_DIR="/tmp/gcli-install-source"
 
