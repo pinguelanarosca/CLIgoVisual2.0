@@ -13,6 +13,8 @@ import { syncPoliciesToSettings } from './policies-service.js';
 import { getGuiDataDir } from './paths-service.js';
 import { loadMcpSettings } from './mcp-service.js';
 
+const persistentProcesses = new Map<string, ChildProcess>();
+
 export interface ExecutionState {
   executionId: string;
   childProcess: ChildProcess | null;
@@ -1322,12 +1324,25 @@ export function executeGeminiCli(
         });
       } catch {}
 
-      const child = spawn(cliPath, args, {
-        cwd,
-        env,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 300000, // 5 minutes timeout to accommodate long-running operations
-      });
+      const isPersistent = process.env.GEMINI_GUI_PERSISTENT === '1';
+      let child: ChildProcess;
+
+      if (isPersistent && params.sessionId && persistentProcesses.has(params.sessionId)) {
+        child = persistentProcesses.get(params.sessionId)!;
+        sysLog.info('CLI', `Reutilizando processo persistente para sessão ${params.sessionId}`);
+      } else {
+        const spawnArgs = isPersistent ? [...args, '--acp'] : args;
+        child = spawn(cliPath, spawnArgs, {
+          cwd,
+          env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 300000,
+        });
+        if (isPersistent && params.sessionId) {
+            persistentProcesses.set(params.sessionId, child);
+            child.on('exit', () => persistentProcesses.delete(params.sessionId!));
+        }
+      }
 
       execState.childProcess = child;
       sysLog.info(
