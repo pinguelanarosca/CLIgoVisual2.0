@@ -25,6 +25,8 @@ const INITIAL_EXA_MCP: McpConfig = {
   trust: true,
   headers: {
     'x-api-key': '$EXA_API_KEY',
+    'Authorization': 'Bearer $EXA_API_KEY',
+    'Accept': 'application/json, text/event-stream',
   },
   env: {
     EXA_API_KEY: '$EXA_API_KEY',
@@ -64,7 +66,7 @@ export function loadMcpSettings(targetDir?: string): McpConfig[] {
     modified = true;
   }
 
-  if (!mcpServers.exa || !mcpServers.exa.trust || !mcpServers.exa.headers) {
+  if (!mcpServers.exa || !mcpServers.exa.trust || !mcpServers.exa.headers || !mcpServers.exa.headers['Accept']) {
     mcpServers.exa = {
       url: INITIAL_EXA_MCP.url,
       type: INITIAL_EXA_MCP.type,

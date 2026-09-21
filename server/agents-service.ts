@@ -601,13 +601,30 @@ export function syncAgentsToSettings(
       if (typeof cfg.maxOutputTokens === 'number') genConfig.maxOutputTokens = cfg.maxOutputTokens;
       const isThinking = cfg.thinking !== false;
       if (isThinking) {
-        const thinkingLevel = (cfg.thinkingLevel === 'low' || cfg.thinkingLevel === 'high' || cfg.thinkingLevel === 'medium')
-          ? cfg.thinkingLevel
-          : 'medium';
-        genConfig.thinkingConfig = {
-          includeThoughts: true,
-          thinkingLevel: thinkingLevel,
-        };
+        const modelLower = (cfg.model || '').toLowerCase();
+        const isThinkingSupported = 
+          modelLower.includes('pro') || 
+          modelLower.includes('thinking') || 
+          modelLower.includes('gemini-3.7') || 
+          modelLower.includes('gemini-3.8');
+
+        if (isThinkingSupported) {
+          const thinkingLevel = (cfg.thinkingLevel === 'low' || cfg.thinkingLevel === 'high' || cfg.thinkingLevel === 'medium')
+            ? cfg.thinkingLevel
+            : 'medium';
+          const isGemini3 = modelLower.includes('gemini-3');
+          if (isGemini3) {
+            genConfig.thinkingConfig = {
+              includeThoughts: true,
+              thinkingLevel: thinkingLevel,
+            };
+          } else {
+            genConfig.thinkingConfig = {
+              includeThoughts: true,
+              thinkingBudget: -1,
+            };
+          }
+        }
       }
       return genConfig;
     };
@@ -630,12 +647,16 @@ export function syncAgentsToSettings(
         },
       };
 
-      // Match core
+      // Match core - always use the ultra-fast gemini-3.5-flash-lite with no thinking Config for instant routing/tool selection
       newOverrides.push({
         match: { overrideScope: 'core' },
         modelConfig: {
-          model: primaryModel,
-          generateContentConfig: primaryGenConfig,
+          model: 'gemini-3.5-flash-lite',
+          generateContentConfig: {
+            temperature: 0.2,
+            topP: 0.95,
+            topK: 40,
+          },
         },
       });
 
@@ -648,12 +669,16 @@ export function syncAgentsToSettings(
         },
       });
 
-      // Match model + core
+      // Match model + core - always route core scope to the fast gemini-3.5-flash-lite
       newOverrides.push({
         match: { model: primaryModel, overrideScope: 'core' },
         modelConfig: {
-          model: primaryModel,
-          generateContentConfig: primaryGenConfig,
+          model: 'gemini-3.5-flash-lite',
+          generateContentConfig: {
+            temperature: 0.2,
+            topP: 0.95,
+            topK: 40,
+          },
         },
       });
     }

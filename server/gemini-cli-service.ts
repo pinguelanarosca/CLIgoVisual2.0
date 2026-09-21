@@ -11,6 +11,7 @@ import { sysLog } from './logger-service.js';
 import { syncAgentsToSettings, loadAgents, buildEffectiveSystemPrompt } from './agents-service.js';
 import { syncPoliciesToSettings } from './policies-service.js';
 import { getGuiDataDir } from './paths-service.js';
+import { loadMcpSettings } from './mcp-service.js';
 
 export interface ExecutionState {
   executionId: string;
@@ -633,6 +634,316 @@ export function cancelActiveExecution(): boolean {
   return cancelExecutionById();
 }
 
+export async function runExaHandshakeAndDiscovery(params: CliExecutionParams): Promise<any[]> {
+  const base = getGuiDataDir();
+  const mcpConfigs = loadMcpSettings(base);
+  const exaMcp = mcpConfigs.find(m => m.name === 'exa');
+
+  if (!exaMcp || exaMcp.enabled === false) {
+    return [];
+  }
+
+  // Enviar log de configuração encontrada
+  params.onEvent({ type: 'stdout_raw', data: { text: '[MCP] exa configured' } });
+  sysLog.info('MCP', '[MCP] exa configured');
+
+  const apiKey = process.env.EXA_API_KEY || '';
+  if (!apiKey) {
+    params.onEvent({ type: 'stdout_raw', data: { text: 'MCP Exa indisponível (EXA_API_KEY não configurada)' } });
+    sysLog.warn('MCP', 'MCP Exa indisponível (EXA_API_KEY não configurada no ambiente)');
+    return [];
+  }
+
+  // Enviar log de conexão iniciando
+  params.onEvent({ type: 'stdout_raw', data: { text: '[MCP] exa connecting' } });
+  sysLog.info('MCP', '[MCP] exa connecting');
+
+  const targetUrl = exaMcp.url || exaMcp.httpUrl || 'https://mcp.exa.ai/mcp';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+
+  const fallbackTools = [
+    {
+      name: 'web_search_exa',
+      description: 'Perform a neural search of the web using Exa\'s API.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The search query to execute.' },
+          numResults: { type: 'number', description: 'Number of results to return (default: 5).' }
+        },
+        required: ['query']
+      }
+    },
+    {
+      name: 'web_fetch_exa',
+      description: 'Fetch the text content of web pages. Returns clean markdown contents.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          urls: { type: 'array', items: { type: 'string' }, description: 'The URLs to fetch.' }
+        },
+        required: ['urls']
+      }
+    },
+    {
+      name: 'web_search_advanced_exa',
+      description: 'Advanced neural search with filtering capabilities.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The search query.' },
+          includeDomains: { type: 'array', items: { type: 'string' }, description: 'Domains to include.' },
+          excludeDomains: { type: 'array', items: { type: 'string' }, description: 'Domains to exclude.' }
+        },
+        required: ['query']
+      }
+    }
+  ];
+
+  try {
+    const res = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json, text/event-stream',
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/list',
+        params: {},
+        id: 'exa-handshake'
+      }),
+      signal: controller.signal
+    });
+    
+    clearTimeout(timer);
+
+    if (res.ok) {
+      try {
+        const text = await res.text();
+        let data: any = null;
+
+        if (text.includes('data: ')) {
+          // Formato SSE (Exa Server) - Extrai o JSON contido após "data:"
+          const match = text.match(/data:\s*({.*})/);
+          if (match) {
+            try {
+              data = JSON.parse(match[1]);
+            } catch {}
+          }
+        } else {
+          // Formato JSON convencional
+          try {
+            data = JSON.parse(text);
+          } catch {}
+        }
+
+        const tools = data?.result?.tools || [];
+        
+        params.onEvent({ type: 'stdout_raw', data: { text: '[MCP] exa connected' } });
+        sysLog.info('MCP', '[MCP] exa connected');
+
+        params.onEvent({ type: 'stdout_raw', data: { text: `[MCP] discovered ${tools.length} tools` } });
+        sysLog.info('MCP', `[MCP] discovered ${tools.length} tools`);
+
+        for (const t of tools) {
+          params.onEvent({ type: 'stdout_raw', data: { text: `[MCP] ${t.name} available` } });
+          sysLog.info('MCP', `[MCP] ${t.name} available`);
+        }
+
+        return tools.length > 0 ? tools : fallbackTools;
+      } catch (parseErr) {
+        params.onEvent({ type: 'stdout_raw', data: { text: '[MCP] exa connected' } });
+        sysLog.info('MCP', '[MCP] exa connected (handled body via fallback)');
+        return fallbackTools;
+      }
+    } else {
+      params.onEvent({ type: 'stdout_raw', data: { text: `MCP Exa indisponível (HTTP Error ${res.status}). Carregando esquema resiliente de fallback...` } });
+      sysLog.warn('MCP', `MCP Exa indisponível (HTTP Error ${res.status}). Carregando esquema resiliente de fallback...`);
+      return fallbackTools;
+    }
+  } catch (err: any) {
+    clearTimeout(timer);
+    const msg = err.name === 'AbortError' ? 'Timeout ao conectar' : err.message || 'Erro de conexão';
+    params.onEvent({ type: 'stdout_raw', data: { text: `MCP Exa indisponível (${msg}). Carregando esquema resiliente de fallback...` } });
+    sysLog.warn('MCP', `MCP Exa indisponível (${msg}). Carregando esquema resiliente de fallback...`);
+    return fallbackTools;
+  }
+}
+
+export async function resolveEffectiveCliConfig(cwd: string, executionId: string): Promise<string> {
+  const base = getGuiDataDir();
+  
+  // 1. Ler o settings.json original da GUI se existir
+  const guiSettingsPath = path.join(base, '.gemini', 'settings.json');
+  let settings: any = {};
+  if (fs.existsSync(guiSettingsPath)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(guiSettingsPath, 'utf8'));
+    } catch {
+      settings = {};
+    }
+  }
+
+  // 2. Garantir mcpServers corretos e habilitados
+  if (!settings.mcpServers) {
+    settings.mcpServers = {};
+  }
+  
+  const guiMcps = loadMcpSettings(base);
+  for (const mcp of guiMcps) {
+    if (mcp.enabled !== false) {
+      const serverConfig: any = {
+        env: mcp.env || {}
+      };
+      if (mcp.command) serverConfig.command = mcp.command;
+      if (mcp.args && mcp.args.length > 0) serverConfig.args = mcp.args;
+      if (mcp.url) {
+        serverConfig.url = mcp.url;
+      } else if (mcp.httpUrl) {
+        serverConfig.httpUrl = mcp.httpUrl;
+      }
+      if (mcp.type) serverConfig.type = mcp.type;
+      if (mcp.trust !== undefined) serverConfig.trust = mcp.trust;
+      if (mcp.headers) serverConfig.headers = mcp.headers;
+
+      settings.mcpServers[mcp.name] = serverConfig;
+    } else {
+      delete settings.mcpServers[mcp.name];
+    }
+  }
+
+  // 3. Substituir as variáveis de ambiente reais no settings.json temporário de execução
+  if (settings.mcpServers && settings.mcpServers.exa) {
+    const exa = settings.mcpServers.exa;
+    const exaApiKey = process.env.EXA_API_KEY || '';
+    
+    if (exa.headers) {
+      for (const [k, v] of Object.entries(exa.headers)) {
+        if (typeof v === 'string' && v.includes('$EXA_API_KEY')) {
+          exa.headers[k] = v.replace('$EXA_API_KEY', exaApiKey);
+        }
+      }
+    }
+    if (exa.env) {
+      for (const [k, v] of Object.entries(exa.env)) {
+        if (typeof v === 'string' && v.includes('$EXA_API_KEY')) {
+          exa.env[k] = v.replace('$EXA_API_KEY', exaApiKey);
+        }
+      }
+    }
+  }
+
+  // 4. Carregar agentes e sincronizar as configurações dos modelos
+  const allAgents = loadAgents(cwd);
+  if (!settings.modelConfigs) settings.modelConfigs = {};
+  if (!settings.modelConfigs.customAliases) settings.modelConfigs.customAliases = {};
+  if (!settings.modelConfigs.overrides) settings.modelConfigs.overrides = [];
+
+  const buildGenConfig = (cfg: any) => {
+    const genConfig: any = {};
+    if (typeof cfg.temperature === 'number') genConfig.temperature = cfg.temperature;
+    if (typeof cfg.topP === 'number') genConfig.topP = cfg.topP;
+    if (typeof cfg.topK === 'number') genConfig.topK = cfg.topK;
+    if (typeof cfg.maxOutputTokens === 'number') genConfig.maxOutputTokens = cfg.maxOutputTokens;
+    if (cfg.thinking !== false) {
+      const modelLower = (cfg.model || '').toLowerCase();
+      const isThinkingSupported = 
+        modelLower.includes('pro') || 
+        modelLower.includes('thinking') || 
+        modelLower.includes('gemini-3.7') || 
+        modelLower.includes('gemini-3.8');
+
+      if (isThinkingSupported) {
+        const thinkingLevel = cfg.thinkingLevel || cfg.thinking_level || 'medium';
+        const isGemini3 = modelLower.includes('gemini-3');
+        if (isGemini3) {
+          genConfig.thinkingConfig = {
+            includeThoughts: true,
+            thinkingLevel: thinkingLevel,
+          };
+        } else {
+          genConfig.thinkingConfig = {
+            includeThoughts: true,
+            thinkingBudget: -1,
+          };
+        }
+      }
+    }
+    return genConfig;
+  };
+
+  const newAliases: Record<string, any> = {};
+  const newOverrides: any[] = [];
+
+  for (const agentData of allAgents) {
+    const genConfig = buildGenConfig(agentData);
+    const agentModel = agentData.model || 'gemini-3.5-flash-lite';
+
+    newAliases[agentData.name] = {
+      modelConfig: {
+        model: agentModel,
+        generateContentConfig: genConfig,
+      },
+    };
+
+    if (!newAliases[agentModel]) {
+      newAliases[agentModel] = {
+        modelConfig: {
+          model: agentModel,
+          generateContentConfig: genConfig,
+        },
+      };
+    }
+
+    newOverrides.push({
+      match: { overrideScope: agentData.name },
+      modelConfig: {
+        model: agentModel,
+        generateContentConfig: genConfig,
+      },
+    });
+
+    if (agentData.id && agentData.id !== agentData.name) {
+      newOverrides.push({
+        match: { overrideScope: agentData.id },
+        modelConfig: {
+          model: agentModel,
+          generateContentConfig: genConfig,
+        },
+      });
+    }
+  }
+
+  settings.modelConfigs.customAliases = { ...settings.modelConfigs.customAliases, ...newAliases };
+  settings.modelConfigs.overrides = newOverrides;
+
+  // 5. Resolver as políticas (policyPaths e adminPolicyPaths)
+  const globalPoliciesDir = path.join(base, '.gemini', 'policies');
+  const policyPaths: string[] = [globalPoliciesDir];
+  if (cwd && cwd !== os.homedir() && cwd !== base) {
+    const wsPoliciesDir = path.join(cwd, '.gemini', 'policies');
+    if (fs.existsSync(wsPoliciesDir)) {
+      policyPaths.push(wsPoliciesDir);
+    }
+  }
+  settings.policyPaths = policyPaths;
+  settings.adminPolicyPaths = policyPaths;
+
+  // 6. Gravar o arquivo temporário exclusivo
+  const systemPromptDir = path.join(base, 'tmp');
+  if (!fs.existsSync(systemPromptDir)) {
+    fs.mkdirSync(systemPromptDir, { recursive: true });
+  }
+  const tempSettingsFile = path.join(systemPromptDir, `settings-runtime-${executionId}.json`);
+  fs.writeFileSync(tempSettingsFile, JSON.stringify(settings, null, 2), 'utf8');
+
+  return tempSettingsFile;
+}
+
 export function executeGeminiCli(
   params: CliExecutionParams,
   isRetry = false,
@@ -675,726 +986,782 @@ export function executeGeminiCli(
     return { cancel: () => cancelExecutionById(executionId), executionId };
   }
 
-  let cliPath = getResolvedCliPath();
-
   let cwd = params.workDir || (params.authorizedDirs && params.authorizedDirs[0]) || getGuiDataDir();
   if (!cwd || !fs.existsSync(cwd)) {
     cwd = getGuiDataDir();
   }
 
-  const effectiveSessionId = ensureValidUUID(params.sessionId);
-  const shouldResume = effectiveSessionId ? (isExistingSession(effectiveSessionId, cwd) || isRetry) : false;
-  let finalPrompt = params.prompt;
-
-  // For new sessions, prepend explicit workspace and directory context so the model knows its working directory
-  if (!shouldResume) {
-    const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : cwd}.\nSempre inspecione e responda com base nos arquivos localizados neste diretório.\n---\n\n`;
-    finalPrompt = workspaceHeader + params.prompt;
-  }
-
-  // Determine model: respect the configured model for the agent/execution, default to 'gemini-3.5-flash-lite'
-  let requestedModel = state?.currentModel || params.model;
-  if (!requestedModel || requestedModel === 'auto') {
-    requestedModel = 'gemini-3.5-flash-lite';
-  }
-
-  // Infer agentId if not explicitly provided
-  let agentId = params.agentId?.toLowerCase() || '';
-  if (!agentId && requestedModel) {
-    if (requestedModel.includes('3.8')) agentId = 'auditor';
-    else if (requestedModel.includes('3.7')) agentId = 'investigator';
-    else if (requestedModel.includes('3.5-flash-lite')) agentId = 'principal';
-    else if (requestedModel.includes('3.1-flash-lite')) agentId = 'worker';
-    else if (requestedModel === 'gemini-3-flash') agentId = 'tester';
-  }
-
-  const chosenModel = requestedModel;
-
-  // Sincronizar dinamicamente parâmetros do modelo (temperature, topP, topK, maxOutputTokens, thinking, thinkingLevel) no settings.json
-  try {
-    syncAgentsToSettings(cwd, agentId || 'principal', {
-      model: chosenModel,
-      temperature: params.temperature,
-      topP: params.topP,
-      topK: params.topK,
-      maxOutputTokens: params.maxOutputTokens,
-      thinking: params.thinking,
-      thinkingLevel: params.thinkingLevel || params.thinking_level,
-    });
-  } catch (err) {
-    sysLog.warn('CLI', `Aviso ao sincronizar agentes no settings.json: ${err}`);
-  }
-
-  // Sincronizar diretórios e arquivos de políticas
-  try {
-    syncPoliciesToSettings(cwd);
-  } catch (err) {
-    sysLog.warn('CLI', `Aviso ao sincronizar políticas no settings.json: ${err}`);
-  }
-
-  const args: string[] = [
-    '--debug',
-    '-p', finalPrompt,
-    '-o', 'stream-json',
-    '--skip-trust',
-  ];
-
-  // Carregar políticas de segurança da GUI (onde deny-google-search.toml reside no escopo da GUI)
-  const guiPoliciesDir = path.join(getGuiDataDir(), '.gemini', 'policies');
-  const policyDirs: string[] = [];
-  if (fs.existsSync(guiPoliciesDir)) {
-    policyDirs.push(guiPoliciesDir);
-  }
-
-  // Workspace .gemini/policies só pode ser usado quando explicitamente presente e fora do escopo global
-  if (cwd && cwd !== os.homedir() && cwd !== getGuiDataDir()) {
-    const wsPolicyDir = path.join(cwd, '.gemini', 'policies');
-    if (fs.existsSync(wsPolicyDir)) {
-      policyDirs.push(wsPolicyDir);
-    }
-  }
-
-  // Adicionar diretórios de políticas
-  for (const pDir of policyDirs) {
-    args.push('--policy', pDir);
-    args.push('--admin-policy', pDir);
-  }
-
-  // Política base de ambiente web-preview (prioridade 5 para permitir tools básicas sem bloquear regras do usuário)
-  const customPolicyPath = path.join(getGuiDataDir(), '.gemini', 'web-preview-policy.toml');
-  if (fs.existsSync(customPolicyPath)) {
-    args.push('--policy', customPolicyPath);
-  }
-
-  const fallbackChain = state?.fallbackChain || (AGENT_FALLBACK_CHAINS[agentId] || []);
-  const retryCount = state?.retryCount || 1;
-  const fallbackIndex = state?.fallbackIndex !== undefined 
-    ? state.fallbackIndex 
-    : (fallbackChain.indexOf(requestedModel) !== -1 ? fallbackChain.indexOf(requestedModel) : -1);
-
-  args.push('-m', chosenModel);
-
-  if (params.approvalMode) {
-    args.push('--approval-mode', params.approvalMode);
-  }
-
-  if (params.authorizedDirs && params.authorizedDirs.length > 0) {
-    args.push('--include-directories', params.authorizedDirs.join(','));
-  }
-
-  if (effectiveSessionId) {
-    if (shouldResume) {
-      args.push('-r', effectiveSessionId);
-    } else {
-      args.push('--session-id', effectiveSessionId);
-      knownSessions.add(effectiveSessionId);
-      if (params.sessionId) knownSessions.add(params.sessionId);
-    }
-  }
-
-  if (!cliPath || (cliPath !== 'gemini' && !fs.existsSync(cliPath))) {
-    cliPath = getLocalCliPath() || getGlobalCliPath() || 'gemini';
-  }
-
-  // Construir o prompt de sistema efetivo preservando a arquitetura base + override sem duplicidade
-  let systemPromptFile: string | null = null;
-  const effectiveSystemPrompt = buildEffectiveSystemPrompt(
-    params.baseInstructions,
-    params.systemInstructions,
-    params.overrideBasePrompt
-  );
-
-  if (effectiveSystemPrompt && effectiveSystemPrompt.trim()) {
+  const runAsyncFlow = async () => {
+    let tempSettingsFile: string | null = null;
+    let systemPromptFile: string | null = null;
+    
     try {
-      const systemPromptDir = path.join(getGuiDataDir(), 'tmp');
-      if (!fs.existsSync(systemPromptDir)) {
-        fs.mkdirSync(systemPromptDir, { recursive: true });
+      if (execState.cancelled) return;
+
+      // 1. Handshake e descoberta do MCP Exa
+      const mcpTools = await runExaHandshakeAndDiscovery(params);
+
+      if (execState.cancelled) return;
+
+      // 2. Resolver a configuração efetiva e salvar no settings temporário exclusivo
+      tempSettingsFile = await resolveEffectiveCliConfig(cwd, executionId);
+
+      if (execState.cancelled) {
+        try { fs.unlinkSync(tempSettingsFile); } catch {}
+        return;
       }
-      systemPromptFile = path.join(systemPromptDir, `active-system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.md`);
-      fs.writeFileSync(systemPromptFile, effectiveSystemPrompt.trim(), 'utf8');
-    } catch (err) {
-      sysLog.warn('CLI', `Não foi possível gerar system prompt customizado: ${err}`);
-    }
-  }
 
-  if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY) {
-    discoverApiKeyFromLoginEnv(true);
-  }
+      let cliPath = getResolvedCliPath();
 
-  const activeApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
+      const effectiveSessionId = ensureValidUUID(params.sessionId);
+      const shouldResume = (effectiveSessionId && params.resume !== false)
+        ? (isExistingSession(effectiveSessionId, cwd) || (isRetry && isExistingSession(effectiveSessionId, cwd)))
+        : false;
+      let finalPrompt = params.prompt;
 
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    NO_COLOR: '1',
-    FORCE_COLOR: '0',
-    GEMINI_CLI_TRUST_WORKSPACE: 'true',
-    GEMINI_MAX_RETRIES: '0',
-    MAX_RETRIES: '0',
-    GEMINI_CLI_NO_RELAUNCH: '1',
-    ...(activeApiKey ? {
-      GEMINI_API_KEY: activeApiKey,
-      GOOGLE_GENAI_API_KEY: activeApiKey,
-      GOOGLE_API_KEY: activeApiKey,
-    } : {}),
-  };
+      // For new sessions, prepend explicit workspace and directory context so the model knows its working directory
+      if (!shouldResume) {
+        const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : cwd}.\nSempre inspecione e responda com base nos arquivos localizados neste diretório.\n---\n\n`;
+        finalPrompt = workspaceHeader + params.prompt;
+      }
 
-  if (systemPromptFile) {
-    env.GEMINI_SYSTEM_MD = systemPromptFile;
-  }
+      // Determine model: respect the configured model for the agent/execution, default to 'gemini-3.5-flash-lite'
+      let requestedModel = state?.currentModel || params.model;
+      if (!requestedModel || requestedModel === 'auto') {
+        requestedModel = 'gemini-3.5-flash-lite';
+      }
 
-  // Montar e registrar o objeto final de requisição da API do Google antes da chamada (sem credenciais sensíveis)
-  const resolvedTemp = typeof params.temperature === 'number' ? params.temperature : 0.2;
-  const resolvedTopP = typeof params.topP === 'number' ? params.topP : 0.95;
-  const resolvedTopK = typeof params.topK === 'number' ? params.topK : 40;
-  const resolvedMaxTokens = typeof params.maxOutputTokens === 'number' ? params.maxOutputTokens : undefined;
-  const resolvedThinkingLevel: 'low' | 'medium' | 'high' =
-    (params.thinkingLevel === 'low' || params.thinkingLevel === 'high' || params.thinkingLevel === 'medium')
-      ? params.thinkingLevel
-      : (params.thinking_level === 'low' || params.thinking_level === 'high' || params.thinking_level === 'medium')
-      ? params.thinking_level
-      : 'medium';
+      // Infer agentId if not explicitly provided
+      let agentId = params.agentId?.toLowerCase() || '';
+      if (!agentId && requestedModel) {
+        if (requestedModel.includes('3.8')) agentId = 'auditor';
+        else if (requestedModel.includes('3.7')) agentId = 'investigator';
+        else if (requestedModel.includes('3.5-flash-lite')) agentId = 'principal';
+        else if (requestedModel.includes('3.1-flash-lite')) agentId = 'worker';
+        else if (requestedModel === 'gemini-3-flash') agentId = 'tester';
+      }
 
-  const finalApiRequest = {
-    model: chosenModel.startsWith('models/') ? chosenModel : `models/${chosenModel}`,
-    contents: [
-      {
-        role: 'user',
-        parts: [
+      const chosenModel = requestedModel;
+
+      // Sincronizar dinamicamente parâmetros do modelo (temperature, topP, topK, maxOutputTokens, thinking, thinkingLevel) no settings.json
+      try {
+        syncAgentsToSettings(cwd, agentId || 'principal', {
+          model: chosenModel,
+          temperature: params.temperature,
+          topP: params.topP,
+          topK: params.topK,
+          maxOutputTokens: params.maxOutputTokens,
+          thinking: params.thinking,
+          thinkingLevel: params.thinkingLevel || params.thinking_level,
+        });
+      } catch (err) {
+        sysLog.warn('CLI', `Aviso ao sincronizar agentes no settings.json: ${err}`);
+      }
+
+      // Sincronizar diretórios e arquivos de políticas
+      try {
+        syncPoliciesToSettings(cwd);
+      } catch (err) {
+        sysLog.warn('CLI', `Aviso ao sincronizar políticas no settings.json: ${err}`);
+      }
+
+      const args: string[] = [
+        '--debug',
+        '-p', finalPrompt,
+        '-o', 'stream-json',
+        '--skip-trust',
+      ];
+
+      // Carregar políticas de segurança da GUI (onde deny-google-search.toml reside no escopo da GUI)
+      const guiPoliciesDir = path.join(getGuiDataDir(), '.gemini', 'policies');
+      const policyDirs: string[] = [];
+      if (fs.existsSync(guiPoliciesDir)) {
+        policyDirs.push(guiPoliciesDir);
+      }
+
+      // Workspace .gemini/policies só pode ser usado quando explicitamente presente e fora do escopo global
+      if (cwd && cwd !== os.homedir() && cwd !== getGuiDataDir()) {
+        const wsPolicyDir = path.join(cwd, '.gemini', 'policies');
+        if (fs.existsSync(wsPolicyDir)) {
+          policyDirs.push(wsPolicyDir);
+        }
+      }
+
+      // Adicionar diretórios de políticas
+      for (const pDir of policyDirs) {
+        args.push('--policy', pDir);
+        args.push('--admin-policy', pDir);
+      }
+
+      // Política base de ambiente web-preview (prioridade 5 para permitir tools básicas sem bloquear regras do usuário)
+      const customPolicyPath = path.join(getGuiDataDir(), '.gemini', 'web-preview-policy.toml');
+      if (fs.existsSync(customPolicyPath)) {
+        args.push('--policy', customPolicyPath);
+      }
+
+      const fallbackChain = state?.fallbackChain || (AGENT_FALLBACK_CHAINS[agentId] || []);
+      const retryCount = state?.retryCount || 1;
+      const fallbackIndex = state?.fallbackIndex !== undefined 
+        ? state.fallbackIndex 
+        : (fallbackChain.indexOf(requestedModel) !== -1 ? fallbackChain.indexOf(requestedModel) : -1);
+
+      args.push('-m', chosenModel);
+
+      if (params.approvalMode) {
+        args.push('--approval-mode', params.approvalMode);
+      }
+
+      if (params.authorizedDirs && params.authorizedDirs.length > 0) {
+        args.push('--include-directories', params.authorizedDirs.join(','));
+      }
+
+      if (effectiveSessionId) {
+        if (shouldResume) {
+          args.push('-r', effectiveSessionId);
+        } else {
+          args.push('--session-id', effectiveSessionId);
+          knownSessions.add(effectiveSessionId);
+          if (params.sessionId) knownSessions.add(params.sessionId);
+        }
+      }
+
+      if (!cliPath || (cliPath !== 'gemini' && !fs.existsSync(cliPath))) {
+        cliPath = getLocalCliPath() || getGlobalCliPath() || 'gemini';
+      }
+
+      // Construir o prompt de sistema efetivo preservando a arquitetura base + override sem duplicidade
+      const effectiveSystemPrompt = buildEffectiveSystemPrompt(
+        params.baseInstructions,
+        params.systemInstructions,
+        params.overrideBasePrompt
+      );
+
+      if (effectiveSystemPrompt && effectiveSystemPrompt.trim()) {
+        try {
+          const systemPromptDir = path.join(getGuiDataDir(), 'tmp');
+          if (!fs.existsSync(systemPromptDir)) {
+            fs.mkdirSync(systemPromptDir, { recursive: true });
+          }
+          systemPromptFile = path.join(systemPromptDir, `active-system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.md`);
+          fs.writeFileSync(systemPromptFile, effectiveSystemPrompt.trim(), 'utf8');
+        } catch (err) {
+          sysLog.warn('CLI', `Não foi possível gerar system prompt customizado: ${err}`);
+        }
+      }
+
+      if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY) {
+        discoverApiKeyFromLoginEnv(true);
+      }
+
+      const activeApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
+
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        NO_COLOR: '1',
+        FORCE_COLOR: '0',
+        GEMINI_CLI_TRUST_WORKSPACE: 'true',
+        GEMINI_MAX_RETRIES: '0',
+        MAX_RETRIES: '0',
+        GEMINI_CLI_NO_RELAUNCH: '1',
+        GEMINI_CLI_SYSTEM_SETTINGS_PATH: tempSettingsFile,
+        ...(activeApiKey ? {
+          GEMINI_API_KEY: activeApiKey,
+          GOOGLE_GENAI_API_KEY: activeApiKey,
+          GOOGLE_API_KEY: activeApiKey,
+        } : {}),
+      };
+
+      if (systemPromptFile) {
+        env.GEMINI_SYSTEM_MD = systemPromptFile;
+      }
+
+      // Montar e registrar o objeto final de requisição da API do Google antes da chamada (sem credenciais sensíveis)
+      const resolvedTemp = typeof params.temperature === 'number' ? params.temperature : 0.2;
+      const resolvedTopP = typeof params.topP === 'number' ? params.topP : 0.95;
+      const resolvedTopK = typeof params.topK === 'number' ? params.topK : 40;
+      const resolvedMaxTokens = typeof params.maxOutputTokens === 'number' ? params.maxOutputTokens : undefined;
+      const resolvedThinkingLevel: 'low' | 'medium' | 'high' =
+        (params.thinkingLevel === 'low' || params.thinkingLevel === 'high' || params.thinkingLevel === 'medium')
+          ? params.thinkingLevel
+          : (params.thinking_level === 'low' || params.thinking_level === 'high' || params.thinking_level === 'medium')
+          ? params.thinking_level
+          : 'medium';
+
+      const finalApiRequest = {
+        model: chosenModel.startsWith('models/') ? chosenModel : `models/${chosenModel}`,
+        contents: [
           {
-            text: finalPrompt,
+            role: 'user',
+            parts: [
+              {
+                text: finalPrompt,
+              },
+            ],
           },
         ],
-      },
-    ],
-    systemInstruction: effectiveSystemPrompt && effectiveSystemPrompt.trim()
-      ? {
-          parts: [
-            {
-              text: effectiveSystemPrompt.trim(),
-            },
-          ],
-        }
-      : null,
-    generationConfig: {
-      temperature: resolvedTemp,
-      topP: resolvedTopP,
-      topK: resolvedTopK,
-      ...(typeof resolvedMaxTokens === 'number' ? { maxOutputTokens: resolvedMaxTokens } : {}),
-      thinkingConfig: {
-        includeThoughts: true,
-        thinkingLevel: resolvedThinkingLevel,
-      },
-    },
-    tools: [
-      {
-        functionDeclarations: [
-          { name: 'read_file', description: 'Reads content from a local file within authorized directory' },
-          { name: 'write_file', description: 'Writes or overwrites content in a file within authorized directory' },
-          { name: 'edit_file', description: 'Performs precise replacement of text in file' },
-          { name: 'list_directory', description: 'Lists directory contents' },
-          { name: 'run_command', description: 'Executes shell command in authorized workspace' },
-          { name: 'search_files', description: 'Searches for regex/text patterns in project codebase' },
-        ],
-      },
-    ],
-    safetySettings: [
-      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-    ],
-  };
-
-  const parameterOrigins = {
-    model: {
-      value: finalApiRequest.model,
-      source: params.model
-        ? `Definido explicitamente na requisição da GUI / Agente Selecionado (${agentId || 'N/D'})`
-        : `Padrão do Agente (${agentId || 'principal'}) sincronizado no .gemini/settings.json`,
-      category: 'Model Routing',
-    },
-    'generationConfig.temperature': {
-      value: resolvedTemp,
-      source: params.temperature !== undefined
-        ? `Configuração explícita do Agente / Payload da GUI (${params.temperature})`
-        : 'Valor padrão configurado do modelo (0.2)',
-      category: 'Hyperparameters',
-    },
-    'generationConfig.topP': {
-      value: resolvedTopP,
-      source: params.topP !== undefined
-        ? `Configuração explícita do Agente / Payload da GUI (${params.topP})`
-        : 'Valor padrão configurado do modelo (0.95)',
-      category: 'Hyperparameters',
-    },
-    'generationConfig.topK': {
-      value: resolvedTopK,
-      source: params.topK !== undefined
-        ? `Configuração explícita do Agente / Payload da GUI (${params.topK})`
-        : 'Valor padrão configurado do modelo (40)',
-      category: 'Hyperparameters',
-    },
-    'generationConfig.maxOutputTokens': {
-      value: resolvedMaxTokens ?? 'Padrão / Janela Máxima',
-      source: params.maxOutputTokens !== undefined
-        ? `Configuração explícita do Agente / Payload da GUI (${params.maxOutputTokens})`
-        : 'Padrão não limitado pela chamada',
-      category: 'Token Limits',
-    },
-    'generationConfig.thinkingConfig': {
-      value: {
-        includeThoughts: true,
-        thinkingLevel: resolvedThinkingLevel,
-      },
-      source: `Nível de Raciocínio explícito selecionado (thinkingLevel: "${resolvedThinkingLevel}", includeThoughts: true)`,
-      category: 'Reasoning Mode',
-    },
-    systemInstruction: {
-      value: effectiveSystemPrompt ? `${effectiveSystemPrompt.length} caracteres` : 'Nenhum',
-      source: params.overrideBasePrompt
-        ? `Sobrescrita de Instruções (.gemini/agents/${agentId || 'custom'}.md)`
-        : params.systemInstructions
-        ? `Instruções de Sistema do Agente (.gemini/agents/${agentId || 'principal'}.md) combinadas com base`
-        : 'Instruções base do Gemini CLI Orchestrator',
-      category: 'Agent Directives',
-    },
-    contents: {
-      value: `${finalPrompt.length} caracteres`,
-      source: 'Prompt do usuário concatenado ao cabeçalho de contexto do workspace e diretórios autorizados',
-      category: 'Context & Prompt',
-    },
-  };
-
-  // Notificar imediatamente o cliente SSE sobre o payload final montado para auditoria
-  try {
-    params.onEvent({
-      type: 'final_api_request',
-      data: {
-        finalApiRequest,
-        parameterOrigins,
-      },
-    });
-  } catch {}
-
-  const child = spawn(cliPath, args, {
-    cwd,
-    env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: 300000, // 5 minutes timeout to accommodate long-running operations
-  });
-
-  execState.childProcess = child;
-  sysLog.info(
-    'CLI',
-    `Iniciando execução Gemini CLI [ExecutionID: ${executionId}, Modelo: ${chosenModel}, Agente: ${agentId || 'N/D'}, Tentativa: ${retryCount}/3] (Prompt: "${params.prompt.substring(0, 50)}${params.prompt.length > 50 ? '...' : ''}")`,
-    { executionId, model: chosenModel, sessionId: params.sessionId, approvalMode: params.approvalMode, cwd, agentId, retryCount }
-  );
-
-  let buffer = '';
-  let stderrText = '';
-  let reportedErrorText = '';
-
-  child.stdout?.on('data', (chunk) => {
-    buffer += chunk.toString();
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        try {
-          const parsed = JSON.parse(trimmed);
-          if (parsed.type === 'final_api_request') {
-            const finalReq = parsed.finalApiRequest || parsed.data?.finalApiRequest || parsed;
-            params.onEvent({
-              type: 'final_api_request',
-              data: {
-                finalApiRequest: finalReq,
-                parameterOrigins: parsed.parameterOrigins || parsed.data?.parameterOrigins,
-              },
-            });
-            continue;
-          }
-          if (parsed.type === 'result' && parsed.status === 'error') {
-            reportedErrorText = parsed.error?.message || 'Erro de execução reportado pelo Gemini CLI.';
-            params.onEvent({
-              type: 'process_error',
-              data: {
-                message: reportedErrorText,
-                error: parsed.error,
-              },
-            });
-          }
-          params.onEvent({ type: 'stream_event', data: parsed });
-          continue;
-        } catch {
-          // Fall through to raw chunk if not valid JSON
-        }
-      }
-      params.onEvent({ type: 'stdout_raw', data: { text: trimmed } });
-    }
-  });
-
-  // Ensure logs directory exists
-  const logsDir = path.join(getGuiDataDir(), '.gemini', 'logs');
-  if (!fs.existsSync(logsDir)) {
-    fs.mkdirSync(logsDir, { recursive: true });
-  }
-  const debugLogPath = path.join(logsDir, 'cli-debug.log');
-  
-  // Create write stream for buffered logging
-  const logStream = fs.createWriteStream(debugLogPath, { flags: 'w' });
-
-  child.stderr?.on('data', (chunk) => {
-    const raw = chunk.toString();
-    stderrText += raw;
-    logStream.write(raw);
-  });
-
-  child.on('close', (code) => {
-    logStream.end();
-    if (systemPromptFile && fs.existsSync(systemPromptFile)) {
-      try {
-        fs.unlinkSync(systemPromptFile);
-      } catch {}
-    }
-    if (code !== 0 && stderrText.includes("No previous sessions found")) {
-      sysLog.warn('CLI', `Sessão ${params.sessionId} não encontrada, limpando cache.`);
-      if (params.sessionId) knownSessions.delete(params.sessionId);
-    }
-    params.onEvent({ 
-      type: 'stderr_debug_complete', 
-      data: { 
-        text: stderrText, 
-        logFile: debugLogPath 
-      } 
-    });
-  });
-
-  child.on('error', (err: any) => {
-    if (execState.childProcess === child) {
-      execState.childProcess = null;
-    }
-    executions.delete(executionId);
-
-    const isEnoent = err?.code === 'ENOENT' || err?.errno === -2;
-    const errMsg = isEnoent
-      ? `O executável do Gemini CLI ou o diretório de trabalho não foi encontrado no sistema (Caminho: ${cliPath}).`
-      : (err?.message || 'Erro ao iniciar o processo do Gemini CLI.');
-
-    params.onEvent({
-      type: 'process_error',
-      data: {
-        type: 'process_error',
-        exitCode: err?.errno || -2,
-        stderr: err?.message || '',
-        message: errMsg,
-      },
-    });
-    params.onError(err);
-  });
-
-  child.on('close', (code, signal) => {
-    if (execState.childProcess === child) {
-      execState.childProcess = null;
-    }
-
-    if (execState.cancelled) {
-      sysLog.warn('CLI', `Processo encerrado (ExecutionID: ${executionId}), mas a execução já foi cancelada pelo usuário. Ignorando processamento de saída.`);
-      executions.delete(executionId);
-      params.onDone(code || 0, signal || 'SIGINT');
-      return;
-    }
-
-    // Se o Gemini CLI falhar ao retomar a sessão (sessão inexistente, identificador inválido ou código 42), auto-recuperar iniciando sessão limpa
-    const isSessionResumeError =
-      stderrText.includes('Error resuming session') ||
-      stderrText.includes('Invalid session identifier') ||
-      stderrText.includes('No previous sessions found') ||
-      stderrText.includes('no previous session') ||
-      stderrText.includes('Searched for sessions in') ||
-      stderrText.includes('Erro ao retomar a sessão') ||
-      reportedErrorText.includes('Error resuming session') ||
-      reportedErrorText.includes('Invalid session identifier');
-
-    if (isSessionResumeError && (params.sessionId || effectiveSessionId) && !isRetry) {
-      sysLog.warn('CLI', `Sessão anterior não encontrada no disco ou inválida (${params.sessionId || effectiveSessionId}). Reiniciando automaticamente em uma nova sessão...`);
-      if (params.sessionId) knownSessions.delete(params.sessionId);
-      if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-      executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { executionId });
-      return;
-    }
-
-    if (code === 42 && (params.sessionId || effectiveSessionId) && !isRetry) {
-      if (params.sessionId) knownSessions.delete(params.sessionId);
-      if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-      executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { executionId });
-      return;
-    }
-
-    if (buffer.trim()) {
-      try {
-        const parsed = JSON.parse(buffer.trim());
-        if (parsed.type === 'result' && parsed.status === 'error') {
-          reportedErrorText = parsed.error?.message || reportedErrorText;
-        }
-        params.onEvent({ type: 'stream_event', data: parsed });
-      } catch {
-        params.onEvent({ type: 'stdout_raw', data: { text: buffer.trim() } });
-      }
-    }
-
-    if (code !== 0 && code !== null) {
-      const combinedErrText = (stderrText + ' ' + reportedErrorText).toLowerCase();
-      const apiErrCode = getApiErrorCode(code, stderrText, reportedErrorText);
-
-      const isBadRequestError =
-        apiErrCode === 400 ||
-        combinedErrText.includes('400') ||
-        combinedErrText.includes('invalid argument') ||
-        combinedErrText.includes('invalid_argument') ||
-        combinedErrText.includes('bad request') ||
-        combinedErrText.includes('cannot set') ||
-        combinedErrText.includes('oneof field') ||
-        combinedErrText.includes('_thinking_level');
-
-      const isQuotaError = !isBadRequestError && (
-        stderrText.includes('TerminalQuotaError') ||
-        stderrText.includes('Quota exceeded') ||
-        stderrText.includes('429') ||
-        stderrText.includes('RESOURCE_EXHAUSTED') ||
-        reportedErrorText.toLowerCase().includes('quota') ||
-        reportedErrorText.includes('429') ||
-        reportedErrorText.includes('RESOURCE_EXHAUSTED')
-      );
-
-      const isOverloadedError = !isBadRequestError && (
-        stderrText.toLowerCase().includes('503') ||
-        stderrText.toLowerCase().includes('unavailable') ||
-        stderrText.toLowerCase().includes('high demand') ||
-        stderrText.toLowerCase().includes('overloaded') ||
-        stderrText.toLowerCase().includes('service unavailable') ||
-        reportedErrorText.toLowerCase().includes('503') ||
-        reportedErrorText.toLowerCase().includes('high demand') ||
-        reportedErrorText.toLowerCase().includes('overloaded') ||
-        reportedErrorText.toLowerCase().includes('service unavailable')
-      );
-
-      // Verificação do Agente Reserva (Fallback por Cotas ou Servidor Sobrecarregado)
-      if (!isBadRequestError && (isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isBackupExecution && !execState.cancelled) {
-        try {
-          const allAgents = loadAgents(cwd);
-          const currentAgentObj = allAgents.find(
-            (a) => a.id.toLowerCase() === (agentId || '').toLowerCase() || a.name.toLowerCase() === (agentId || '').toLowerCase()
-          );
-          const targetBackupId = params.backupAgentId || currentAgentObj?.backupAgentId;
-          const backupAgent = targetBackupId
-            ? allAgents.find(
-                (a) => a.id.toLowerCase() === targetBackupId.toLowerCase() || a.name.toLowerCase() === targetBackupId.toLowerCase()
-              )
-            : null;
-
-          if (backupAgent && backupAgent.id !== currentAgentObj?.id) {
-            const reasonText = isQuotaError || apiErrCode === 429
-              ? 'Cotas de requisição esgotadas (Erro 429 / Quota Exceeded)'
-              : 'Servidor sobrecarregado / Alta demanda (Erro 503/500 / High Demand)';
-            const primaryName = currentAgentObj?.displayName || currentAgentObj?.name || agentId || 'Agente Titular';
-            const backupName = backupAgent.displayName || backupAgent.name;
-
-            params.onEvent({
-              type: 'stream_event',
-              data: {
-                type: 'message',
-                role: 'assistant',
-                content: `\n🛡️ **[Agente Reserva Acionado]**\nO agente titular **${primaryName}** encontrou uma restrição de API: *${reasonText}*.\n\n🔄 **Acionando automaticamente o Agente Reserva: ${backupName}** (Modelo: \`${backupAgent.model}\`) para concluir sua solicitação com resiliência...\n\n`,
-              },
-            });
-
-            sysLog.warn(
-              'CLI',
-              `Agente titular ${agentId} encontrou ${reasonText}. Acionando agente reserva ${backupAgent.name} (Modelo: ${backupAgent.model}).`
-            );
-
-            execState.retryTimeout = setTimeout(() => {
-              if (execState) execState.retryTimeout = null;
-              if (!execState?.cancelled) {
-                executeGeminiCli(
-                  {
-                    ...params,
-                    executionId,
-                    agentId: backupAgent.id || backupAgent.name,
-                    model: backupAgent.model,
-                    backupAgentId: undefined, // não recursivo
-                    isBackupExecution: true,
-                    systemInstructions: backupAgent.systemInstructions,
-                    baseInstructions: backupAgent.baseInstructions,
-                    overrideBasePrompt: backupAgent.overrideBasePrompt,
-                    temperature: backupAgent.temperature,
-                    topP: backupAgent.topP,
-                    topK: backupAgent.topK,
-                    maxOutputTokens: backupAgent.maxOutputTokens,
-                    thinking: backupAgent.thinking,
-                    resume: true,
-                  },
-                  true,
-                  { executionId }
-                );
-              } else {
-                executions.delete(executionId);
-              }
-            }, 1200);
-            return;
-          }
-        } catch (err: any) {
-          sysLog.warn('CLI', `Falha ao tentar acionar agente reserva: ${err.message}`);
-        }
-      }
-
-      if (apiErrCode !== null && !isBadRequestError) {
-        // Only retry if not a "Hard Quota" or if explicitly allowed
-        const { origin, retryAfter } = parseQuotaDetails(stderrText, reportedErrorText);
-        const isTransient = apiErrCode === 500 || apiErrCode === 503 || (apiErrCode === 429 && !stderrText.includes('Hard Limit'));
-
-        if (isTransient && retryCount < 3) {
-          const nextRetry = retryCount + 1;
-          const backoffDelay = retryAfter || (Math.pow(2, retryCount) * 1000 + Math.random() * 500);
-          
-          params.onEvent({
-            type: 'stream_event',
-            data: {
-              type: 'message',
-              role: 'assistant',
-              content: `\n⚠️ *[Tentativa ${retryCount}/3] Falha temporária (${apiErrCode}) em ${origin}. Retentando no modelo ${chosenModel} em ${Math.round(backoffDelay / 100) / 10}s...*\n\n`,
-            },
-          });
-          
-          sysLog.warn('CLI', `Falha temporária (${apiErrCode}) em ${origin} [Modelo: ${chosenModel}]. Tentativa ${nextRetry}/3 em ${Math.round(backoffDelay)}ms.`, {
-            retryAfter,
-            origin,
-            apiErrCode
-          });
-
-          execState.retryTimeout = setTimeout(() => {
-            if (execState) execState.retryTimeout = null;
-            if (!execState?.cancelled) {
-              executeGeminiCli(params, true, {
-                currentModel: chosenModel,
-                retryCount: nextRetry,
-                fallbackIndex,
-                fallbackChain,
-                executionId,
-              });
-            } else {
-              executions.delete(executionId);
+        systemInstruction: effectiveSystemPrompt && effectiveSystemPrompt.trim()
+          ? {
+              parts: [
+                {
+                  text: effectiveSystemPrompt.trim(),
+                },
+              ],
             }
-          }, backoffDelay);
+          : null,
+        generationConfig: {
+          temperature: resolvedTemp,
+          topP: resolvedTopP,
+          topK: resolvedTopK,
+          ...(typeof resolvedMaxTokens === 'number' ? { maxOutputTokens: resolvedMaxTokens } : {}),
+          ...(params.thinking !== false ? {
+            thinkingConfig: (chosenModel.toLowerCase().includes('pro') || chosenModel.toLowerCase().includes('thinking') || chosenModel.toLowerCase().includes('gemini-3.7') || chosenModel.toLowerCase().includes('gemini-3.8'))
+              ? (chosenModel.toLowerCase().includes('gemini-3'))
+                ? { includeThoughts: true, thinkingLevel: resolvedThinkingLevel }
+                : { includeThoughts: true, thinkingBudget: -1 }
+              : undefined
+          } : {})
+        },
+        tools: [
+          {
+            functionDeclarations: [
+              { name: 'read_file', description: 'Reads content from a local file within authorized directory' },
+              { name: 'write_file', description: 'Writes or overwrites content in a file within authorized directory' },
+              { name: 'edit_file', description: 'Performs precise replacement of text in file' },
+              { name: 'list_directory', description: 'Lists directory contents' },
+              { name: 'run_command', description: 'Executes shell command in authorized workspace' },
+              { name: 'search_files', description: 'Searches for regex/text patterns in project codebase' },
+            ],
+          },
+        ],
+        safetySettings: [
+          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+        ],
+      };
+
+      // Mapear ferramentas MCP e incluir na auditoria
+      if (mcpTools && mcpTools.length > 0) {
+        const mappedTools = mcpTools.map((t: any) => ({
+          name: t.name,
+          description: t.description || '',
+          parameters: t.inputSchema || { type: 'OBJECT', properties: {} }
+        }));
+        finalApiRequest.tools[0].functionDeclarations.push(...mappedTools);
+      }
+
+      const parameterOrigins = {
+        model: {
+          value: finalApiRequest.model,
+          source: params.model
+            ? `Definido explicitamente na requisição da GUI / Agente Selecionado (${agentId || 'N/D'})`
+            : `Padrão do Agente (${agentId || 'principal'}) sincronizado no .gemini/settings.json`,
+          category: 'Model Routing',
+        },
+        'generationConfig.temperature': {
+          value: resolvedTemp,
+          source: params.temperature !== undefined
+            ? `Configuração explícita do Agente / Payload da GUI (${params.temperature})`
+            : 'Valor padrão configurado do modelo (0.2)',
+          category: 'Hyperparameters',
+        },
+        'generationConfig.topP': {
+          value: resolvedTopP,
+          source: params.topP !== undefined
+            ? `Configuração explícita do Agente / Payload da GUI (${params.topP})`
+            : 'Valor padrão configurado do modelo (0.95)',
+          category: 'Hyperparameters',
+        },
+        'generationConfig.topK': {
+          value: resolvedTopK,
+          source: params.topK !== undefined
+            ? `Configuração explícita do Agente / Payload da GUI (${params.topK})`
+            : 'Valor padrão configurado do modelo (40)',
+          category: 'Hyperparameters',
+        },
+        'generationConfig.maxOutputTokens': {
+          value: resolvedMaxTokens ?? 'Padrão / Janela Máxima',
+          source: params.maxOutputTokens !== undefined
+            ? `Configuração explícita do Agente / Payload da GUI (${params.maxOutputTokens})`
+            : 'Padrão não limitado pela chamada',
+          category: 'Token Limits',
+        },
+        'generationConfig.thinkingConfig': {
+          value: {
+            includeThoughts: true,
+            thinkingLevel: resolvedThinkingLevel,
+          },
+          source: `Nível de Raciocínio explícito selecionado (thinkingLevel: "${resolvedThinkingLevel}", includeThoughts: true)`,
+          category: 'Reasoning Mode',
+        },
+        systemInstruction: {
+          value: effectiveSystemPrompt ? `${effectiveSystemPrompt.length} caracteres` : 'Nenhum',
+          source: params.overrideBasePrompt
+            ? `Sobrescrita de Instruções (.gemini/agents/${agentId || 'custom'}.md)`
+            : params.systemInstructions
+            ? `Instruções de Sistema do Agente (.gemini/agents/${agentId || 'principal'}.md) combinadas com base`
+            : 'Instruções base do Gemini CLI Orchestrator',
+          category: 'Agent Directives',
+        },
+        contents: {
+          value: `${finalPrompt.length} caracteres`,
+          source: 'Prompt do usuário concatenado ao cabeçalho de contexto do workspace e diretórios autorizados',
+          category: 'Context & Prompt',
+        },
+      };
+
+      // Notificar imediatamente o cliente SSE sobre o payload final montado para auditoria
+      try {
+        params.onEvent({
+          type: 'final_api_request',
+          data: {
+            finalApiRequest,
+            parameterOrigins,
+          },
+        });
+      } catch {}
+
+      const child = spawn(cliPath, args, {
+        cwd,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 300000, // 5 minutes timeout to accommodate long-running operations
+      });
+
+      execState.childProcess = child;
+      sysLog.info(
+        'CLI',
+        `Iniciando execução Gemini CLI [ExecutionID: ${executionId}, Modelo: ${chosenModel}, Agente: ${agentId || 'N/D'}, Tentativa: ${retryCount}/3] (Prompt: "${params.prompt.substring(0, 50)}${params.prompt.length > 50 ? '...' : ''}")`,
+        { executionId, model: chosenModel, sessionId: params.sessionId, approvalMode: params.approvalMode, cwd, agentId, retryCount }
+      );
+
+      let buffer = '';
+      let stderrText = '';
+      let reportedErrorText = '';
+
+      child.stdout?.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+
+          if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (parsed.type === 'final_api_request') {
+                const finalReq = parsed.finalApiRequest || parsed.data?.finalApiRequest || parsed;
+                params.onEvent({
+                  type: 'final_api_request',
+                  data: {
+                    finalApiRequest: finalReq,
+                    parameterOrigins: parsed.parameterOrigins || parsed.data?.parameterOrigins,
+                  },
+                });
+                continue;
+              }
+              if (parsed.type === 'result' && parsed.status === 'error') {
+                reportedErrorText = parsed.error?.message || 'Erro de execução reportado pelo Gemini CLI.';
+                params.onEvent({
+                  type: 'process_error',
+                  data: {
+                    message: reportedErrorText,
+                    error: parsed.error,
+                  },
+                });
+              }
+              params.onEvent({ type: 'stream_event', data: parsed });
+              continue;
+            } catch {
+              // Fall through to raw chunk if not valid JSON
+            }
+          }
+          params.onEvent({ type: 'stdout_raw', data: { text: trimmed } });
+        }
+      });
+
+      // Ensure logs directory exists
+      const logsDir = path.join(getGuiDataDir(), '.gemini', 'logs');
+      if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
+      }
+      const debugLogPath = path.join(logsDir, 'cli-debug.log');
+      
+      // Create write stream for buffered logging
+      const logStream = fs.createWriteStream(debugLogPath, { flags: 'w' });
+
+      child.stderr?.on('data', (chunk) => {
+        const raw = chunk.toString();
+        stderrText += raw;
+        logStream.write(raw);
+      });
+
+      child.on('close', (code) => {
+        logStream.end();
+        if (systemPromptFile && fs.existsSync(systemPromptFile)) {
+          try { fs.unlinkSync(systemPromptFile); } catch {}
+        }
+        if (tempSettingsFile && fs.existsSync(tempSettingsFile)) {
+          try { fs.unlinkSync(tempSettingsFile); } catch {}
+        }
+        if (code !== 0 && stderrText.includes("No previous sessions found")) {
+          sysLog.warn('CLI', `Sessão ${params.sessionId} não encontrada, limpando cache.`);
+          if (params.sessionId) knownSessions.delete(params.sessionId);
+        }
+        params.onEvent({ 
+          type: 'stderr_debug_complete', 
+          data: { 
+            text: stderrText, 
+            logFile: debugLogPath 
+          } 
+        });
+      });
+
+      child.on('error', (err: any) => {
+        if (execState.childProcess === child) {
+          execState.childProcess = null;
+        }
+        executions.delete(executionId);
+
+        const isEnoent = err?.code === 'ENOENT' || err?.errno === -2;
+        const errMsg = isEnoent
+          ? `O executável do Gemini CLI ou o diretório de trabalho não foi encontrado no sistema (Caminho: ${cliPath}).`
+          : (err?.message || 'Erro ao iniciar o processo do Gemini CLI.');
+
+        params.onEvent({
+          type: 'process_error',
+          data: {
+            type: 'process_error',
+            exitCode: err?.errno || -2,
+            stderr: err?.message || '',
+            message: errMsg,
+          },
+        });
+        params.onError(err);
+      });
+
+      child.on('close', (code, signal) => {
+        if (execState.childProcess === child) {
+          execState.childProcess = null;
+        }
+
+        if (execState.cancelled) {
+          sysLog.warn('CLI', `Processo encerrado (ExecutionID: ${executionId}), mas a execução já foi cancelada pelo usuário. Ignorando processamento de saída.`);
+          executions.delete(executionId);
+          params.onDone(code || 0, signal || 'SIGINT');
           return;
-        } else {
-          // 3 attempts have failed OR non-transient error. Time for fallback!
-          if (fallbackChain && fallbackChain.length > 0 && !execState.cancelled) {
-            const nextIdx = fallbackIndex + 1;
-            if (nextIdx < fallbackChain.length) {
-              const nextModel = fallbackChain[nextIdx];
+        }
+
+        // Se o Gemini CLI falhar ao retomar a sessão, auto-recuperar iniciando sessão limpa
+        const isSessionResumeError =
+          stderrText.includes('Error resuming session') ||
+          stderrText.includes('Invalid session identifier') ||
+          stderrText.includes('No previous sessions found') ||
+          stderrText.includes('no previous session') ||
+          stderrText.includes('Searched for sessions in') ||
+          stderrText.includes('Erro ao retomar a sessão') ||
+          reportedErrorText.includes('Error resuming session') ||
+          reportedErrorText.includes('Invalid session identifier');
+
+        if (isSessionResumeError && (params.sessionId || effectiveSessionId) && !isRetry) {
+          sysLog.warn('CLI', `Sessão anterior não encontrada no disco ou inválida (${params.sessionId || effectiveSessionId}). Reiniciando automaticamente em uma nova sessão...`);
+          if (params.sessionId) knownSessions.delete(params.sessionId);
+          if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
+          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { executionId });
+          return;
+        }
+
+        if (code === 42 && (params.sessionId || effectiveSessionId) && !isRetry) {
+          if (params.sessionId) knownSessions.delete(params.sessionId);
+          if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
+          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { executionId });
+          return;
+        }
+
+        if (buffer.trim()) {
+          try {
+            const parsed = JSON.parse(buffer.trim());
+            if (parsed.type === 'result' && parsed.status === 'error') {
+              reportedErrorText = parsed.error?.message || reportedErrorText;
+            }
+            params.onEvent({ type: 'stream_event', data: parsed });
+          } catch {
+            params.onEvent({ type: 'stdout_raw', data: { text: buffer.trim() } });
+          }
+        }
+
+        if (code !== 0 && code !== null) {
+          const combinedErrText = (stderrText + ' ' + reportedErrorText).toLowerCase();
+          const apiErrCode = getApiErrorCode(code, stderrText, reportedErrorText);
+
+          const isBadRequestError =
+            apiErrCode === 400 ||
+            combinedErrText.includes('400') ||
+            combinedErrText.includes('invalid argument') ||
+            combinedErrText.includes('invalid_argument') ||
+            combinedErrText.includes('bad request') ||
+            combinedErrText.includes('cannot set') ||
+            combinedErrText.includes('oneof field') ||
+            combinedErrText.includes('_thinking_level');
+
+          const isQuotaError = !isBadRequestError && (
+            stderrText.includes('TerminalQuotaError') ||
+            stderrText.includes('Quota exceeded') ||
+            stderrText.includes('429') ||
+            stderrText.includes('RESOURCE_EXHAUSTED') ||
+            reportedErrorText.toLowerCase().includes('quota') ||
+            reportedErrorText.includes('429') ||
+            reportedErrorText.includes('RESOURCE_EXHAUSTED')
+          );
+
+          const isOverloadedError = !isBadRequestError && (
+            stderrText.toLowerCase().includes('503') ||
+            stderrText.toLowerCase().includes('unavailable') ||
+            stderrText.toLowerCase().includes('high demand') ||
+            stderrText.toLowerCase().includes('overloaded') ||
+            stderrText.toLowerCase().includes('service unavailable') ||
+            reportedErrorText.toLowerCase().includes('503') ||
+            reportedErrorText.toLowerCase().includes('high demand') ||
+            reportedErrorText.toLowerCase().includes('overloaded') ||
+            reportedErrorText.toLowerCase().includes('service unavailable')
+          );
+
+          // Verificação do Agente Reserva (Fallback por Cotas ou Servidor Sobrecarregado)
+          if (!isBadRequestError && (isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isBackupExecution && !execState.cancelled) {
+            try {
+              const allAgents = loadAgents(cwd);
+              const currentAgentObj = allAgents.find(
+                (a) => a.id.toLowerCase() === (agentId || '').toLowerCase() || a.name.toLowerCase() === (agentId || '').toLowerCase()
+              );
+              const targetBackupId = params.backupAgentId || currentAgentObj?.backupAgentId;
+              const backupAgent = targetBackupId
+                ? allAgents.find(
+                    (a) => a.id.toLowerCase() === targetBackupId.toLowerCase() || a.name.toLowerCase() === targetBackupId.toLowerCase()
+                  )
+                : null;
+
+              if (backupAgent && backupAgent.id !== currentAgentObj?.id) {
+                const reasonText = isQuotaError || apiErrCode === 429
+                  ? 'Cotas de requisição esgotadas (Erro 429 / Quota Exceeded)'
+                  : 'Servidor sobrecarregado / Alta demanda (Erro 503/500 / High Demand)';
+                const primaryName = currentAgentObj?.displayName || currentAgentObj?.name || agentId || 'Agente Titular';
+                const backupName = backupAgent.displayName || backupAgent.name;
+
+                params.onEvent({
+                  type: 'stream_event',
+                  data: {
+                    type: 'message',
+                    role: 'assistant',
+                    content: `\n🛡️ **[Agente Reserva Acionado]**\nO agente titular **${primaryName}** encontrou uma restrição de API: *${reasonText}*.\n\n🔄 **Acionando automaticamente o Agente Reserva: ${backupName}** (Modelo: \`${backupAgent.model}\`) para concluir sua solicitação com resiliência...\n\n`,
+                  },
+                });
+
+                sysLog.warn(
+                  'CLI',
+                  `Agente titular ${agentId} encontrou ${reasonText}. Acionando agente reserva ${backupAgent.name} (Modelo: ${backupAgent.model}).`
+                );
+
+                execState.retryTimeout = setTimeout(() => {
+                  if (execState) execState.retryTimeout = null;
+                  if (!execState?.cancelled) {
+                    executeGeminiCli(
+                      {
+                        ...params,
+                        executionId,
+                        agentId: backupAgent.id || backupAgent.name,
+                        model: backupAgent.model,
+                        backupAgentId: undefined, // não recursivo
+                        isBackupExecution: true,
+                        systemInstructions: backupAgent.systemInstructions,
+                        baseInstructions: backupAgent.baseInstructions,
+                        overrideBasePrompt: backupAgent.overrideBasePrompt,
+                        temperature: backupAgent.temperature,
+                        topP: backupAgent.topP,
+                        topK: backupAgent.topK,
+                        maxOutputTokens: backupAgent.maxOutputTokens,
+                        thinking: backupAgent.thinking,
+                        resume: true,
+                      },
+                      true,
+                      { executionId }
+                    );
+                  } else {
+                    executions.delete(executionId);
+                  }
+                }, 1200);
+                return;
+              }
+            } catch (err: any) {
+              sysLog.warn('CLI', `Falha ao tentar acionar agente reserva: ${err.message}`);
+            }
+          }
+
+          if (apiErrCode !== null && !isBadRequestError) {
+            // Only retry if not a "Hard Quota" or if explicitly allowed
+            const { origin, retryAfter } = parseQuotaDetails(stderrText, reportedErrorText);
+            const isTransient = apiErrCode === 500 || apiErrCode === 503 || (apiErrCode === 429 && !stderrText.includes('Hard Limit'));
+
+            if (isTransient && retryCount < 3) {
+              const nextRetry = retryCount + 1;
+              const backoffDelay = retryAfter || (Math.pow(2, retryCount) * 1000 + Math.random() * 500);
+              
               params.onEvent({
                 type: 'stream_event',
                 data: {
                   type: 'message',
                   role: 'assistant',
-                  content: `\n⚠️ *[Fallback de Modelo] 3 tentativas falharam no modelo ${chosenModel} (Erro ${apiErrCode}). Alternando para o modelo de fallback do agente: ${nextModel}...*\n\n`,
+                  content: `\n⚠️ *[Tentativa ${retryCount}/3] Falha temporária (${apiErrCode}) em ${origin}. Retentando no modelo ${chosenModel} em ${Math.round(backoffDelay / 100) / 10}s...*\n\n`,
                 },
               });
-              sysLog.warn('CLI', `3 tentativas falharam no modelo ${chosenModel}. Alternando para o fallback ${nextModel} do agente ${agentId}.`);
               
+              sysLog.warn('CLI', `Falha temporária (${apiErrCode}) em ${origin} [Modelo: ${chosenModel}]. Tentativa ${nextRetry}/3 em ${Math.round(backoffDelay)}ms.`, {
+                retryAfter,
+                origin,
+                apiErrCode
+              });
+
               execState.retryTimeout = setTimeout(() => {
                 if (execState) execState.retryTimeout = null;
                 if (!execState?.cancelled) {
                   executeGeminiCli(params, true, {
-                    currentModel: nextModel,
-                    retryCount: 1,
-                    fallbackIndex: nextIdx,
+                    currentModel: chosenModel,
+                    retryCount: nextRetry,
+                    fallbackIndex,
                     fallbackChain,
                     executionId,
                   });
                 } else {
                   executions.delete(executionId);
                 }
-              }, 2000);
+              }, backoffDelay);
               return;
+            } else {
+              // 3 attempts have failed OR non-transient error. Time for fallback!
+              if (fallbackChain && fallbackChain.length > 0 && !execState.cancelled) {
+                const nextIdx = fallbackIndex + 1;
+                if (nextIdx < fallbackChain.length) {
+                  const nextModel = fallbackChain[nextIdx];
+                  params.onEvent({
+                    type: 'stream_event',
+                    data: {
+                      type: 'message',
+                      role: 'assistant',
+                      content: `\n⚠️ *[Fallback de Modelo] 3 tentativas falharam no modelo ${chosenModel} (Erro ${apiErrCode}). Alternando para o modelo de fallback do agente: ${nextModel}...*\n\n`,
+                    },
+                  });
+                  sysLog.warn('CLI', `3 tentativas falharam no modelo ${chosenModel}. Alternando para o fallback ${nextModel} do agente ${agentId}.`);
+                  
+                  execState.retryTimeout = setTimeout(() => {
+                    if (execState) execState.retryTimeout = null;
+                    if (!execState?.cancelled) {
+                      executeGeminiCli(params, true, {
+                        currentModel: nextModel,
+                        retryCount: 1,
+                        fallbackIndex: nextIdx,
+                        fallbackChain,
+                        executionId,
+                      });
+                    } else {
+                      executions.delete(executionId);
+                    }
+                  }, 2000);
+                  return;
+                }
+              }
+              // Exhausted all retries and fallbacks
+              sysLog.error('CLI', `Todos os modelos de fallback falharam para o agente ${agentId}. Interrompendo tarefa (Erro: ${apiErrCode}, Origem: ${origin}).`);
+              params.onEvent({
+                type: 'stream_event',
+                data: {
+                  type: 'message',
+                  role: 'assistant',
+                  content: `\n❌ *[Erro Crítico] Todos os modelos de fallback falharam para o agente ${agentId}.*\n\n**Causa:** ${origin} (Status ${apiErrCode})\n**Detalhes:** ${reportedErrorText || 'Indisponibilidade persistente do serviço.'}\n\n`,
+                },
+              });
             }
           }
-          // Exhausted all retries and fallbacks
-          sysLog.error('CLI', `Todos os modelos de fallback falharam para o agente ${agentId}. Interrompendo tarefa (Erro: ${apiErrCode}, Origem: ${origin}).`);
-          params.onEvent({
-            type: 'stream_event',
-            data: {
-              type: 'message',
-              role: 'assistant',
-              content: `\n❌ *[Erro Crítico] Todos os modelos de fallback falharam para o agente ${agentId}.*\n\n**Causa:** ${origin} (Status ${apiErrCode})\n**Detalhes:** ${reportedErrorText || 'Indisponibilidade persistente do serviço.'}\n\n`,
-            },
-          });
-        }
-      }
 
-      // Default fallback catch-all if quota was exceeded on another model
-      if (isQuotaError && !isRetry && chosenModel !== 'gemini-3.5-flash-lite' && !execState.cancelled) {
-        params.onEvent({
-          type: 'stream_event',
-          data: {
-            type: 'message',
-            role: 'assistant',
-            content: '⚠️ *Limite gratuito do modelo atingido. Alternando automaticamente para Gemini 3.5 Flash-Lite para continuar sua solicitação...*\n\n',
-          },
-        });
-        executeGeminiCli({ ...params, executionId, model: 'gemini-3.5-flash-lite', resume: true }, true, { executionId });
-        return;
-      }
+          // Default fallback catch-all if quota was exceeded on another model
+          if (isQuotaError && !isRetry && chosenModel !== 'gemini-3.5-flash-lite' && !execState.cancelled) {
+            params.onEvent({
+              type: 'stream_event',
+              data: {
+                type: 'message',
+                role: 'assistant',
+                content: '⚠️ *Limite gratuito do modelo atingido. Alternando automaticamente para Gemini 3.5 Flash-Lite para continuar sua solicitação...*\n\n',
+              },
+            });
+            executeGeminiCli({ ...params, executionId, model: 'gemini-3.5-flash-lite', resume: true }, true, { executionId });
+            return;
+          }
 
-      let finalMessage = reportedErrorText || stderrText.trim();
-      if (code === -2 || stderrText.includes('ENOENT')) {
-        finalMessage = `O executável do Gemini CLI (${cliPath}) ou o diretório de trabalho (${cwd}) não foi localizado no sistema (Erro -2 / ENOENT).`;
-      } else if (stderrText.includes('Please set an Auth method') || stderrText.includes('GEMINI_API_KEY')) {
-        finalMessage = 'A chave de API do Gemini (GEMINI_API_KEY) não está configurada no seu ambiente. Configure-a no menu de Configurações da GUI ou exporte a variável no terminal.';
-      } else if (isBadRequestError) {
-        finalMessage = `⚠️ Requisição Inválida / Parâmetros Incompatíveis (Erro 400): ${reportedErrorText || stderrText.trim()}`;
-      } else if (isQuotaError) {
-        const { origin, retryAfter } = parseQuotaDetails(stderrText, reportedErrorText);
-        const retryTime = retryAfter ? ` em aproximadamente ${Math.round(retryAfter / 1000)}s` : ' em alguns instantes';
-        finalMessage = `⚠️ Cota Excedida (Erro 429) em: ${origin}
+          let finalMessage = reportedErrorText || stderrText.trim();
+          if (code === -2 || stderrText.includes('ENOENT')) {
+            finalMessage = `O executável do Gemini CLI (${cliPath}) ou o diretório de trabalho (${cwd}) não foi localizado no sistema (Erro -2 / ENOENT).`;
+          } else if (stderrText.includes('Please set an Auth method') || stderrText.includes('GEMINI_API_KEY')) {
+            finalMessage = 'A chave de API do Gemini (GEMINI_API_KEY) não está configurada no seu ambiente. Configure-a no menu de Configurações da GUI ou exporte a variável no terminal.';
+          } else if (isBadRequestError) {
+            finalMessage = `⚠️ Requisição Inválida / Parâmetros Incompatíveis (Erro 400): ${reportedErrorText || stderrText.trim()}`;
+          } else if (isQuotaError) {
+            const { origin, retryAfter } = parseQuotaDetails(stderrText, reportedErrorText);
+            const retryTime = retryAfter ? ` em aproximadamente ${Math.round(retryAfter / 1000)}s` : ' em alguns instantes';
+            finalMessage = `⚠️ Cota Excedida (Erro 429) em: ${origin}
 Você atingiu o limite de requisições.
 • Tente novamente${retryTime}.
 • Recomendação: utilize o modelo "Gemini 3.5 Flash-Lite" para maiores limites.
 • Verifique se há processos em segundo plano consumindo sua cota.`;
-      } else if (!finalMessage) {
-        finalMessage = `O Gemini CLI encerrou com código de erro ${code}.`;
-      }
+          } else if (!finalMessage) {
+            finalMessage = `O Gemini CLI encerrou com código de erro ${code}.`;
+          }
 
-      params.onEvent({
-        type: 'process_error',
-        data: {
-          type: 'process_error',
-          exitCode: code,
-          stderr: stderrText,
-          message: finalMessage,
-        },
+          params.onEvent({
+            type: 'process_error',
+            data: {
+              type: 'process_error',
+              exitCode: code,
+              stderr: stderrText,
+              message: finalMessage,
+            },
+          });
+          sysLog.error('CLI', `Gemini CLI finalizado com erro (código: ${code}): ${finalMessage.substring(0, 100)}`, { exitCode: code, stderr: stderrText.substring(0, 200) });
+        } else {
+          sysLog.success('CLI', `Execução do Gemini CLI concluída com sucesso (código 0).`, { sessionId: params.sessionId });
+        }
+
+        if (systemPromptFile && fs.existsSync(systemPromptFile)) {
+          try {
+            fs.unlinkSync(systemPromptFile);
+          } catch {
+            // Ignorar se já removido
+          }
+        }
+        if (tempSettingsFile && fs.existsSync(tempSettingsFile)) {
+          try {
+            fs.unlinkSync(tempSettingsFile);
+          } catch {
+            // Ignorar se já removido
+          }
+        }
+
+        executions.delete(executionId);
+        params.onDone(code, signal);
       });
-      sysLog.error('CLI', `Gemini CLI finalizado com erro (código: ${code}): ${finalMessage.substring(0, 100)}`, { exitCode: code, stderr: stderrText.substring(0, 200) });
-    } else {
-      sysLog.success('CLI', `Execução do Gemini CLI concluída com sucesso (código 0).`, { sessionId: params.sessionId });
-    }
 
-    if (systemPromptFile && fs.existsSync(systemPromptFile)) {
-      try {
-        fs.unlinkSync(systemPromptFile);
-      } catch {
-        // Ignorar se já removido
+    } catch (err: any) {
+      if (systemPromptFile && fs.existsSync(systemPromptFile)) {
+        try { fs.unlinkSync(systemPromptFile); } catch {}
       }
+      if (tempSettingsFile && fs.existsSync(tempSettingsFile)) {
+        try { fs.unlinkSync(tempSettingsFile); } catch {}
+      }
+      params.onError(err);
     }
+  };
 
-    executions.delete(executionId);
-    params.onDone(code, signal);
-  });
+  runAsyncFlow();
 
   return {
     executionId,

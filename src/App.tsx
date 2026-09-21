@@ -316,11 +316,12 @@ export function App() {
     setIsStreaming(true);
 
     const rawEventsList: any[] = [];
+    const ctrl = new AbortController();
+    abortControllerRef.current = ctrl;
+    let assistantContent = '';
 
     try {
       // Execute CLI
-      const ctrl = new AbortController();
-      abortControllerRef.current = ctrl;
       const execId = 'exec_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
       currentExecutionIdRef.current = execId;
 
@@ -360,7 +361,6 @@ export function App() {
       const decoder = new TextDecoder();
       let buffer = '';
 
-      let assistantContent = '';
       let hasError = false;
       let errorMessage = '';
       let capturedFinalApiRequest: any = null;
@@ -482,7 +482,9 @@ export function App() {
                   const isBenign =
                     text.includes('256-color support not detected') ||
                     text.includes('Ripgrep is not available') ||
-                    text.includes('Falling back to GrepTool');
+                    text.includes('Falling back to GrepTool') ||
+                    text.includes('[MCP]') ||
+                    text.includes('MCP Exa');
                   if (!isBenign && !text.startsWith('{')) {
                     assistantContent += (assistantContent ? '\n' : '') + text;
                   }
@@ -589,17 +591,33 @@ export function App() {
       }
     } catch (err: any) {
       console.error('Execution error:', err);
+      const isManualAbort = ctrl.signal.aborted || err.name === 'AbortError' || err.message?.includes('aborted');
+
       setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantMsgId
-            ? {
-                ...m,
-                content: `Erro durante execução do Gemini CLI: ${err.message}`,
-                isStreaming: false,
-                error: err.message,
-              }
-            : m
-        )
+        prev.map((m) => {
+          if (m.id === assistantMsgId) {
+            let finalContent = m.content;
+            if (isManualAbort) {
+              finalContent = assistantContent.trim() || 'Execução cancelada pelo usuário.';
+            } else {
+              const isStreamAborted = err.message?.includes('BodyStreamBuffer') || err.message?.includes('buffer') || err.message?.includes('aborted');
+              const displayErr = isStreamAborted
+                ? 'A conexão de transmissão foi interrompida de forma inesperada. Isso pode ocorrer por oscilações de rede ou caso o servidor reinicie.'
+                : err.message;
+              finalContent = assistantContent.trim()
+                ? `${assistantContent.trim()}\n\n⚠️ **Conexão Interrompida:** ${displayErr}`
+                : `Erro durante execução do Gemini CLI: ${displayErr}`;
+            }
+
+            return {
+              ...m,
+              content: finalContent,
+              isStreaming: false,
+              error: isManualAbort ? undefined : err.message,
+            };
+          }
+          return m;
+        })
       );
     } finally {
       setIsStreaming(false);
