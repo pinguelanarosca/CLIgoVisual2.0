@@ -202,15 +202,6 @@ export function App() {
 
   useEffect(() => {
     loadAllData();
-
-    // Auto-sync status periodically every 2 minutes
-    const interval = setInterval(() => {
-      refreshStatus(false);
-    }, 120000);
-
-    return () => {
-      clearInterval(interval);
-    };
   }, []);
 
   // Theme change

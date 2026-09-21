@@ -94,6 +94,7 @@ export function queryBinaryVersion(binPath: string): Promise<string> {
 let lastValidationCache: {
   timestamp: number;
   model: string;
+  apiKey: string;
   result: {
     configured: boolean;
     valid: boolean;
@@ -125,13 +126,13 @@ export async function validateGeminiApiKey(
     };
   }
 
-  // Use 30-second cache unless forced or model changed
+  // Se já foi validado uma vez ao entrar, reutilizar o cache permanentemente a menos que forceFresh=true ou a chave/modelo tenha mudado
   const now = Date.now();
   if (
     !forceFresh &&
     lastValidationCache &&
-    lastValidationCache.model === targetModel &&
-    now - lastValidationCache.timestamp < 30000
+    lastValidationCache.apiKey === apiKey &&
+    lastValidationCache.model === targetModel
   ) {
     return lastValidationCache.result;
   }
@@ -219,7 +220,7 @@ export async function validateGeminiApiKey(
       modelTested: validatedModel,
       latencyMs,
     };
-    lastValidationCache = { timestamp: now, model: targetModel, result: res };
+    lastValidationCache = { timestamp: now, model: targetModel, apiKey, result: res };
     sysLog.success('API', `Validação da GEMINI_API_KEY bem-sucedida (${latencyMs}ms)`, { model: res.modelTested });
     return res;
   } else {
@@ -232,7 +233,7 @@ export async function validateGeminiApiKey(
       modelTested: targetModel,
       latencyMs,
     };
-    lastValidationCache = { timestamp: now, model: targetModel, result: res };
+    lastValidationCache = { timestamp: now, model: targetModel, apiKey, result: res };
     sysLog.warn('API', `Validação da GEMINI_API_KEY falhou em todos os modelos: ${errMsg}`, { latencyMs });
     return res;
   }
