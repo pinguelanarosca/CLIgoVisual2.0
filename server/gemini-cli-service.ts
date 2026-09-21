@@ -660,7 +660,7 @@ export async function runExaHandshakeAndDiscovery(params: CliExecutionParams): P
 
   const targetUrl = exaMcp.url || exaMcp.httpUrl || 'https://mcp.exa.ai/mcp';
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 6000);
+  const timer = setTimeout(() => controller.abort(), 1500);
 
   const fallbackTools = [
     {

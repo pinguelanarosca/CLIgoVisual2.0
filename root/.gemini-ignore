@@ -1,0 +1,14 @@
+# Exclude system folders and caches from Gemini CLI scanning
+.npm/
+.bun/
+.local/
+.gemini/
+.git/
+node_modules/
+dist/
+build/
+sessions.db
+sessions.db-wal
+sessions.db-shm
+tmp/
+*.log
