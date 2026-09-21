@@ -380,6 +380,7 @@ export type SystemLogCategory =
   | 'PACKAGE'
   | 'CONFIG'
   | 'AUTH'
+  | 'SQLITE'
   | 'SYSTEM';
 
 export interface SystemLogEntry {

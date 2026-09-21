@@ -5,6 +5,13 @@ import { execSync } from 'node:child_process';
 import { ProjectItem, AuthorizedDir, SessionItem, FileDiffItem, FilesAndDiffsResult, FileEntryItem } from '../src/types.js';
 import { sysLog } from './logger-service.js';
 import { getGuiDataDir } from './paths-service.js';
+import {
+  migrateSessionsFromStore,
+  getSessionsSqlite,
+  getSessionByIdSqlite,
+  saveSessionSqlite,
+  deleteSessionSqlite,
+} from './session-sqlite-service.js';
 
 function getStorageFilePath(): string {
   const dataDir = getGuiDataDir();
@@ -49,7 +56,14 @@ export function resolveLocalPath(inputPath?: string): string {
   return path.normalize(p);
 }
 
+let cachedStore: AppDataStore | null = null;
+let saveTimer: NodeJS.Timeout | null = null;
+
 function loadStore(): AppDataStore {
+  if (cachedStore) {
+    return cachedStore;
+  }
+
   const storageFile = getStorageFilePath();
   if (fs.existsSync(storageFile)) {
     try {
@@ -81,7 +95,14 @@ function loadStore(): AppDataStore {
         }
         parsed.authorizedDirs = validAuthDirs;
 
-        return parsed;
+        // Migrate sessions if present
+        if (Array.isArray(parsed.sessions) && parsed.sessions.length > 0) {
+          migrateSessionsFromStore(parsed.sessions);
+          parsed.sessions = []; // Clear in json store as sessions are now in SQLite
+        }
+
+        cachedStore = parsed;
+        return cachedStore!;
       }
     } catch {
       // Fall through to initial store
@@ -105,18 +126,50 @@ function loadStore(): AppDataStore {
     sessions: [],
   };
 
-  saveStore(store);
+  cachedStore = store;
+  saveStore(store, true);
   return store;
 }
 
-function saveStore(store: AppDataStore) {
-  try {
-    const storageFile = getStorageFilePath();
-    fs.writeFileSync(storageFile, JSON.stringify(store, null, 2), 'utf8');
-  } catch (err) {
-    console.error('Failed to save store:', err);
+function saveStore(store: AppDataStore, immediate = false) {
+  cachedStore = store;
+
+  if (immediate) {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    try {
+      const storageFile = getStorageFilePath();
+      fs.writeFileSync(storageFile, JSON.stringify(store, null, 2), 'utf8');
+    } catch (err) {
+      console.error('Failed to save store:', err);
+    }
+    return;
   }
+
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      const storageFile = getStorageFilePath();
+      fs.promises.writeFile(storageFile, JSON.stringify(cachedStore || store, null, 2), 'utf8').catch((err) => {
+        console.error('Failed to save store async:', err);
+      });
+    } catch (err) {
+      console.error('Failed to schedule store save:', err);
+    }
+  }, 300);
 }
+
+process.on('exit', () => {
+  if (cachedStore) {
+    try {
+      const storageFile = getStorageFilePath();
+      fs.writeFileSync(storageFile, JSON.stringify(cachedStore, null, 2), 'utf8');
+    } catch {}
+  }
+});
 
 // Authorized Directories API
 export function getAuthorizedDirs(): AuthorizedDir[] {
@@ -302,46 +355,21 @@ export function deleteProject(id: string): boolean {
   return true;
 }
 
-// Sessions & History API
+// Sessions & History API (backed by SQLite)
 export function getSessions(projectId?: string): SessionItem[] {
-  const store = loadStore();
-  if (projectId) {
-    return store.sessions.filter((s) => s.projectId === projectId);
-  }
-  return store.sessions;
+  return getSessionsSqlite(projectId);
 }
 
 export function getSessionById(id: string): SessionItem | null {
-  const store = loadStore();
-  return store.sessions.find((s) => s.id === id) || null;
+  return getSessionByIdSqlite(id);
 }
 
 export function saveSession(session: SessionItem): SessionItem {
-  const store = loadStore();
-  const idx = store.sessions.findIndex((s) => s.id === session.id);
-  if (idx >= 0) {
-    store.sessions[idx] = {
-      ...session,
-      updatedAt: new Date().toISOString(),
-      messageCount: session.messages.length,
-    };
-  } else {
-    store.sessions.unshift({
-      ...session,
-      createdAt: session.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      messageCount: session.messages.length,
-    });
-  }
-  saveStore(store);
-  return session;
+  return saveSessionSqlite(session);
 }
 
 export function deleteSession(id: string): boolean {
-  const store = loadStore();
-  store.sessions = store.sessions.filter((s) => s.id !== id);
-  saveStore(store);
-  return true;
+  return deleteSessionSqlite(id);
 }
 
 // Files and Diffs API
@@ -353,6 +381,21 @@ export function inspectFilesAndDiffs(dirPath?: string): FilesAndDiffsResult {
   const targetDir = dirPath && dirPath.trim() ? resolveLocalPath(dirPath) : resolveLocalPath(defaultDir);
 
   const parentDir = path.dirname(targetDir) !== targetDir ? path.dirname(targetDir) : null;
+
+  if (!isPathAuthorized(targetDir)) {
+    return {
+      currentDir: targetDir,
+      parentDir,
+      exists: fs.existsSync(targetDir),
+      isGitRepo: false,
+      gitStatus: `Acesso negado: O diretório '${targetDir}' não está na lista de diretórios autorizados.`,
+      files: [],
+      entries: [],
+      diffs: [],
+      authorizedDirs: store.authorizedDirs,
+      error: `Acesso negado: O diretório '${targetDir}' não possui permissão de leitura. Adicione-o na lista de diretórios autorizados.`,
+    };
+  }
 
   if (!fs.existsSync(targetDir)) {
     return {
@@ -367,12 +410,6 @@ export function inspectFilesAndDiffs(dirPath?: string): FilesAndDiffsResult {
       authorizedDirs: store.authorizedDirs,
       error: `O caminho '${targetDir}' não foi encontrado no sistema de arquivos local.`,
     };
-  }
-
-  // If exists and not authorized yet, auto-authorize so Gemini CLI and user have permission
-  if (!store.authorizedDirs.some((d) => resolveLocalPath(d) === targetDir)) {
-    store.authorizedDirs.push(targetDir);
-    saveStore(store);
   }
 
   const files: string[] = [];
@@ -451,6 +488,32 @@ export function inspectFilesAndDiffs(dirPath?: string): FilesAndDiffsResult {
         gitStatus = `Git (${branch || 'ativo'}): Alterações detectadas`;
         const lines = statusOutput.trim().split('\n');
 
+        // Fetch all diffs at once in a single git execution
+        let fullDiff = '';
+        try {
+          fullDiff = execSync('git diff HEAD', {
+            cwd: targetDir,
+            encoding: 'utf8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+            timeout: 4000,
+          });
+        } catch {}
+
+        const diffMap = new Map<string, string>();
+        if (fullDiff) {
+          const chunks = fullDiff.split(/^diff --git a\//m);
+          for (const chunk of chunks) {
+            if (!chunk.trim()) continue;
+            const firstLineEnd = chunk.indexOf('\n');
+            const headerLine = firstLineEnd !== -1 ? chunk.substring(0, firstLineEnd) : chunk;
+            const match = headerLine.match(/^(.*?)\s+b\/(.*)$/);
+            if (match) {
+              const fileKey = match[2].trim();
+              diffMap.set(fileKey, 'diff --git a/' + chunk);
+            }
+          }
+        }
+
         for (const line of lines) {
           const flag = line.substring(0, 2).trim();
           const filePath = line.substring(3).trim();
@@ -460,17 +523,7 @@ export function inspectFilesAndDiffs(dirPath?: string): FilesAndDiffsResult {
           else if (flag.includes('A')) status = 'added';
           else if (flag.includes('D')) status = 'deleted';
 
-          let diff = '';
-          try {
-            diff = execSync(`git diff HEAD -- "${filePath}"`, {
-              cwd: targetDir,
-              encoding: 'utf8',
-              stdio: ['pipe', 'pipe', 'pipe'],
-              timeout: 2500,
-            });
-          } catch {
-            // Might be a binary file or other issue
-          }
+          let diff = diffMap.get(filePath) || '';
 
           // If it's a new file (untracked or added) and diff is empty, try to show content as added lines
           if (!diff && (status === 'added' || status === 'untracked')) {
@@ -512,6 +565,30 @@ export function inspectFilesAndDiffs(dirPath?: string): FilesAndDiffsResult {
     diffs,
     authorizedDirs: store.authorizedDirs,
   };
+}
+
+export async function readFileContentAsync(filePath: string): Promise<{ success: boolean; content?: string; error?: string }> {
+  const resolved = resolveLocalPath(filePath);
+  if (!isPathAuthorized(resolved)) {
+    return { success: false, error: 'Acesso negado. O diretório não está autorizado.' };
+  }
+
+  try {
+    const stat = await fs.promises.stat(resolved);
+    if (!stat.isFile()) {
+      return { success: false, error: 'O caminho especificado não é um arquivo.' };
+    }
+
+    // Limit size for safety (e.g. 5MB)
+    if (stat.size > 5 * 1024 * 1024) {
+      return { success: false, error: 'O arquivo é muito grande para visualização direta (limite 5MB).' };
+    }
+
+    const content = await fs.promises.readFile(resolved, 'utf8');
+    return { success: true, content };
+  } catch (err: any) {
+    return { success: false, error: `Erro ao ler arquivo: ${err.message}` };
+  }
 }
 
 export function readFileContent(filePath: string): { success: boolean; content?: string; error?: string } {

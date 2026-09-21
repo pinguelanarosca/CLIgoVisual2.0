@@ -94,6 +94,7 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const currentExecutionIdRef = useRef<string | null>(null);
 
   // Thinker Control State (low | medium | high)
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(() => {
@@ -320,12 +321,15 @@ export function App() {
       // Execute CLI
       const ctrl = new AbortController();
       abortControllerRef.current = ctrl;
+      const execId = 'exec_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      currentExecutionIdRef.current = execId;
 
       const response = await fetch('/api/cli/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: ctrl.signal,
         body: JSON.stringify({
+          executionId: execId,
           prompt: promptText,
           model: currentAgent?.model,
           approvalMode,
@@ -362,6 +366,48 @@ export function App() {
       let capturedFinalApiRequest: any = null;
       let capturedParameterOrigins: any = null;
       const toolCalls: Record<string, any> = {};
+
+      let updateScheduled = false;
+      let lastFlushTime = 0;
+      const flushStreamUpdate = () => {
+        updateScheduled = false;
+        lastFlushTime = Date.now();
+        const displayContent =
+          assistantContent ||
+          (hasError
+            ? `⚠️ **Erro no Gemini CLI:** ${errorMessage}`
+            : '');
+
+        const currentToolCalls = Object.values(toolCalls);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsgId
+              ? {
+                  ...m,
+                  content: displayContent,
+                  toolCalls: currentToolCalls,
+                  isStreaming: true,
+                  finalApiRequest: capturedFinalApiRequest || m.finalApiRequest,
+                  parameterOrigins: capturedParameterOrigins || m.parameterOrigins,
+                }
+              : m
+          )
+        );
+      };
+
+      const scheduleStreamUpdate = () => {
+        if (!updateScheduled) {
+          updateScheduled = true;
+          const elapsed = Date.now() - lastFlushTime;
+          if (elapsed >= 50) {
+            requestAnimationFrame(flushStreamUpdate);
+          } else {
+            setTimeout(() => {
+              requestAnimationFrame(flushStreamUpdate);
+            }, 50 - elapsed);
+          }
+        }
+      };
 
       while (true) {
         const { value, done } = await reader.read();
@@ -443,27 +489,8 @@ export function App() {
                 }
               }
 
-              // Update UI message state
-              const displayContent =
-                assistantContent ||
-                (hasError
-                  ? `⚠️ **Erro no Gemini CLI:** ${errorMessage}`
-                  : '');
-
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantMsgId
-                    ? {
-                        ...m,
-                        content: displayContent,
-                        toolCalls: Object.values(toolCalls),
-                        isStreaming: true,
-                        finalApiRequest: capturedFinalApiRequest || m.finalApiRequest,
-                        parameterOrigins: capturedParameterOrigins || m.parameterOrigins,
-                      }
-                    : m
-                )
-              );
+              // Schedule batched UI message state update
+              scheduleStreamUpdate();
             } catch {
               // Ignore non-JSON lines
             }
@@ -603,7 +630,13 @@ export function App() {
 
     try {
       // 4. Notify backend to kill the process
-      await fetch('/api/cli/cancel', { method: 'POST' });
+      const execIdToCancel = currentExecutionIdRef.current;
+      currentExecutionIdRef.current = null;
+      await fetch('/api/cli/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ executionId: execIdToCancel }),
+      });
     } catch (err) {
       console.error('Failed to cancel CLI execution:', err);
     }

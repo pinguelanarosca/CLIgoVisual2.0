@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Zap,
   Activity,
@@ -45,16 +45,43 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
 }) => {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
 
-  // Active chat session token count
-  const sessionTokens = calculateSessionTokens(messages);
-  const contextBreakdown = calculateContextBreakdown(
-    messages,
-    agent,
-    activeProject,
-    authorizedDirs,
-    skills,
-    mcpServers
-  );
+  // Active chat session token count (memoized efficiently without re-executing on identical content)
+  const totalContentLength = useMemo(() => {
+    let len = 0;
+    for (const m of messages) {
+      len += m.content?.length || 0;
+      if (m.toolCalls) {
+        for (const tc of m.toolCalls) {
+          len += (tc.result?.length || 0) + (tc.toolName?.length || 0);
+        }
+      }
+    }
+    return len;
+  }, [messages]);
+
+  const sessionTokens = useMemo(() => {
+    return calculateSessionTokens(messages);
+  }, [messages.length, totalContentLength]);
+
+  const contextBreakdown = useMemo(() => {
+    return calculateContextBreakdown(
+      messages,
+      agent,
+      activeProject,
+      authorizedDirs,
+      skills,
+      mcpServers
+    );
+  }, [
+    messages.length,
+    totalContentLength,
+    agent?.id,
+    agent?.systemInstructions,
+    activeProject?.id,
+    authorizedDirs?.length,
+    skills?.length,
+    mcpServers?.length,
+  ]);
 
   return (
     <div className="relative flex items-center gap-2">

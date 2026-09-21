@@ -63,6 +63,62 @@ export const GitUpdaterView: React.FC<GitUpdaterViewProps> = ({ onRefreshGlobalS
   const [autoRestart, setAutoRestart] = useState(true);
   const [forceSync, setForceSync] = useState(false);
 
+  // CLI Update State
+  const [isUpdatingCli, setIsUpdatingCli] = useState(false);
+  const [updateCliResult, setUpdateCliResult] = useState<{
+    success: boolean;
+    message: string;
+    version?: string;
+    globalNotice?: string;
+  } | null>(null);
+  const [copiedCliCmd, setCopiedCliCmd] = useState(false);
+
+  const handleUpdateCli = async () => {
+    setIsUpdatingCli(true);
+    setUpdateCliResult(null);
+    try {
+      const res = await fetch('/api/cli/update', { method: 'POST' });
+      const contentType = res.headers.get('content-type');
+      if (res.ok && contentType && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.success) {
+          setUpdateCliResult({
+            success: true,
+            message: data.message || `Gemini CLI atualizado com sucesso para v${data.version}!`,
+            version: data.version,
+            globalNotice: data.globalNotice,
+          });
+          if (onRefreshGlobalStatus) {
+            onRefreshGlobalStatus();
+          }
+        } else {
+          setUpdateCliResult({
+            success: false,
+            message: data.error || 'Falha ao atualizar o Gemini CLI',
+          });
+        }
+      } else {
+        setUpdateCliResult({
+          success: false,
+          message: `O servidor retornou um erro HTTP ${res.status}. Tente novamente.`,
+        });
+      }
+    } catch (err: any) {
+      setUpdateCliResult({
+        success: false,
+        message: err.message || 'Erro de conexão ao tentar atualizar o CLI',
+      });
+    } finally {
+      setIsUpdatingCli(false);
+    }
+  };
+
+  const copyCliToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedCliCmd(true);
+    setTimeout(() => setCopiedCliCmd(false), 2500);
+  };
+
   // Copy helper
   const [copiedManual, setCopiedManual] = useState(false);
 
@@ -285,11 +341,111 @@ npm start
       <div>
         <h4 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
           <GitPullRequest className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-          <span>Atualização & Manutenção do Aplicativo (Git / Build / Restart)</span>
+          <span>Atualização & Manutenção do Aplicativo (Gemini CLI / Git / Build)</span>
         </h4>
         <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 leading-relaxed">
-          Sincronize commits do repositório oficial, instale novas dependências npm, recompile os arquivos de distribuição e reinicie o serviço com reconexão automática.
+          Gerencie e atualize os componentes do sistema: atualize o binário do Gemini CLI para a versão oficial mais recente ou sincronize commits do repositório Git.
         </p>
+      </div>
+
+      {/* CLI Reinstall & Update Card */}
+      <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/90 shadow-xs space-y-3">
+        <div>
+          <h5 className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+            <RefreshCw className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+            <span>Remover Versão Anterior e Instalar Versão Mais Recente (Gemini CLI)</span>
+          </h5>
+          <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+            Desinstala a versão anterior e instala limpa a versão oficial mais recente publicada do pacote <code className="font-mono text-zinc-700 dark:text-zinc-300">@google/gemini-cli</code>.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={handleUpdateCli}
+            disabled={isUpdatingCli}
+            className="px-3.5 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isUpdatingCli ? 'animate-spin' : ''}`} />
+            {isUpdatingCli ? 'Atualizando Gemini CLI...' : 'Instalar Versão Mais Recente Agora'}
+          </button>
+        </div>
+
+        {updateCliResult && (
+          <div className="space-y-2">
+            <div
+              className={`p-3 rounded-lg text-xs flex items-start gap-2.5 ${
+                updateCliResult.success
+                  ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                  : 'bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+              }`}
+            >
+              {updateCliResult.success ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
+              )}
+              <div className="space-y-1">
+                <p className="font-semibold">{updateCliResult.message}</p>
+                {updateCliResult.version && (
+                  <p className="text-[11px] font-mono">Versão ativa do CLI: v{updateCliResult.version}</p>
+                )}
+              </div>
+            </div>
+
+            {updateCliResult.globalNotice && (
+              <div className="p-3 rounded-lg text-xs bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 space-y-2">
+                <div className="flex items-center gap-1.5 font-semibold">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+                  <span>Atualização do CLI Global do Sistema (Ubuntu / Linux)</span>
+                </div>
+                <p className="text-[11px] leading-relaxed">{updateCliResult.globalNotice}</p>
+                <div className="pt-1 flex items-center justify-between">
+                  <code className="font-mono text-[10px] bg-amber-100 dark:bg-amber-900/50 px-2 py-1 rounded text-amber-900 dark:text-amber-200">
+                    sudo npm install -g @google/gemini-cli@latest
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => copyCliToClipboard('sudo npm install -g @google/gemini-cli@latest')}
+                    className="text-[10px] text-amber-700 dark:text-amber-300 hover:underline flex items-center gap-1 cursor-pointer font-semibold"
+                  >
+                    <Copy className="w-3 h-3" />
+                    {copiedCliCmd ? 'Copiado!' : 'Copiar Sudo'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800/60">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[11px] font-medium text-zinc-700 dark:text-zinc-300">
+              Comandos para executar no Terminal (Ubuntu / Linux / Mac):
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                copyCliToClipboard(
+                  'npm uninstall -g @google/gemini-cli && npm install -g @google/gemini-cli@latest'
+                )
+              }
+              className="text-[10px] flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+            >
+              <Copy className="w-3 h-3" />
+              {copiedCliCmd ? 'Copiado!' : 'Copiar Comandos'}
+            </button>
+          </div>
+          <div className="p-3 rounded-lg bg-zinc-900 text-zinc-200 font-mono text-[11px] overflow-x-auto space-y-1.5">
+            <p className="text-zinc-500"># 1. Remover versão anterior globalmente:</p>
+            <p className="text-amber-400">npm uninstall -g @google/gemini-cli</p>
+            <p className="text-zinc-500 pt-1"># 2. Instalar a versão mais recente oficial:</p>
+            <p className="text-emerald-400">npm install -g @google/gemini-cli@latest</p>
+            <p className="text-zinc-500 pt-1"># 3. Confirmar a versão instalada no sistema:</p>
+            <p className="text-blue-400">gemini --version</p>
+          </div>
+        </div>
       </div>
 
       {/* Restarting / Auto-reconnection Banner */}

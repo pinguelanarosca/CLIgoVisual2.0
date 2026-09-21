@@ -116,11 +116,34 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [recordingSeconds, setRecordingSeconds] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const userIsScrolledUpRef = useRef<boolean>(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const lastScrollTimeRef = useRef<number>(0);
 
-  // Auto-scroll to bottom on new messages
+  const handleScroll = () => {
+    if (!scrollContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 60;
+    userIsScrolledUpRef.current = !isNearBottom;
+  };
+
+  // Optimized Auto-scroll to bottom on new messages without jarring when user scrolled up
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!messagesEndRef.current) return;
+    if (isStreaming) {
+      if (!userIsScrolledUpRef.current) {
+        const now = Date.now();
+        if (now - lastScrollTimeRef.current > 120) {
+          lastScrollTimeRef.current = now;
+          messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
+        }
+      }
+    } else {
+      if (!userIsScrolledUpRef.current) {
+        messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      }
+    }
   }, [messages, isStreaming]);
 
   // Adjust textarea height
@@ -307,7 +330,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )}
 
       {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto px-3 md:px-6 py-4 space-y-4">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-3 md:px-6 py-4 space-y-4"
+      >
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto py-8">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600/15 to-indigo-500/15 border border-blue-500/20 flex items-center justify-center text-blue-600 dark:text-blue-400 mb-3 shadow-2xs">
@@ -343,15 +370,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
             const isUser = msg.role === 'user';
             const isNarrating = currentlyNarratingId === msg.id;
             const isRawExpanded = showRawPayloadGlobal || expandedRawMessageIds[msg.id];
-            const inspectionData = getRawInspectionData(
-              msg,
-              currentAgent,
-              activeProject,
-              authorizedDirs,
-              skills,
-              mcpServers,
-              approvalMode
-            );
+            const inspectionData = isRawExpanded
+              ? getRawInspectionData(
+                  msg,
+                  currentAgent,
+                  activeProject,
+                  authorizedDirs,
+                  skills,
+                  mcpServers,
+                  approvalMode
+                )
+              : null;
 
             return (
               <div
@@ -527,7 +556,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
 
                   {/* Raw Payload Inspection Viewer ("Mostrar Oculto / Olho") */}
-                  {isRawExpanded && (
+                  {isRawExpanded && inspectionData && (
                     <RawPayloadViewer data={inspectionData} isUserMessage={isUser} />
                   )}
                 </div>

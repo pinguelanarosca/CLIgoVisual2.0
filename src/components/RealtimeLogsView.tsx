@@ -99,21 +99,36 @@ export const RealtimeLogsView: React.FC<RealtimeLogsViewProps> = () => {
         setIsConnected(true);
       };
 
+      let logBuffer: SystemLogEntry[] = [];
+      let rafId: number | null = null;
+
+      const processLogBuffer = () => {
+        rafId = null;
+        if (logBuffer.length === 0) return;
+        const toAdd = [...logBuffer];
+        logBuffer = [];
+
+        setLogs((prev) => {
+          const existingIds = new Set(prev.map((i) => i.id));
+          const fresh = toAdd.filter((item) => !existingIds.has(item.id));
+          if (fresh.length === 0) return prev;
+          const updated = [...prev, ...fresh];
+          if (updated.length > 2000) {
+            return updated.slice(-2000);
+          }
+          return updated;
+        });
+      };
+
       es.onmessage = (e) => {
         if (!e.data || e.data.trim() === ': ping') return;
         try {
           const newEntry: SystemLogEntry = JSON.parse(e.data);
           if (newEntry && newEntry.id) {
-            setLogs((prev) => {
-              if (prev.some((item) => item.id === newEntry.id)) {
-                return prev;
-              }
-              const updated = [...prev, newEntry];
-              if (updated.length > 2500) {
-                return updated.slice(-2500);
-              }
-              return updated;
-            });
+            logBuffer.push(newEntry);
+            if (!rafId) {
+              rafId = requestAnimationFrame(processLogBuffer);
+            }
           }
         } catch {
           // Ignore non-json chunk

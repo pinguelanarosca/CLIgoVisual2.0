@@ -39,7 +39,7 @@ for (const envFile of fallbackEnvPaths) {
     } catch {}
   }
 }
-import { detectCliStatus, executeGeminiCli, cancelActiveExecution, setCustomCliPath, validateGeminiApiKey } from './server/gemini-cli-service.js';
+import { detectCliStatus, executeGeminiCli, cancelActiveExecution, cancelExecutionById, setCustomCliPath, validateGeminiApiKey } from './server/gemini-cli-service.js';
 import { ensureAgentsSeeded, loadAgents, saveAgentToFile, deleteAgent, resetAllAgentsToDefault } from './server/agents-service.js';
 import { ensureSkillsSeeded, loadSkills, saveSkillToFile, deleteSkill } from './server/skills-service.js';
 import { ensureCommandsSeeded, loadCommands, saveCommandToFile, deleteCommand } from './server/commands-service.js';
@@ -58,6 +58,7 @@ import {
   deleteSession,
   inspectFilesAndDiffs,
   readFileContent,
+  readFileContentAsync,
 } from './server/projects-and-dirs-service.js';
 import { checkAudioModelsAvailability, transcribeAudio, synthesizeSpeech } from './server/audio-service.js';
 import { getSystemValidationMatrix, buildPackagingArtifacts } from './server/packaging-service.js';
@@ -84,8 +85,10 @@ import {
   restoreSystemBackup,
   resetSystemToFactoryDefaults,
 } from './server/backup-reset-service.js';
+import { sendError } from './server/error-service.js';
 
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const HOST = process.env.HOST || '127.0.0.1';
 
 async function startServer() {
   const app = express();
@@ -154,6 +157,49 @@ priority = 90
 
   // --- API ROUTES ---
 
+  // 0. Application Bootstrap Endpoint
+  app.get('/api/bootstrap', async (req, res) => {
+    try {
+      const [
+        cliStatus,
+        projects,
+        authorizedDirs,
+        agents,
+        skills,
+        commands,
+        mcpServers,
+        policies,
+      ] = await Promise.all([
+        detectCliStatus(false),
+        getProjects(),
+        getAuthorizedDirs(),
+        loadAgents(),
+        loadSkills(),
+        loadCommands(),
+        loadMcpSettings(),
+        loadPolicies(),
+      ]);
+
+      const activeProject = projects.find((p) => p.id === (projects[0]?.id)) || projects[0] || null;
+
+      res.json({
+        cliStatus,
+        projects,
+        authorizedDirs,
+        activeProjectId: activeProject?.id,
+        agents,
+        skills,
+        commands,
+        mcpServers,
+        policies,
+      });
+    } catch (err: any) {
+      return sendError(res, 500, 'BOOTSTRAP_ERROR', 'Falha ao carregar dados iniciais do aplicativo.', {
+        message: err?.message,
+      });
+    }
+  });
+
   // 1. Status & CLI Information
   app.get('/api/status', async (req, res) => {
     const forceFresh = req.query.fresh === 'true' || req.query.fresh === '1';
@@ -179,21 +225,49 @@ priority = 90
   app.post('/api/cli/update', async (req, res) => {
     try {
       const execAsync = promisify(exec);
-      // Remove and install fresh latest version of @google/gemini-cli locally
-      const { stdout, stderr } = await execAsync('npm install @google/gemini-cli@latest --no-audit --no-fund', {
-        cwd: process.cwd(),
-        timeout: 120000,
-      });
+      let stdout = '';
+      let stderr = '';
+
+      // 1. Desinstalar versão local anterior do Gemini CLI
+      try {
+        await execAsync('npm uninstall @google/gemini-cli', {
+          cwd: process.cwd(),
+          timeout: 60000,
+        });
+      } catch (unerr: any) {
+        console.warn('Aviso ao desinstalar versão local anterior:', unerr?.message);
+      }
+
+      // 2. Instalar versão mais recente do @google/gemini-cli
+      try {
+        const resLocal = await execAsync('npm install @google/gemini-cli@latest --no-audit --no-fund --legacy-peer-deps', {
+          cwd: process.cwd(),
+          timeout: 120000,
+          env: { ...process.env, PATH: process.env.PATH },
+        });
+        stdout = resLocal.stdout || '';
+        stderr = resLocal.stderr || '';
+      } catch (localErr: any) {
+        console.error('Erro no install padrao, tentando fallback com --force:', localErr?.message);
+        const resForce = await execAsync('npm install @google/gemini-cli@latest --force --no-audit --no-fund', {
+          cwd: process.cwd(),
+          timeout: 120000,
+          env: { ...process.env, PATH: process.env.PATH },
+        });
+        stdout = resForce.stdout || '';
+        stderr = resForce.stderr || '';
+      }
 
       let globalNotice = '';
       try {
-        await execAsync('npm install -g @google/gemini-cli@latest --no-audit --no-fund', {
+        await execAsync('npm install -g @google/gemini-cli@latest --no-audit --no-fund --legacy-peer-deps', {
           timeout: 120000,
+          env: { ...process.env, PATH: process.env.PATH },
         });
       } catch (globalErr: any) {
         console.warn('Aviso ao atualizar Gemini CLI globalmente:', globalErr?.message);
         if (globalErr?.message?.includes('EACCES') || globalErr?.message?.includes('permission')) {
-          globalNotice = 'Atenção: A atualização global do sistema falhou por falta de permissão (EACCES). Para atualizar o CLI global do seu sistema Ubuntu, execute no terminal: "sudo npm install -g @google/gemini-cli@latest". O aplicativo utilizará a versão local do projeto.';
+          globalNotice = 'Atenção: A atualização global do sistema necessita de permissão (EACCES). Para atualizar o CLI global do seu sistema Ubuntu, execute no terminal: "sudo npm install -g @google/gemini-cli@latest". O aplicativo utilizará a versão local atualizada.';
         } else {
           globalNotice = `Aviso ao atualizar CLI global: ${globalErr?.message || 'Permissão negada'}. O aplicativo utilizará a versão local do projeto.`;
         }
@@ -214,7 +288,7 @@ priority = 90
         globalNotice,
         stdout,
         stderr,
-        message: `Gemini CLI local atualizado com sucesso para v${newStatus.version}!`,
+        message: `Gemini CLI atualizado com sucesso para v${newStatus.version}!`,
       });
     } catch (err: any) {
       console.error('Falha ao atualizar o CLI:', err);
@@ -248,6 +322,7 @@ priority = 90
   // 2. Real Execution via Server-Sent Events (SSE)
   app.post('/api/cli/execute', (req, res) => {
     const {
+      executionId,
       prompt,
       model,
       approvalMode,
@@ -284,9 +359,8 @@ priority = 90
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
-    sendSse('start', { timestamp: new Date().toISOString() });
-
     const execution = executeGeminiCli({
+      executionId,
       prompt,
       model,
       approvalMode,
@@ -310,19 +384,21 @@ priority = 90
       onEvent: (evt) => {
         const payload =
           typeof evt.data === 'object' && evt.data !== null
-            ? { type: evt.type, ...evt.data }
-            : { type: evt.type, data: evt.data };
+            ? { executionId, type: evt.type, ...evt.data }
+            : { executionId, type: evt.type, data: evt.data };
         sendSse(evt.type, payload);
       },
       onDone: (exitCode, signal) => {
-        sendSse('done', { exitCode, signal });
+        sendSse('done', { executionId, exitCode, signal });
         res.end();
       },
       onError: (err) => {
-        sendSse('error', { message: err.message });
+        sendSse('error', { executionId, message: err.message });
         res.end();
       },
     });
+
+    sendSse('start', { timestamp: new Date().toISOString(), executionId: execution.executionId });
 
     res.on('close', () => {
       if (!res.writableEnded) {
@@ -332,8 +408,9 @@ priority = 90
   });
 
   app.post('/api/cli/cancel', (req, res) => {
-    const cancelled = cancelActiveExecution();
-    res.json({ success: cancelled });
+    const { executionId } = req.body || {};
+    const cancelled = cancelExecutionById(executionId);
+    res.json({ success: cancelled, executionId });
   });
 
   // 3. Agents
@@ -551,10 +628,10 @@ priority = 90
     res.json(result);
   });
 
-  app.get('/api/files/read', (req, res) => {
+  app.get('/api/files/read', async (req, res) => {
     const { path: filePath } = req.query;
     if (!filePath) return res.status(400).json({ error: 'Caminho do arquivo é obrigatório' });
-    const result = readFileContent(filePath as string);
+    const result = await readFileContentAsync(filePath as string);
     if (!result.success) return res.status(400).json(result);
     res.json(result);
   });
@@ -836,8 +913,8 @@ priority = 90
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Gemini CLI GUI server running at http://0.0.0.0:${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`Gemini CLI GUI server running at http://${HOST}:${PORT}`);
   });
 }
 

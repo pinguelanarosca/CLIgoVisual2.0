@@ -42,6 +42,25 @@ export function formatTokenCount(num: number): string {
   return num.toLocaleString('pt-BR');
 }
 
+export function estimateParamsLength(params: any): number {
+  if (!params) return 0;
+  if (typeof params === 'string') return params.length;
+  if (typeof params === 'object') {
+    let len = 0;
+    for (const key in params) {
+      if (Object.prototype.hasOwnProperty.call(params, key)) {
+        len += key.length + 3;
+        const val = params[key];
+        if (typeof val === 'string') len += val.length;
+        else if (typeof val === 'number' || typeof val === 'boolean') len += 8;
+        else if (val && typeof val === 'object') len += 20;
+      }
+    }
+    return len;
+  }
+  return 0;
+}
+
 export function calculateSessionTokens(messages: ChatMessage[]) {
   let inputTokens = 0;
   let outputTokens = 0;
@@ -53,7 +72,7 @@ export function calculateSessionTokens(messages: ChatMessage[]) {
       for (const call of msg.toolCalls) {
         toolTokens +=
           estimateTokens(call.toolName) +
-          estimateTokens(JSON.stringify(call.parameters || {})) +
+          Math.ceil(estimateParamsLength(call.parameters) / 3.8) +
           estimateTokens(call.result || '');
       }
     }

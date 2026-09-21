@@ -65,6 +65,11 @@ function aistudioMediaPlugin(): Plugin {
 // LINT.ThenChange(//depot/google3/java/com/google/alkali/boq/makersuite/applet_dev_service/templates/initializers/react_theme/vite.config.ts:aistudio_media_plugin)
 
 export default defineConfig(() => {
+  const HOST = process.env.HOST || '127.0.0.1';
+  const ALLOWED_HOSTS: true | string[] = process.env.ALLOWED_HOSTS
+    ? process.env.ALLOWED_HOSTS.split(',')
+    : (process.env.HOST ? true : ['127.0.0.1', 'localhost']);
+
   return {
     plugins: [react(), tailwindcss(), aistudioMediaPlugin()],
     resolve: {
@@ -73,9 +78,9 @@ export default defineConfig(() => {
       },
     },
     server: {
-      host: '0.0.0.0',
+      host: HOST,
       port: 3000,
-      allowedHosts: true as const,
+      allowedHosts: ALLOWED_HOSTS,
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {
         ignored: [

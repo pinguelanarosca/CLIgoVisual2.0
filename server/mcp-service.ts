@@ -147,29 +147,117 @@ export async function testMcpServer(mcp: McpConfig): Promise<{ success: boolean;
   if (mcp.httpUrl || mcp.url) {
     const targetUrl = mcp.httpUrl || mcp.url;
     try {
-      // Heartbeat test com headers MCP aceitos
-      const res = await fetch(targetUrl!, {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json, text/event-stream',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ jsonrpc: '2.0', method: 'ping', id: 1 }),
-      });
-      if (res.ok || res.status === 405 || res.status === 406 || res.status === 404 || res.status === 200) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+
+      const headers: Record<string, string> = {
+        'Accept': 'application/json, text/event-stream',
+        'Content-Type': 'application/json',
+      };
+      if (mcp.headers && typeof mcp.headers === 'object') {
+        for (const [k, v] of Object.entries(mcp.headers)) {
+          if (typeof v === 'string') {
+            headers[k] = v;
+          }
+        }
+      }
+
+      let res: Response;
+      try {
+        res = await fetch(targetUrl!, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'ping', id: 1 }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (res.status === 401 || res.status === 403) {
         return {
-          success: true,
-          message: `Servidor MCP remoto conectado com sucesso em ${targetUrl} (Status HTTP ${res.status}).`,
+          success: false,
+          message: `MCP rejeitou autenticação em ${targetUrl} (Status HTTP ${res.status}). Verifique as credenciais ou headers configurados.`,
         };
       }
+
+      if (res.status === 404) {
+        return {
+          success: false,
+          message: `MCP não encontrado em ${targetUrl} (Status HTTP 404 - Endpoint inexistente).`,
+        };
+      }
+
+      if (res.status === 405) {
+        return {
+          success: false,
+          message: `MCP não aceita esse método em ${targetUrl} (Status HTTP 405 - Método não permitido).`,
+        };
+      }
+
+      if (res.status === 406) {
+        return {
+          success: false,
+          message: `Resposta incompatível em ${targetUrl} (Status HTTP 406 - Not Acceptable).`,
+        };
+      }
+
+      if (res.status >= 500) {
+        return {
+          success: false,
+          message: `Servidor MCP indisponível em ${targetUrl} (Status HTTP ${res.status}).`,
+        };
+      }
+
+      if (res.status >= 200 && res.status < 300) {
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('text/event-stream')) {
+          return {
+            success: true,
+            message: `Servidor MCP remoto conectado com sucesso em ${targetUrl} (SSE Event Stream - Status HTTP ${res.status}).`,
+          };
+        }
+
+        const text = await res.text();
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && (parsed.jsonrpc === '2.0' || parsed.result !== undefined || parsed.id !== undefined || parsed.error !== undefined)) {
+            return {
+              success: true,
+              message: `Servidor MCP remoto conectado com sucesso em ${targetUrl} (JSON-RPC MCP - Status HTTP ${res.status}).`,
+            };
+          }
+        } catch {
+          // não é JSON
+        }
+
+        if (text.length > 0 || contentType.includes('application/json')) {
+          return {
+            success: true,
+            message: `Servidor MCP remoto conectado com sucesso em ${targetUrl} (Status HTTP ${res.status}).`,
+          };
+        }
+
+        return {
+          success: false,
+          message: `Resposta inválida do servidor MCP em ${targetUrl} (Status HTTP ${res.status} - Corpo sem estrutura MCP).`,
+        };
+      }
+
       return {
         success: false,
         message: `Servidor MCP remoto retornou status ${res.status} em ${targetUrl}`,
       };
     } catch (err: any) {
+      if (err.name === 'AbortError') {
+        return {
+          success: false,
+          message: `Timeout ao tentar conectar no servidor MCP remoto em ${targetUrl}.`,
+        };
+      }
       return {
         success: false,
-        message: `Falha ao conectar no servidor MCP remoto em ${targetUrl}: ${err.message}`,
+        message: `Erro de conexão ao tentar acessar servidor MCP remoto em ${targetUrl}: ${err.message}`,
       };
     }
   }

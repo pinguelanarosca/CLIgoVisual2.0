@@ -152,13 +152,17 @@ export const FilesAndDiffsView: React.FC<FilesAndDiffsViewProps> = ({
   const entries = result?.entries || [];
   const files = result?.files || [];
 
-  const filteredDiffs = diffs.filter((d) =>
-    d.path.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredDiffs = React.useMemo(() => {
+    if (!searchQuery.trim()) return diffs;
+    const q = searchQuery.toLowerCase();
+    return diffs.filter((d) => d.path.toLowerCase().includes(q));
+  }, [diffs, searchQuery]);
 
-  const filteredEntries = entries.filter((e) =>
-    e.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredEntries = React.useMemo(() => {
+    if (!searchQuery.trim()) return entries;
+    const q = searchQuery.toLowerCase();
+    return entries.filter((e) => e.name.toLowerCase().includes(q));
+  }, [entries, searchQuery]);
 
   const activeDiff = diffs.find((d) => d.path === selectedDiffPath) || diffs[0];
 

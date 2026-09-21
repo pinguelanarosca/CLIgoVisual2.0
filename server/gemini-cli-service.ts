@@ -12,10 +12,21 @@ import { syncAgentsToSettings, loadAgents, buildEffectiveSystemPrompt } from './
 import { syncPoliciesToSettings } from './policies-service.js';
 import { getGuiDataDir } from './paths-service.js';
 
-let activeChildProcess: ChildProcess | null = null;
-let currentRetryTimeout: NodeJS.Timeout | null = null;
-let isCancelled = false;
+export interface ExecutionState {
+  executionId: string;
+  childProcess: ChildProcess | null;
+  retryTimeout: NodeJS.Timeout | null;
+  cancelled: boolean;
+  sessionId?: string;
+  workDir?: string;
+}
+
+const executions = new Map<string, ExecutionState>();
 let currentCustomCliPath: string = '';
+
+export function getExecutionState(executionId: string): ExecutionState | undefined {
+  return executions.get(executionId);
+}
 
 export function getLocalCliPath(): string {
   const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'gemini');
@@ -492,6 +503,7 @@ export async function detectCliStatus(
 }
 
 export interface CliExecutionParams {
+  executionId?: string;
   prompt: string;
   model?: string;
   approvalMode?: 'default' | 'auto_edit' | 'yolo' | 'plan';
@@ -580,6 +592,47 @@ function parseQuotaDetails(stderr: string, reported: string): { origin: string, 
   return { origin, retryAfter };
 }
 
+export function cancelExecutionById(executionId?: string): boolean {
+  if (!executionId) {
+    if (executions.size === 0) return false;
+    let anyCancelled = false;
+    for (const id of Array.from(executions.keys())) {
+      if (cancelExecutionById(id)) {
+        anyCancelled = true;
+      }
+    }
+    return anyCancelled;
+  }
+
+  const execState = executions.get(executionId);
+  if (!execState) {
+    return false;
+  }
+
+  execState.cancelled = true;
+
+  if (execState.retryTimeout) {
+    clearTimeout(execState.retryTimeout);
+    execState.retryTimeout = null;
+    sysLog.warn('CLI', `Timeout de retry pendente cancelado pelo usuário (ExecutionID: ${executionId}).`);
+  }
+
+  if (execState.childProcess && !execState.childProcess.killed) {
+    sysLog.warn('CLI', `Execução ativa do Gemini CLI cancelada pelo usuário (ExecutionID: ${executionId}, SIGKILL).`);
+    try {
+      execState.childProcess.kill('SIGKILL');
+    } catch {}
+    execState.childProcess = null;
+  }
+
+  executions.delete(executionId);
+  return true;
+}
+
+export function cancelActiveExecution(): boolean {
+  return cancelExecutionById();
+}
+
 export function executeGeminiCli(
   params: CliExecutionParams,
   isRetry = false,
@@ -588,17 +641,38 @@ export function executeGeminiCli(
     retryCount?: number;
     fallbackIndex?: number;
     fallbackChain?: string[];
+    executionId?: string;
   }
-): { cancel: () => void } {
-  // Reset cancellation state on new execution (not a retry)
-  if (!isRetry) {
-    isCancelled = false;
+): { cancel: () => void; executionId: string } {
+  const executionId =
+    params.executionId ||
+    state?.executionId ||
+    `exec_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+  let execState = executions.get(executionId);
+  if (!execState) {
+    execState = {
+      executionId,
+      childProcess: null,
+      retryTimeout: null,
+      cancelled: false,
+      sessionId: params.sessionId,
+      workDir: params.workDir,
+    };
+    executions.set(executionId, execState);
+  } else if (!isRetry) {
+    execState.cancelled = false;
+    execState.childProcess = null;
+    if (execState.retryTimeout) {
+      clearTimeout(execState.retryTimeout);
+      execState.retryTimeout = null;
+    }
   }
 
-  // Abort immediately if already cancelled
-  if (isCancelled) {
-    sysLog.warn('CLI', 'Execução ignorada pois o estado atual é cancelado.');
-    return { cancel: () => {} };
+  if (execState.cancelled) {
+    sysLog.warn('CLI', `Execução [${executionId}] ignorada pois o estado atual é cancelado.`);
+    executions.delete(executionId);
+    return { cancel: () => cancelExecutionById(executionId), executionId };
   }
 
   let cliPath = getResolvedCliPath();
@@ -909,11 +983,11 @@ export function executeGeminiCli(
     timeout: 300000, // 5 minutes timeout to accommodate long-running operations
   });
 
-  activeChildProcess = child;
+  execState.childProcess = child;
   sysLog.info(
     'CLI',
-    `Iniciando execução Gemini CLI [Modelo: ${chosenModel}, Agente: ${agentId || 'N/D'}, Tentativa: ${retryCount}/3] (Prompt: "${params.prompt.substring(0, 50)}${params.prompt.length > 50 ? '...' : ''}")`,
-    { model: chosenModel, sessionId: params.sessionId, approvalMode: params.approvalMode, cwd, agentId, retryCount }
+    `Iniciando execução Gemini CLI [ExecutionID: ${executionId}, Modelo: ${chosenModel}, Agente: ${agentId || 'N/D'}, Tentativa: ${retryCount}/3] (Prompt: "${params.prompt.substring(0, 50)}${params.prompt.length > 50 ? '...' : ''}")`,
+    { executionId, model: chosenModel, sessionId: params.sessionId, approvalMode: params.approvalMode, cwd, agentId, retryCount }
   );
 
   let buffer = '';
@@ -1000,7 +1074,11 @@ export function executeGeminiCli(
   });
 
   child.on('error', (err: any) => {
-    activeChildProcess = null;
+    if (execState.childProcess === child) {
+      execState.childProcess = null;
+    }
+    executions.delete(executionId);
+
     const isEnoent = err?.code === 'ENOENT' || err?.errno === -2;
     const errMsg = isEnoent
       ? `O executável do Gemini CLI ou o diretório de trabalho não foi encontrado no sistema (Caminho: ${cliPath}).`
@@ -1019,10 +1097,13 @@ export function executeGeminiCli(
   });
 
   child.on('close', (code, signal) => {
-    activeChildProcess = null;
+    if (execState.childProcess === child) {
+      execState.childProcess = null;
+    }
 
-    if (isCancelled) {
-      sysLog.warn('CLI', 'Processo encerrado, mas a execução já foi cancelada pelo usuário. Ignorando processamento de saída.');
+    if (execState.cancelled) {
+      sysLog.warn('CLI', `Processo encerrado (ExecutionID: ${executionId}), mas a execução já foi cancelada pelo usuário. Ignorando processamento de saída.`);
+      executions.delete(executionId);
       params.onDone(code || 0, signal || 'SIGINT');
       return;
     }
@@ -1042,16 +1123,14 @@ export function executeGeminiCli(
       sysLog.warn('CLI', `Sessão anterior não encontrada no disco ou inválida (${params.sessionId || effectiveSessionId}). Reiniciando automaticamente em uma nova sessão...`);
       if (params.sessionId) knownSessions.delete(params.sessionId);
       if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-      activeChildProcess = null;
-      executeGeminiCli({ ...params, sessionId: effectiveSessionId || params.sessionId, resume: false }, true);
+      executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { executionId });
       return;
     }
 
     if (code === 42 && (params.sessionId || effectiveSessionId) && !isRetry) {
       if (params.sessionId) knownSessions.delete(params.sessionId);
       if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-      activeChildProcess = null;
-      executeGeminiCli({ ...params, sessionId: effectiveSessionId || params.sessionId, resume: false }, true);
+      executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { executionId });
       return;
     }
 
@@ -1104,7 +1183,7 @@ export function executeGeminiCli(
       );
 
       // Verificação do Agente Reserva (Fallback por Cotas ou Servidor Sobrecarregado)
-      if (!isBadRequestError && (isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isBackupExecution && !isCancelled) {
+      if (!isBadRequestError && (isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isBackupExecution && !execState.cancelled) {
         try {
           const allAgents = loadAgents(cwd);
           const currentAgentObj = allAgents.find(
@@ -1138,12 +1217,13 @@ export function executeGeminiCli(
               `Agente titular ${agentId} encontrou ${reasonText}. Acionando agente reserva ${backupAgent.name} (Modelo: ${backupAgent.model}).`
             );
 
-            currentRetryTimeout = setTimeout(() => {
-              currentRetryTimeout = null;
-              if (!isCancelled) {
+            execState.retryTimeout = setTimeout(() => {
+              if (execState) execState.retryTimeout = null;
+              if (!execState?.cancelled) {
                 executeGeminiCli(
                   {
                     ...params,
+                    executionId,
                     agentId: backupAgent.id || backupAgent.name,
                     model: backupAgent.model,
                     backupAgentId: undefined, // não recursivo
@@ -1158,8 +1238,11 @@ export function executeGeminiCli(
                     thinking: backupAgent.thinking,
                     resume: true,
                   },
-                  true
+                  true,
+                  { executionId }
                 );
+              } else {
+                executions.delete(executionId);
               }
             }, 1200);
             return;
@@ -1193,21 +1276,24 @@ export function executeGeminiCli(
             apiErrCode
           });
 
-          currentRetryTimeout = setTimeout(() => {
-            currentRetryTimeout = null;
-            if (!isCancelled) {
+          execState.retryTimeout = setTimeout(() => {
+            if (execState) execState.retryTimeout = null;
+            if (!execState?.cancelled) {
               executeGeminiCli(params, true, {
                 currentModel: chosenModel,
                 retryCount: nextRetry,
                 fallbackIndex,
                 fallbackChain,
+                executionId,
               });
+            } else {
+              executions.delete(executionId);
             }
           }, backoffDelay);
           return;
         } else {
           // 3 attempts have failed OR non-transient error. Time for fallback!
-          if (fallbackChain && fallbackChain.length > 0 && !isCancelled) {
+          if (fallbackChain && fallbackChain.length > 0 && !execState.cancelled) {
             const nextIdx = fallbackIndex + 1;
             if (nextIdx < fallbackChain.length) {
               const nextModel = fallbackChain[nextIdx];
@@ -1221,15 +1307,18 @@ export function executeGeminiCli(
               });
               sysLog.warn('CLI', `3 tentativas falharam no modelo ${chosenModel}. Alternando para o fallback ${nextModel} do agente ${agentId}.`);
               
-              currentRetryTimeout = setTimeout(() => {
-                currentRetryTimeout = null;
-                if (!isCancelled) {
+              execState.retryTimeout = setTimeout(() => {
+                if (execState) execState.retryTimeout = null;
+                if (!execState?.cancelled) {
                   executeGeminiCli(params, true, {
                     currentModel: nextModel,
                     retryCount: 1,
                     fallbackIndex: nextIdx,
                     fallbackChain,
+                    executionId,
                   });
+                } else {
+                  executions.delete(executionId);
                 }
               }, 2000);
               return;
@@ -1249,7 +1338,7 @@ export function executeGeminiCli(
       }
 
       // Default fallback catch-all if quota was exceeded on another model
-      if (isQuotaError && !isRetry && chosenModel !== 'gemini-3.5-flash-lite' && !isCancelled) {
+      if (isQuotaError && !isRetry && chosenModel !== 'gemini-3.5-flash-lite' && !execState.cancelled) {
         params.onEvent({
           type: 'stream_event',
           data: {
@@ -1258,7 +1347,7 @@ export function executeGeminiCli(
             content: '⚠️ *Limite gratuito do modelo atingido. Alternando automaticamente para Gemini 3.5 Flash-Lite para continuar sua solicitação...*\n\n',
           },
         });
-        executeGeminiCli({ ...params, model: 'gemini-3.5-flash-lite', resume: true }, true);
+        executeGeminiCli({ ...params, executionId, model: 'gemini-3.5-flash-lite', resume: true }, true, { executionId });
         return;
       }
 
@@ -1303,32 +1392,14 @@ Você atingiu o limite de requisições.
       }
     }
 
-    activeChildProcess = null;
+    executions.delete(executionId);
     params.onDone(code, signal);
   });
 
   return {
+    executionId,
     cancel: () => {
-      cancelActiveExecution();
+      cancelExecutionById(executionId);
     },
   };
-}
-
-export function cancelActiveExecution(): boolean {
-  isCancelled = true;
-  
-  if (currentRetryTimeout) {
-    clearTimeout(currentRetryTimeout);
-    currentRetryTimeout = null;
-    sysLog.warn('CLI', 'Timeout de retry pendente cancelado pelo usuário.');
-  }
-
-  if (activeChildProcess && !activeChildProcess.killed) {
-    sysLog.warn('CLI', 'Execução ativa do Gemini CLI cancelada pelo usuário (Sinal SIGKILL).');
-    activeChildProcess.kill('SIGKILL');
-    activeChildProcess = null;
-    return true;
-  }
-  
-  return isCancelled;
 }
