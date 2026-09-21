@@ -448,15 +448,20 @@ export function performGitUpdate(
     const hasGitDir = fs.existsSync(gitDir);
 
     try {
+      // Tentar auto-ajustar permissões do usuário atual caso tenha sido relaxado pelo instalador
+      try {
+        execSync(`chmod -R u+rwX,g+rwX "${cwd}" 2>/dev/null`, { timeout: 2000 });
+      } catch {}
+
       fs.accessSync(cwd, fs.constants.W_OK);
       if (hasGitDir) {
         fs.accessSync(gitDir, fs.constants.W_OK);
       }
     } catch {
       logs.push(`⚠️ Permissão de escrita insuficiente no diretório da aplicação: ${cwd}`);
-      logs.push(`💡 O diretório foi instalado como outro usuário (ex: root). Para permitir a atualização pela interface gráfica, execute no terminal do seu Ubuntu:`);
-      logs.push(`   sudo chown -R $USER: "${cwd}" && chmod -R u+rwX "${cwd}"`);
-      throw new Error(`Permissão negada no diretório ${cwd}. O usuário atual não possui permissão de escrita para atualizar os arquivos. Corrija executando no terminal: sudo chown -R $USER: "${cwd}"`);
+      logs.push(`💡 O diretório foi instalado como outro usuário (ex: root). Para liberar a atualização automática pela interface gráfica, execute uma única vez no terminal:`);
+      logs.push(`   sudo chown -R $USER: "${cwd}" && chmod -R 777 "${cwd}"`);
+      throw new Error(`Permissão negada no diretório ${cwd}. O usuário atual não possui permissão de escrita para atualizar os arquivos. Corrija executando no terminal: sudo chown -R $USER: "${cwd}" && chmod -R 777 "${cwd}"`);
     }
 
     const status = getGitStatus(cleanRepoUrl);

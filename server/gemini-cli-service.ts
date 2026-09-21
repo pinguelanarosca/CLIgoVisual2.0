@@ -113,7 +113,10 @@ export async function validateGeminiApiKey(
   modelTested?: string;
   latencyMs?: number;
 }> {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY;
+  if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY) {
+    discoverApiKeyFromLoginEnv(true);
+  }
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) {
     return {
       configured: false,
@@ -311,11 +314,15 @@ export async function detectCliStatus(
   forceFresh = false,
   targetModel = 'gemini-3.1-flash-lite'
 ): Promise<CliStatus> {
+  if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY) {
+    discoverApiKeyFromLoginEnv(true);
+  }
+
   const cliPath = getResolvedCliPath();
   const localCliPath = getLocalCliPath();
   const globalCliPath = getGlobalCliPath();
 
-  const rawApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || '';
+  const rawApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY || '';
   const authConfigured = Boolean(rawApiKey);
   let maskedApiKey = undefined;
   if (rawApiKey) {
@@ -686,6 +693,12 @@ export function executeGeminiCli(
     }
   }
 
+  if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY) {
+    discoverApiKeyFromLoginEnv(true);
+  }
+
+  const activeApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
+
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     NO_COLOR: '1',
@@ -694,6 +707,11 @@ export function executeGeminiCli(
     GEMINI_MAX_RETRIES: '0',
     MAX_RETRIES: '0',
     GEMINI_CLI_NO_RELAUNCH: '1',
+    ...(activeApiKey ? {
+      GEMINI_API_KEY: activeApiKey,
+      GOOGLE_GENAI_API_KEY: activeApiKey,
+      GOOGLE_API_KEY: activeApiKey,
+    } : {}),
   };
 
   if (systemPromptFile) {

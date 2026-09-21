@@ -227,6 +227,15 @@ priority = 90
     }
     const cleanKey = apiKey.trim();
     process.env.GEMINI_API_KEY = cleanKey;
+    process.env.GOOGLE_GENAI_API_KEY = cleanKey;
+    process.env.GOOGLE_API_KEY = cleanKey;
+
+    try {
+      const guiDir = getGuiDataDir();
+      fs.mkdirSync(guiDir, { recursive: true });
+      const envPath = path.join(guiDir, '.env');
+      fs.writeFileSync(envPath, `GEMINI_API_KEY=${cleanKey}\nGOOGLE_GENAI_API_KEY=${cleanKey}\nGOOGLE_API_KEY=${cleanKey}\n`, { mode: 0o600 });
+    } catch {}
 
     res.json({ success: true, authConfigured: true });
   });

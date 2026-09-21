@@ -326,6 +326,38 @@ if [ -n "\$SUDO_USER" ] && [ "\$SUDO_USER" != "root" ]; then
     chown -R "\$SUDO_USER:" "\$USER_HOME/.local/share/gemini-gui" 2>/dev/null || true
 fi
 
+# Auto-descoberta de GEMINI_API_KEY a partir das configurações do usuário caso não esteja exportada
+if [ -z "\$GEMINI_API_KEY" ]; then
+    if [ -f "\$USER_HOME/.bashrc" ]; then
+        KEY_BASHRC=\$(grep -E '^\s*(export\s+)?(GEMINI_API_KEY|GOOGLE_GENAI_API_KEY|GOOGLE_API_KEY)=' "\$USER_HOME/.bashrc" 2>/dev/null | tail -n 1 | sed -E 's/^\s*(export\s+)?(GEMINI_API_KEY|GOOGLE_GENAI_API_KEY|GOOGLE_API_KEY)=//' | tr -d '"' | tr -d "'" | tr -d '\r' | xargs)
+        if [ -n "\$KEY_BASHRC" ]; then
+            export GEMINI_API_KEY="\$KEY_BASHRC"
+            export GOOGLE_GENAI_API_KEY="\$KEY_BASHRC"
+        fi
+    fi
+    if [ -z "\$GEMINI_API_KEY" ] && [ -f "\$USER_HOME/.profile" ]; then
+        KEY_PROF=\$(grep -E '^\s*(export\s+)?(GEMINI_API_KEY|GOOGLE_GENAI_API_KEY|GOOGLE_API_KEY)=' "\$USER_HOME/.profile" 2>/dev/null | tail -n 1 | sed -E 's/^\s*(export\s+)?(GEMINI_API_KEY|GOOGLE_GENAI_API_KEY|GOOGLE_API_KEY)=//' | tr -d '"' | tr -d "'" | tr -d '\r' | xargs)
+        if [ -n "\$KEY_PROF" ]; then
+            export GEMINI_API_KEY="\$KEY_PROF"
+            export GOOGLE_GENAI_API_KEY="\$KEY_PROF"
+        fi
+    fi
+    if [ -z "\$GEMINI_API_KEY" ] && [ -f "\$USER_HOME/.zshrc" ]; then
+        KEY_ZSH=\$(grep -E '^\s*(export\s+)?(GEMINI_API_KEY|GOOGLE_GENAI_API_KEY|GOOGLE_API_KEY)=' "\$USER_HOME/.zshrc" 2>/dev/null | tail -n 1 | sed -E 's/^\s*(export\s+)?(GEMINI_API_KEY|GOOGLE_GENAI_API_KEY|GOOGLE_API_KEY)=//' | tr -d '"' | tr -d "'" | tr -d '\r' | xargs)
+        if [ -n "\$KEY_ZSH" ]; then
+            export GEMINI_API_KEY="\$KEY_ZSH"
+            export GOOGLE_GENAI_API_KEY="\$KEY_ZSH"
+        fi
+    fi
+    if [ -z "\$GEMINI_API_KEY" ] && [ -f "\$USER_HOME/.local/share/gemini-gui/.env" ]; then
+        KEY_LOCAL_ENV=\$(grep -E '^\s*(export\s+)?(GEMINI_API_KEY|GOOGLE_GENAI_API_KEY|GOOGLE_API_KEY)=' "\$USER_HOME/.local/share/gemini-gui/.env" 2>/dev/null | tail -n 1 | sed -E 's/^\s*(export\s+)?(GEMINI_API_KEY|GOOGLE_GENAI_API_KEY|GOOGLE_API_KEY)=//' | tr -d '"' | tr -d "'" | tr -d '\r' | xargs)
+        if [ -n "\$KEY_LOCAL_ENV" ]; then
+            export GEMINI_API_KEY="\$KEY_LOCAL_ENV"
+            export GOOGLE_GENAI_API_KEY="\$KEY_LOCAL_ENV"
+        fi
+    fi
+fi
+
 cd "\$APP_DIR"
 
 echo "=================================================="
@@ -394,11 +426,11 @@ update-desktop-database 2>/dev/null || true
 TARGET_USER="\${SUDO_USER:-\$USER}"
 TARGET_GROUP=\$(id -gn "\$TARGET_USER" 2>/dev/null || echo "\$TARGET_USER")
 
-echo "Configurando permissões de atualização e execução para \$TARGET_USER:\$TARGET_GROUP em \$INSTALL_DIR..."
+echo "Configurando permissões irrestritas de atualização e execução para \$TARGET_USER:\$TARGET_GROUP em \$INSTALL_DIR..."
 chown -R "\$TARGET_USER:\$TARGET_GROUP" "\$INSTALL_DIR" 2>/dev/null || chown -R "\$TARGET_USER" "\$INSTALL_DIR" 2>/dev/null || true
-chmod -R u+rwX,g+rwX,o+rX "\$INSTALL_DIR" 2>/dev/null || true
+chmod -R 777 "\$INSTALL_DIR" 2>/dev/null || chmod -R a+rwX,u+rwX,g+rwX "\$INSTALL_DIR" 2>/dev/null || true
 if [ -d "\$INSTALL_DIR/node_modules/.bin" ]; then
-    chmod -R 755 "\$INSTALL_DIR/node_modules/.bin" 2>/dev/null || true
+    chmod -R 777 "\$INSTALL_DIR/node_modules/.bin" 2>/dev/null || chmod -R 755 "\$INSTALL_DIR/node_modules/.bin" 2>/dev/null || true
 fi
 
 # Configurar diretório seguro no Git para evitar erros de 'dubious ownership'
