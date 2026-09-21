@@ -1,4 +1,5 @@
 import { spawn, execSync, ChildProcess } from 'node:child_process';
+import crypto from 'node:crypto';
 import { discoverApiKeyFromLoginEnv } from './env-discovery.js';
 discoverApiKeyFromLoginEnv();
 import path from 'node:path';
@@ -241,15 +242,38 @@ export async function validateGeminiApiKey(
 
 const knownSessions = new Set<string>();
 
+export function isValidUUID(id?: string): boolean {
+  if (!id) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
+}
+
+export function ensureValidUUID(id?: string): string | undefined {
+  if (!id) return undefined;
+  if (isValidUUID(id)) return id;
+  // Convert any non-UUID session format into a deterministic valid UUID v4
+  const hash = crypto.createHash('md5').update(id).digest('hex');
+  return `${hash.substring(0, 8)}-${hash.substring(8, 12)}-4${hash.substring(13, 16)}-a${hash.substring(17, 20)}-${hash.substring(20, 32)}`;
+}
+
 export function isExistingSession(sessionId?: string, workspaceDir?: string): boolean {
   if (!sessionId) return false;
-  if (knownSessions.has(sessionId)) return true;
+  const normalizedId = ensureValidUUID(sessionId) || sessionId;
+  if (knownSessions.has(normalizedId) || knownSessions.has(sessionId)) return true;
 
   try {
     const candidateDirs: string[] = [
       path.join(getGuiDataDir(), 'tmp'),
       path.join(getGuiDataDir(), '.gemini', 'tmp'),
+      path.join(os.homedir(), '.gemini', 'tmp'),
     ];
+
+    try {
+      const username = os.userInfo()?.username;
+      if (username) {
+        candidateDirs.push(path.join(os.homedir(), '.gemini', 'tmp', username));
+        candidateDirs.push(path.join(os.homedir(), '.gemini', 'tmp', username, 'chats'));
+      }
+    } catch {}
 
     if (workspaceDir && workspaceDir !== os.homedir() && workspaceDir !== getGuiDataDir()) {
       const wsTmp = path.join(workspaceDir, '.gemini', 'tmp');
@@ -264,19 +288,28 @@ export function isExistingSession(sessionId?: string, workspaceDir?: string): bo
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           if (checkDir(fullPath, depth + 1)) return true;
-        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-          try {
-            const fd = fs.openSync(fullPath, 'r');
-            const buf = Buffer.alloc(300);
-            const bytesRead = fs.readSync(fd, buf, 0, 300, 0);
-            fs.closeSync(fd);
-            const header = buf.toString('utf8', 0, bytesRead);
-            if (header.includes(`"sessionId":"${sessionId}"`)) {
-              knownSessions.add(sessionId);
-              return true;
+        } else if (entry.isFile()) {
+          // Direct filename match: <uuid>.jsonl or <uuid>.json
+          if (entry.name.startsWith(normalizedId) || (sessionId && entry.name.startsWith(sessionId))) {
+            knownSessions.add(normalizedId);
+            if (sessionId) knownSessions.add(sessionId);
+            return true;
+          }
+          if (entry.name.endsWith('.jsonl') || entry.name.endsWith('.json')) {
+            try {
+              const fd = fs.openSync(fullPath, 'r');
+              const buf = Buffer.alloc(500);
+              const bytesRead = fs.readSync(fd, buf, 0, 500, 0);
+              fs.closeSync(fd);
+              const header = buf.toString('utf8', 0, bytesRead);
+              if (header.includes(normalizedId) || (sessionId && header.includes(sessionId))) {
+                knownSessions.add(normalizedId);
+                if (sessionId) knownSessions.add(sessionId);
+                return true;
+              }
+            } catch {
+              // Ignore reading errors
             }
-          } catch {
-            // Ignore reading errors
           }
         }
       }
@@ -562,7 +595,8 @@ export function executeGeminiCli(
     cwd = getGuiDataDir();
   }
 
-  const shouldResume = params.sessionId ? (isExistingSession(params.sessionId, cwd) || isRetry) : false;
+  const effectiveSessionId = ensureValidUUID(params.sessionId);
+  const shouldResume = effectiveSessionId ? (isExistingSession(effectiveSessionId, cwd) || isRetry) : false;
   let finalPrompt = params.prompt;
 
   // For new sessions, prepend explicit workspace and directory context so the model knows its working directory
@@ -660,12 +694,13 @@ export function executeGeminiCli(
     args.push('--include-directories', params.authorizedDirs.join(','));
   }
 
-  if (params.sessionId) {
+  if (effectiveSessionId) {
     if (shouldResume) {
-      args.push('-r', params.sessionId);
+      args.push('-r', effectiveSessionId);
     } else {
-      args.push('--session-id', params.sessionId);
-      knownSessions.add(params.sessionId);
+      args.push('--session-id', effectiveSessionId);
+      knownSessions.add(effectiveSessionId);
+      if (params.sessionId) knownSessions.add(params.sessionId);
     }
   }
 
@@ -969,23 +1004,32 @@ export function executeGeminiCli(
       return;
     }
 
-    // If Gemini CLI exited with code 42 due to session collision/missing session, auto-retry with correct params
-    if (code === 42 && params.sessionId && !isRetry) {
-      const isMissingSession = stderrText.includes('No previous sessions found') || 
-                               stderrText.includes('no previous session') || 
-                               stderrText.includes('not found') || 
-                               stderrText.includes('Erro ao retomar a sessão');
-      if (isMissingSession) {
-        knownSessions.delete(params.sessionId);
-        activeChildProcess = null;
-        executeGeminiCli({ ...params, resume: false }, true);
-        return;
-      } else {
-        knownSessions.add(params.sessionId);
-        activeChildProcess = null;
-        executeGeminiCli({ ...params, resume: true }, true);
-        return;
-      }
+    // Se o Gemini CLI falhar ao retomar a sessão (sessão inexistente, identificador inválido ou código 42), auto-recuperar iniciando sessão limpa
+    const isSessionResumeError =
+      stderrText.includes('Error resuming session') ||
+      stderrText.includes('Invalid session identifier') ||
+      stderrText.includes('No previous sessions found') ||
+      stderrText.includes('no previous session') ||
+      stderrText.includes('Searched for sessions in') ||
+      stderrText.includes('Erro ao retomar a sessão') ||
+      reportedErrorText.includes('Error resuming session') ||
+      reportedErrorText.includes('Invalid session identifier');
+
+    if (isSessionResumeError && (params.sessionId || effectiveSessionId) && !isRetry) {
+      sysLog.warn('CLI', `Sessão anterior não encontrada no disco ou inválida (${params.sessionId || effectiveSessionId}). Reiniciando automaticamente em uma nova sessão...`);
+      if (params.sessionId) knownSessions.delete(params.sessionId);
+      if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
+      activeChildProcess = null;
+      executeGeminiCli({ ...params, sessionId: effectiveSessionId || params.sessionId, resume: false }, true);
+      return;
+    }
+
+    if (code === 42 && (params.sessionId || effectiveSessionId) && !isRetry) {
+      if (params.sessionId) knownSessions.delete(params.sessionId);
+      if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
+      activeChildProcess = null;
+      executeGeminiCli({ ...params, sessionId: effectiveSessionId || params.sessionId, resume: false }, true);
+      return;
     }
 
     if (buffer.trim()) {

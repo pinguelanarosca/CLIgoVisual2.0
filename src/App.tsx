@@ -77,8 +77,17 @@ export function App() {
   const [commands, setCommands] = useState<CommandConfig[]>([]);
   const [mcpServers, setMcpServers] = useState<McpConfig[]>([]);
 
-  // Sessions & Messages
-  const generateSessionId = () => `sess_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  // Sessions & Messages (Gemini CLI requires standard UUID v4 for --session-id and --resume)
+  const generateSessionId = () => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  };
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>(generateSessionId);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
