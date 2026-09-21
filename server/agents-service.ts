@@ -607,7 +607,6 @@ export function syncAgentsToSettings(
         genConfig.thinkingConfig = {
           includeThoughts: true,
           thinkingLevel: thinkingLevel,
-          thinking_level: thinkingLevel,
         };
       }
       return genConfig;

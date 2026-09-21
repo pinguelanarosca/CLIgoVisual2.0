@@ -143,7 +143,7 @@ export interface FinalApiRequest {
     topP?: number;
     topK?: number;
     maxOutputTokens?: number;
-    thinkingConfig?: { includeThoughts: boolean; thinkingLevel: ThinkingLevel; thinking_level?: ThinkingLevel };
+    thinkingConfig?: { includeThoughts: boolean; thinkingLevel: ThinkingLevel };
     [key: string]: any;
   };
   tools?: any[];

@@ -109,7 +109,6 @@ export function getRawInspectionData(
       thinkingConfig: {
         includeThoughts: true,
         thinkingLevel: resolvedThinkingLevel,
-        thinking_level: resolvedThinkingLevel,
       },
     },
     tools: [

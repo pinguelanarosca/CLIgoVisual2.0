@@ -530,11 +530,22 @@ export function getApiErrorCode(code: number, stderrText: string, reportedErrorT
   const combined = (stderrText + ' ' + reportedErrorText).toLowerCase();
   
   // High priority: literal status codes
-  const statusMatch = combined.match(/status (?:code )?([0-9]{3})/i);
+  const statusMatch = combined.match(/status (?:code )?([0-9]{3})/i) || combined.match(/\[([0-9]{3})\]/);
   if (statusMatch) {
     return parseInt(statusMatch[1], 10);
   }
 
+  if (
+    combined.includes('400') ||
+    combined.includes('invalid argument') ||
+    combined.includes('invalid_argument') ||
+    combined.includes('bad request') ||
+    combined.includes('cannot set') ||
+    combined.includes('oneof field') ||
+    combined.includes('_thinking_level')
+  ) {
+    return 400;
+  }
   if (combined.includes('409') || combined.includes('conflict') || combined.includes('already_exists')) {
     return 409;
   }
@@ -798,7 +809,6 @@ export function executeGeminiCli(
       thinkingConfig: {
         includeThoughts: true,
         thinkingLevel: resolvedThinkingLevel,
-        thinking_level: resolvedThinkingLevel,
       },
     },
     tools: [
@@ -1058,16 +1068,30 @@ export function executeGeminiCli(
     }
 
     if (code !== 0 && code !== null) {
-      const isQuotaError =
+      const combinedErrText = (stderrText + ' ' + reportedErrorText).toLowerCase();
+      const apiErrCode = getApiErrorCode(code, stderrText, reportedErrorText);
+
+      const isBadRequestError =
+        apiErrCode === 400 ||
+        combinedErrText.includes('400') ||
+        combinedErrText.includes('invalid argument') ||
+        combinedErrText.includes('invalid_argument') ||
+        combinedErrText.includes('bad request') ||
+        combinedErrText.includes('cannot set') ||
+        combinedErrText.includes('oneof field') ||
+        combinedErrText.includes('_thinking_level');
+
+      const isQuotaError = !isBadRequestError && (
         stderrText.includes('TerminalQuotaError') ||
         stderrText.includes('Quota exceeded') ||
         stderrText.includes('429') ||
         stderrText.includes('RESOURCE_EXHAUSTED') ||
         reportedErrorText.toLowerCase().includes('quota') ||
         reportedErrorText.includes('429') ||
-        reportedErrorText.includes('RESOURCE_EXHAUSTED');
+        reportedErrorText.includes('RESOURCE_EXHAUSTED')
+      );
 
-      const isOverloadedError =
+      const isOverloadedError = !isBadRequestError && (
         stderrText.toLowerCase().includes('503') ||
         stderrText.toLowerCase().includes('unavailable') ||
         stderrText.toLowerCase().includes('high demand') ||
@@ -1076,12 +1100,11 @@ export function executeGeminiCli(
         reportedErrorText.toLowerCase().includes('503') ||
         reportedErrorText.toLowerCase().includes('high demand') ||
         reportedErrorText.toLowerCase().includes('overloaded') ||
-        reportedErrorText.toLowerCase().includes('service unavailable');
-
-      const apiErrCode = getApiErrorCode(code, stderrText, reportedErrorText);
+        reportedErrorText.toLowerCase().includes('service unavailable')
+      );
 
       // Verificação do Agente Reserva (Fallback por Cotas ou Servidor Sobrecarregado)
-      if ((isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isBackupExecution && !isCancelled) {
+      if (!isBadRequestError && (isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isBackupExecution && !isCancelled) {
         try {
           const allAgents = loadAgents(cwd);
           const currentAgentObj = allAgents.find(
@@ -1146,7 +1169,7 @@ export function executeGeminiCli(
         }
       }
 
-      if (apiErrCode !== null) {
+      if (apiErrCode !== null && !isBadRequestError) {
         // Only retry if not a "Hard Quota" or if explicitly allowed
         const { origin, retryAfter } = parseQuotaDetails(stderrText, reportedErrorText);
         const isTransient = apiErrCode === 500 || apiErrCode === 503 || (apiErrCode === 429 && !stderrText.includes('Hard Limit'));
@@ -1244,6 +1267,8 @@ export function executeGeminiCli(
         finalMessage = `O executável do Gemini CLI (${cliPath}) ou o diretório de trabalho (${cwd}) não foi localizado no sistema (Erro -2 / ENOENT).`;
       } else if (stderrText.includes('Please set an Auth method') || stderrText.includes('GEMINI_API_KEY')) {
         finalMessage = 'A chave de API do Gemini (GEMINI_API_KEY) não está configurada no seu ambiente. Configure-a no menu de Configurações da GUI ou exporte a variável no terminal.';
+      } else if (isBadRequestError) {
+        finalMessage = `⚠️ Requisição Inválida / Parâmetros Incompatíveis (Erro 400): ${reportedErrorText || stderrText.trim()}`;
       } else if (isQuotaError) {
         const { origin, retryAfter } = parseQuotaDetails(stderrText, reportedErrorText);
         const retryTime = retryAfter ? ` em aproximadamente ${Math.round(retryAfter / 1000)}s` : ' em alguns instantes';
