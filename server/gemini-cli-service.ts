@@ -12,6 +12,7 @@ import { syncAgentsToSettings, loadAgents, buildEffectiveSystemPrompt } from './
 import { syncPoliciesToSettings } from './policies-service.js';
 import { getGuiDataDir } from './paths-service.js';
 import { loadMcpSettings } from './mcp-service.js';
+import { acpManager } from './acp-client.js';
 
 const persistentProcesses = new Map<string, ChildProcess>();
 
@@ -605,6 +606,11 @@ export function cancelExecutionById(executionId?: string): boolean {
     return anyCancelled;
   }
 
+  // Tentar cancelar na sessão persistente ACP se aplicável
+  try {
+    acpManager.cancelExecution(executionId);
+  } catch {}
+
   const execState = executions.get(executionId);
   if (!execState) {
     return false;
@@ -1013,6 +1019,9 @@ export function executeGeminiCli(
     cwd = getGuiDataDir();
   }
 
+  const effectiveSessionId = ensureValidUUID(params.sessionId);
+  const isAcpPersistentMode = process.env.GEMINI_GUI_PERSISTENT === '1' && Boolean(effectiveSessionId);
+
   const runAsyncFlow = async () => {
     let tempSettingsFile: string | null = null;
     let systemPromptFile: string | null = null;
@@ -1363,28 +1372,15 @@ export function executeGeminiCli(
       const containsHome = authDirs.some(d => d === os.homedir() || d === path.resolve(os.homedir()));
       sysLog.info('CLI', `[WORKSPACE] cwd: "${cwd}" (isHome: ${isCwdHome}), authorizedDirs: [${authDirs.join(', ')}] (containsHome: ${containsHome})`);
 
-      const isPersistent = process.env.GEMINI_GUI_PERSISTENT === '1';
-      let child: ChildProcess;
-
       const tSpawn = performance.now();
       console.log(`[PERF] [${executionId}] spawn_start=${(tSpawn - t0).toFixed(1)}ms (model: ${chosenModel}, thinking: ${resolvedThinkingLevel}, thinkingActive: ${params.thinking !== false})`);
 
-      if (isPersistent && params.sessionId && persistentProcesses.has(params.sessionId)) {
-        child = persistentProcesses.get(params.sessionId)!;
-        sysLog.info('CLI', `Reutilizando processo persistente para sessão ${params.sessionId}`);
-      } else {
-        const spawnArgs = isPersistent ? [...args, '--acp'] : args;
-        child = spawn(cliPath, spawnArgs, {
-          cwd,
-          env,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: 300000,
-        });
-        if (isPersistent && params.sessionId) {
-            persistentProcesses.set(params.sessionId, child);
-            child.on('exit', () => persistentProcesses.delete(params.sessionId!));
-        }
-      }
+      const child = spawn(cliPath, args, {
+        cwd,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 300000,
+      });
 
       execState.childProcess = child;
       sysLog.info(
@@ -1855,7 +1851,25 @@ Você atingiu o limite de requisições.
     }
   };
 
-  runAsyncFlow();
+  if (isAcpPersistentMode && !isRetry && effectiveSessionId) {
+    const runAcpFlow = async () => {
+      try {
+        const session = await acpManager.getOrCreateSession(effectiveSessionId, params);
+        if (execState.cancelled) return;
+        await session.executePrompt({ ...params, executionId, sessionId: effectiveSessionId });
+        executions.delete(executionId);
+      } catch (err: any) {
+        sysLog.warn('CLI', `Sessão ACP falhou ou foi desconectada. Realizando fallback transparente para execução one-shot: ${err?.message || err}`);
+        acpManager.removeSession(effectiveSessionId);
+        if (!execState.cancelled) {
+          runAsyncFlow();
+        }
+      }
+    };
+    runAcpFlow();
+  } else {
+    runAsyncFlow();
+  }
 
   return {
     executionId,
