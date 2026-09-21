@@ -87,8 +87,8 @@ import {
 } from './server/backup-reset-service.js';
 import { sendError } from './server/error-service.js';
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-const HOST = process.env.HOST || '127.0.0.1';
+const PORT = 3000;
+const HOST = process.env.HOST || '0.0.0.0';
 
 async function startServer() {
   const app = express();

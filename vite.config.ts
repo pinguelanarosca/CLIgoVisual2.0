@@ -65,10 +65,10 @@ function aistudioMediaPlugin(): Plugin {
 // LINT.ThenChange(//depot/google3/java/com/google/alkali/boq/makersuite/applet_dev_service/templates/initializers/react_theme/vite.config.ts:aistudio_media_plugin)
 
 export default defineConfig(() => {
-  const HOST = process.env.HOST || '127.0.0.1';
+  const HOST = process.env.HOST || '0.0.0.0';
   const ALLOWED_HOSTS: true | string[] = process.env.ALLOWED_HOSTS
     ? process.env.ALLOWED_HOSTS.split(',')
-    : (process.env.HOST ? true : ['127.0.0.1', 'localhost']);
+    : true;
 
   return {
     plugins: [react(), tailwindcss(), aistudioMediaPlugin()],
