@@ -117,9 +117,24 @@ if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
 fi
 
 # 1. Evitar múltiplas instâncias acidentalmente na mesma porta
+open_browser() {
+    local target_url="http://localhost:$PORT"
+    if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+        if command -v xdg-open &> /dev/null; then
+            nohup xdg-open "$target_url" >/dev/null 2>&1 &
+        elif command -v google-chrome &> /dev/null; then
+            nohup google-chrome "$target_url" >/dev/null 2>&1 &
+        elif command -v firefox &> /dev/null; then
+            nohup firefox "$target_url" >/dev/null 2>&1 &
+        fi
+    fi
+}
+
 if command -v curl &> /dev/null; then
     if curl -s -m 1 "http://localhost:$PORT/api/health" &>/dev/null; then
         echo "A GCLI Visual Interface já está em execução e respondendo na porta $PORT."
+        echo "Abrindo janela no navegador padrão..."
+        open_browser
         exit 0
     fi
 fi
@@ -156,6 +171,26 @@ fi
 # Desacoplar o último processo em segundo plano
 disown %1 2>/dev/null || true
 
+# 4. Aguardar o servidor responder e abrir a janela no navegador
+echo "Aguardando inicialização da interface..."
+SERVER_READY=false
+for i in {1..20}; do
+    if command -v curl &> /dev/null && curl -s -m 1 "http://localhost:$PORT/api/health" &>/dev/null; then
+        SERVER_READY=true
+        break
+    fi
+    sleep 0.5
+done
+
+if [ "$SERVER_READY" = true ]; then
+    echo "Interface online em http://localhost:$PORT"
+    echo "Abrindo janela no navegador..."
+    open_browser
+else
+    echo "Aviso: Servidor ainda inicializando. Acesse em http://localhost:$PORT"
+    open_browser
+fi
+
 echo "Servidor iniciado em segundo plano. O terminal foi liberado."
 EOF
 
@@ -178,11 +213,23 @@ EOF
 chmod 644 /usr/share/applications/gemini-gui.desktop
 update-desktop-database 2>/dev/null || true
 
-# Ajustar permissões para que arquivos instalados não dependam de escrita pelo usuário comum
-chown -R root:root "$INSTALL_DIR" 2>/dev/null || true
-find "$INSTALL_DIR" -type d -exec chmod 755 {} \;
-find "$INSTALL_DIR" -type f -exec chmod 644 {} \;
-find "$INSTALL_DIR/node_modules/.bin" -type f -exec chmod 755 {} \; 2>/dev/null || true
+# Configurar propriedade e permissões completas de escrita para o usuário desktop
+TARGET_USER="${SUDO_USER:-$USER}"
+TARGET_GROUP=$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")
+
+echo "Configurando permissões de atualização e execução para $TARGET_USER:$TARGET_GROUP em $INSTALL_DIR..."
+chown -R "$TARGET_USER:$TARGET_GROUP" "$INSTALL_DIR" 2>/dev/null || chown -R "$TARGET_USER" "$INSTALL_DIR" 2>/dev/null || true
+chmod -R u+rwX,g+rwX,o+rX "$INSTALL_DIR" 2>/dev/null || true
+if [ -d "$INSTALL_DIR/node_modules/.bin" ]; then
+    chmod -R 755 "$INSTALL_DIR/node_modules/.bin" 2>/dev/null || true
+fi
+
+# Configurar diretório seguro no Git para evitar erros de 'dubious ownership'
+git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
+git config --system --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    sudo -u "$SUDO_USER" git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
+fi
 
 # Limpando arquivos temporários do instalador
 rm -rf "$TEMP_DIR"
@@ -193,11 +240,22 @@ echo "   Repositório: $REPO_URL"
 echo "   Commit:      $COMMIT_HASH"
 echo "   Localização: $INSTALL_DIR"
 echo "   Executável:  /usr/local/bin/gemini-gui (comando: gemini-gui)"
+echo "   Interface:   http://localhost:3000"
 echo "=================================================================="
 
-echo "Iniciando a GCLI Visual Interface em segundo plano com nohup + disown..."
+echo "Iniciando a GCLI Visual Interface em segundo plano e abrindo a janela..."
 if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-    su - "$SUDO_USER" -c "/usr/local/bin/gemini-gui" 2>/dev/null || /usr/local/bin/gemini-gui
+    USER_DISP="${DISPLAY:-:0}"
+    USER_XAUTH="${XAUTHORITY:-/home/$SUDO_USER/.Xauthority}"
+    USER_WAYL="${WAYLAND_DISPLAY}"
+    USER_DBUS="${DBUS_SESSION_BUS_ADDRESS}"
+
+    sudo -u "$SUDO_USER" \
+        DISPLAY="$USER_DISP" \
+        XAUTHORITY="$USER_XAUTH" \
+        WAYLAND_DISPLAY="$USER_WAYL" \
+        DBUS_SESSION_BUS_ADDRESS="$USER_DBUS" \
+        /usr/local/bin/gemini-gui || su - "$SUDO_USER" -c "/usr/local/bin/gemini-gui"
 else
     /usr/local/bin/gemini-gui
 fi

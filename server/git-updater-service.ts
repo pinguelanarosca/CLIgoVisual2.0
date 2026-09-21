@@ -47,6 +47,11 @@ export function getGitStatus(customRepoUrl?: string): GitAppStatus {
     };
   }
 
+  // Garantir registro do safe.directory para evitar erro 'dubious ownership' do Git
+  try {
+    execSync(`git config --global --add safe.directory "${cwd}"`, { stdio: 'ignore', timeout: 3000 });
+  } catch {}
+
   try {
     const isRepo = execSync('git rev-parse --is-inside-work-tree', {
       cwd,
@@ -433,10 +438,31 @@ export function performGitUpdate(
   };
 
   try {
+    // 0. Garantir safe.directory antes de qualquer operação
+    try {
+      execSync(`git config --global --add safe.directory "${cwd}"`, { stdio: 'ignore', timeout: 3000 });
+    } catch {}
+
+    // 0. Verificar se o diretório de instalação e a pasta .git possuem permissão de escrita
+    const gitDir = path.join(cwd, '.git');
+    const hasGitDir = fs.existsSync(gitDir);
+
+    try {
+      fs.accessSync(cwd, fs.constants.W_OK);
+      if (hasGitDir) {
+        fs.accessSync(gitDir, fs.constants.W_OK);
+      }
+    } catch {
+      logs.push(`⚠️ Permissão de escrita insuficiente no diretório da aplicação: ${cwd}`);
+      logs.push(`💡 O diretório foi instalado como outro usuário (ex: root). Para permitir a atualização pela interface gráfica, execute no terminal do seu Ubuntu:`);
+      logs.push(`   sudo chown -R $USER: "${cwd}" && chmod -R u+rwX "${cwd}"`);
+      throw new Error(`Permissão negada no diretório ${cwd}. O usuário atual não possui permissão de escrita para atualizar os arquivos. Corrija executando no terminal: sudo chown -R $USER: "${cwd}"`);
+    }
+
     const status = getGitStatus(cleanRepoUrl);
 
     // 1. Etapa Git: Fetch & Merge/Reset
-    if (!status.isGitRepo) {
+    if (!status.isGitRepo && !hasGitDir) {
       runCmd('git init', '1/4 Inicializar repositório Git local');
       runCmd(`git remote add origin "${cleanRepoUrl}" || git remote set-url origin "${cleanRepoUrl}"`, '1/4 Configurar Remote Origin');
       runCmd(`git fetch origin ${targetBranch}`, '1/4 Buscar ramos remotos');
@@ -447,6 +473,7 @@ export function performGitUpdate(
         runCmd(`git reset --hard origin/${targetBranch}`, '1/4 Reset para branch remota');
       }
     } else {
+      runCmd(`git config --global --add safe.directory "${cwd}" || true`, '1/4 Garantir repositório seguro');
       runCmd(`git remote set-url origin "${cleanRepoUrl}" || git remote add origin "${cleanRepoUrl}"`, '1/4 Atualizar URL do Remote Origin');
       runCmd(`git fetch origin ${targetBranch}`, '1/4 Buscar atualizações remotas');
 
