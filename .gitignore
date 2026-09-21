@@ -1,0 +1,10 @@
+node_modules/
+build/
+dist/
+dist-ubuntu/
+.gemini-gui-storage.json
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example

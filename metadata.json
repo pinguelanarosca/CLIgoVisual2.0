@@ -1,0 +1,6 @@
+{
+  "name": "Gemini CLI GUI",
+  "description": "Interface gráfica local, moderna e amigável para o Gemini CLI no Ubuntu Linux, com agentes, skills, comandos, MCP, áudio STT/TTS e empacotamento standalone.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,1 @@
+{"available":true,"version":"0.59.0","cliPath":"/app/applet/node_modules/.bin/gemini","connectionState":"connected","authConfigured":true,"maskedApiKey":"AQ.A...YLNQ","apiValid":true,"apiChecked":true,"latencyMs":6683,"modelTested":"gemini-3.1-flash-lite","approvalMode":"default"}
