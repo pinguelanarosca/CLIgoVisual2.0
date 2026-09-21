@@ -242,6 +242,13 @@ export interface FilesAndDiffsResult {
   error?: string;
 }
 
+export interface VoicePreset {
+  id: string;
+  name: string;
+  voiceName: string; // 'Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'
+  customInstructions: string;
+}
+
 export interface AudioSettings {
   sttEnabled: boolean;
   sttModel: string; // 'gemini-3.5-transcribe' or 'browser-native'
@@ -257,6 +264,7 @@ export interface AudioSettings {
   audioApiUrl?: string;
   sttInstructions?: string;
   ttsInstructions?: string;
+  savedVoicePresets: VoicePreset[];
   audioModelStatus: {
     sttAvailable: boolean;
     ttsAvailable: boolean;

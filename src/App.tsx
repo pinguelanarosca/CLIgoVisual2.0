@@ -144,6 +144,7 @@ export function App() {
       ttsAvailable: true,
       liveAvailable: false,
     },
+    savedVoicePresets: [],
   });
 
   const [currentlyNarratingId, setCurrentlyNarratingId] = useState<string | null>(null);

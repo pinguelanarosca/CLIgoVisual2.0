@@ -6,6 +6,7 @@ import { CommandsSettingsSection } from './settings/CommandsSettingsSection.js';
 import { McpSettingsSection } from './settings/McpSettingsSection.js';
 import { PoliciesSettingsSection } from './settings/PoliciesSettingsSection.js';
 import { AudioSettingsSection } from './settings/AudioSettingsSection.js';
+import { VoicePresetsSection } from './settings/VoicePresetsSection.js';
 import { PackagingSettingsSection } from './settings/PackagingSettingsSection.js';
 import {
   Settings,
@@ -364,6 +365,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               { id: 'commands', label: 'Comandos (6)', icon: Code2 },
               { id: 'mcp', label: 'MCP (GitHub)', icon: Layers },
               { id: 'policies', label: 'Políticas de IA', icon: ShieldCheck },
+              { id: 'voice', label: 'Voz (Narrador)', icon: Volume2 },
               { id: 'hooks', label: 'Hooks Operacionais', icon: Sliders },
               { id: 'permissions', label: 'Permissões & Modos', icon: Shield },
               { id: 'interface', label: 'Aparência & Tema', icon: Paintbrush },
@@ -473,6 +475,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 policies={policies}
                 onSavePolicy={handleSavePolicy}
                 onDeletePolicy={handleDeletePolicy}
+              />
+            )}
+
+            {/* 7.5 VOICE */}
+            {activeTab === 'voice' && (
+              <VoicePresetsSection
+                audioSettings={audioSettings}
+                onUpdateAudioSettings={onUpdateAudioSettings}
               />
             )}
 
