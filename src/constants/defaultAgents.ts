@@ -34,6 +34,7 @@ Sua função primária:
     displayName: 'Investigator',
     role: 'Investigator: investigação, pesquisa e diagnóstico.',
     model: 'gemini-3.7-flash',
+    backupAgentId: 'architect',
     description: 'Agente especializado em investigação profunda de código, busca e rastreamento de bugs, pesquisa em fontes e diagnóstico técnico empírico com evidências.',
     baseInstructions: `Você é o Investigator do Gemini CLI.
 Sua função primária:
@@ -55,6 +56,7 @@ Sua função primária:
     displayName: 'Architect',
     role: 'Architect: decisões arquiteturais e estruturais.',
     model: 'gemini-3.6-flash',
+    backupAgentId: 'investigator',
     description: 'Agente especializado em design de sistemas, arquitetura de software, modularidade, desacoplamento, contratos de interfaces e integridade estrutural.',
     baseInstructions: `Você é o Architect do Gemini CLI.
 Sua função primária:
@@ -76,6 +78,7 @@ Sua função primária:
     displayName: 'Auditor',
     role: 'Auditor: revisão crítica e identificação de problemas.',
     model: 'gemini-3.8-flash',
+    backupAgentId: 'architect',
     description: 'Agente especializado em revisão crítica rigorosa de código, auditoria de segurança, detecção de regressões, conformidade e análise de vulnerabilidades.',
     baseInstructions: `Você é o Auditor do Gemini CLI.
 Sua função primária:
@@ -97,6 +100,7 @@ Sua função primária:
     displayName: 'Tester',
     role: 'Tester: testes e validação.',
     model: 'gemini-3-flash',
+    backupAgentId: 'worker',
     description: 'Agente especializado em criação e execução de testes automatizados (unitários, integração e e2e), validação comportamental e análise de falhas.',
     baseInstructions: `Você é o Tester do Gemini CLI.
 Sua função primária:
@@ -118,6 +122,7 @@ Sua função primária:
     displayName: 'Worker',
     role: 'Worker: tarefas repetitivas e de alto volume.',
     model: 'gemini-3.1-flash-lite',
+    backupAgentId: 'principal',
     description: 'Agente especializado em tarefas de alto volume, geração de código boilerplate, refatorações diretas, transformações em lote e implementação de rotina.',
     baseInstructions: `Você é o Worker do Gemini CLI.
 Sua função primária:

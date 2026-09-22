@@ -248,6 +248,12 @@ export function generateActivityTitle(
       if (isRunning) {
         return targetAgent ? `Delegando tarefa para o agente '${targetAgent}'...` : 'Delegando tarefa para subagente...';
       }
+      if (status === 'failed') {
+        return targetAgent ? `Falha na delegação para o agente '${targetAgent}'` : 'Falha na delegação para subagente';
+      }
+      if (status === 'cancelled') {
+        return targetAgent ? `Delegação para o agente '${targetAgent}' cancelada` : 'Delegação para subagente cancelada';
+      }
       return targetAgent ? `Delegação para o agente '${targetAgent}' concluída` : 'Delegação para subagente concluída';
     }
 

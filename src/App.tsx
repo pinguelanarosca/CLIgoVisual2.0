@@ -442,6 +442,7 @@ export function App() {
     const ctrl = new AbortController();
     abortControllerRef.current = ctrl;
     let assistantContent = '';
+    const toolCalls: Record<string, any> = {};
 
     try {
       // Execute CLI
@@ -490,7 +491,6 @@ export function App() {
       let capturedFinalApiRequest: any = null;
       let capturedParameterOrigins: any = null;
       let capturedAllRealRequests: any[] = [];
-      const toolCalls: Record<string, any> = {};
 
       let updateScheduled = false;
       let lastFlushTime = 0;
@@ -630,13 +630,27 @@ export function App() {
                 }
               } else if (eventPayload.text) {
                 const text = eventPayload.text;
-                // Check if this is an authentication error from stderr
-                if (text.includes('Please set an Auth method') || text.includes('GEMINI_API_KEY')) {
+                // Check if this is a genuine authentication error from stderr
+                const isAuthNotice = text.includes('Both GOOGLE_API_KEY and GEMINI_API_KEY are set');
+                const isAuthError = !isAuthNotice && (
+                  text.includes('Please set an Auth method') ||
+                  (text.includes('GEMINI_API_KEY') && (
+                    text.includes('não foi encontrada') ||
+                    text.includes('not set') ||
+                    text.includes('missing') ||
+                    text.includes('invalid') ||
+                    text.includes('unauthorized') ||
+                    text.includes('required')
+                  ))
+                );
+
+                if (isAuthError) {
                   hasError = true;
                   errorMessage = 'A variável de ambiente GEMINI_API_KEY não foi encontrada ou não está autorizada no ambiente do sistema.';
                 } else {
                   // Filter out cosmetic warnings from terminal
                   const isBenign =
+                    isAuthNotice ||
                     text.includes('256-color support not detected') ||
                     text.includes('Ripgrep is not available') ||
                     text.includes('Falling back to GrepTool') ||
@@ -657,10 +671,35 @@ export function App() {
         }
       }
 
+      // Finalizar quaisquer tool calls pendentes que nunca receberam tool_result
+      for (const callId of Object.keys(toolCalls)) {
+        if (toolCalls[callId].status === 'running') {
+          const now = Date.now();
+          toolCalls[callId].status = 'failed';
+          toolCalls[callId].completedAt = now;
+          if (toolCalls[callId].startedAt) {
+            toolCalls[callId].durationMs = now - toolCalls[callId].startedAt;
+          }
+          const failReason = errorMessage || 'Execução de ferramenta/subagente encerrada sem retorno terminal.';
+          toolCalls[callId].error = failReason;
+          toolCalls[callId].result = failReason;
+          hasError = true;
+        }
+      }
+
       // Compute final message content & token stats
       let finalContent = assistantContent.trim();
       if (hasError && !finalContent) {
-        finalContent = `⚠️ **Erro na Execução do Gemini CLI**\n\n${errorMessage || 'O processo do Gemini CLI falhou.'}\n\n💡 **Verificação de Ambiente:**\n- Certifique-se de que a variável de ambiente \`GEMINI_API_KEY\` está definida no ambiente;\n- Você pode testar a conectividade em tempo real abrindo as **Configurações** (ícone de engrenagem) e clicando em **Testar Conexão com a API**.`;
+        const errLower = (errorMessage || '').toLowerCase();
+        if (errLower.includes('503') || errLower.includes('high demand') || errLower.includes('unavailable') || errLower.includes('overloaded')) {
+          finalContent = `⚠️ **API Gemini Temporariamente Sobrecarregada (Erro 503 - High Demand)**\n\n${errorMessage || 'O modelo está enfrentando um pico de demanda temporário nos servidores do Google.'}\n\n💡 **Recomendações:**\n- Alterne para um modelo com maior taxa de disponibilidade como o **Gemini 3.5 Flash Lite** ou **Gemini 2.5 Flash**;\n- Aguarde alguns instantes e tente novamente.`;
+        } else if (errLower.includes('429') || errLower.includes('quota') || errLower.includes('resource_exhausted')) {
+          finalContent = `⚠️ **Limite de Cota Atingido na API (Erro 429 - Quota Exceeded)**\n\n${errorMessage || 'A cota de requisições por minuto ou limite diário foi atingida para este modelo.'}\n\n💡 **Recomendações:**\n- Aguarde a renovação da cota de requisições;\n- Alterne para outro modelo disponível com limites maiores (ex: Flash Lite).`;
+        } else if (errLower.includes('gemini_api_key') || errLower.includes('auth') || errLower.includes('unauthorized') || errLower.includes('401') || errLower.includes('403')) {
+          finalContent = `⚠️ **Falha de Autenticação da Chave API**\n\n${errorMessage || 'A chave de API do Gemini não foi encontrada ou não possui permissão.'}\n\n💡 **Verificação:**\n- Verifique se a variável \`GEMINI_API_KEY\` está definida no ambiente;\n- Teste a conectividade em tempo real em **Configurações ⚙️ > Testar Conexão com a API**.`;
+        } else {
+          finalContent = `⚠️ **Falha na Execução do Gemini CLI**\n\n${errorMessage || 'O processo do Gemini CLI foi encerrado com falha.'}`;
+        }
       } else if (!finalContent) {
         finalContent = '⚠️ Nenhuma resposta gerada pelo modelo. Verifique o status da API no painel de Configurações.';
       }
@@ -768,6 +807,30 @@ export function App() {
       console.error('Execution error:', err);
       const isManualAbort = ctrl.signal.aborted || err.name === 'AbortError' || err.message?.includes('aborted');
 
+      const terminatedToolCalls = Object.values(toolCalls).map((tc) => {
+        if (tc.status === 'running') {
+          const now = Date.now();
+          return {
+            ...tc,
+            status: 'failed',
+            completedAt: now,
+            durationMs: tc.startedAt ? now - tc.startedAt : undefined,
+            error: isManualAbort ? 'Cancelado pelo usuário.' : (err.message || 'Falha na execução'),
+            result: isManualAbort ? 'Cancelado pelo usuário.' : (err.message || 'Falha na execução'),
+          };
+        }
+        return tc;
+      });
+
+      const catchActivities = normalizeActivities({
+        rawEvents: rawEventsList,
+        toolCalls: terminatedToolCalls,
+        isStreaming: false,
+        agentName: currentAgent?.displayName || currentAgent?.name,
+        model: currentAgent?.model || 'gemini-3.5-flash-lite',
+        error: isManualAbort ? undefined : err.message,
+      });
+
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id === assistantMsgId) {
@@ -787,6 +850,8 @@ export function App() {
             return {
               ...m,
               content: finalContent,
+              toolCalls: terminatedToolCalls,
+              activities: catchActivities,
               isStreaming: false,
               error: isManualAbort ? undefined : err.message,
             };

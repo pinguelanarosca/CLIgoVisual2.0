@@ -594,12 +594,12 @@ export interface CliExecutionParams {
 }
 
 export const AGENT_FALLBACK_CHAINS: Record<string, string[]> = {
-  architect: ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3-flash'],
-  auditor: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'],
-  investigator: ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3-flash'],
+  architect: ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-2.5-flash'],
+  auditor: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-2.5-flash'],
+  investigator: ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-flash'],
   principal: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite', 'gemini-3.5-flash'],
-  tester: ['gemini-3-flash', 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-2.5-flash'],
-  worker: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-2.5-flash-lite', 'gemini-3-flash'],
+  tester: ['gemini-3-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite'],
+  worker: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-2.5-flash-lite', 'gemini-3.5-flash'],
 };
 
 export function getApiErrorCode(code: number, stderrText: string, reportedErrorText: string): number | null {
@@ -1369,6 +1369,17 @@ export function executeGeminiCli(
       let hasReceivedFirstAssistantEvent = false;
       let tFirstStdout = 0;
 
+      // Rastreamento estruturado de tool_calls / subagentes em voo
+      const activeToolCalls = new Map<string, {
+        toolId: string;
+        toolName: string;
+        parameters: any;
+        timestamp: number;
+      }>();
+      let lastSubagentRequestId: string | undefined;
+      let lastSubagentSessionId: string | undefined;
+      let lastSubagentModel: string | undefined;
+
       child.stdout?.on('data', (chunk) => {
         if (!hasReceivedFirstStdout) {
           hasReceivedFirstStdout = true;
@@ -1403,6 +1414,57 @@ export function executeGeminiCli(
                 }
               }
 
+              // Rastrear chamadas de ferramentas e subagentes
+              const isToolCall =
+                parsed.type === 'tool_use' ||
+                parsed.type === 'tool_call' ||
+                (parsed.type === 'stream_event' && (parsed.data?.type === 'tool_use' || parsed.data?.type === 'tool_call'));
+
+              if (isToolCall) {
+                const callId =
+                  parsed.tool_call_id ||
+                  parsed.tool_id ||
+                  parsed.callId ||
+                  parsed.id ||
+                  parsed.data?.tool_call_id ||
+                  parsed.data?.tool_id ||
+                  parsed.data?.id ||
+                  `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+                const tName =
+                  parsed.tool_name ||
+                  parsed.name ||
+                  parsed.tool ||
+                  parsed.data?.tool_name ||
+                  parsed.data?.name ||
+                  'tool';
+                const tParams = parsed.parameters || parsed.args || parsed.data?.parameters || parsed.data?.args || {};
+
+                activeToolCalls.set(callId, {
+                  toolId: callId,
+                  toolName: tName,
+                  parameters: tParams,
+                  timestamp: Date.now(),
+                });
+              }
+
+              const isToolResult =
+                parsed.type === 'tool_result' ||
+                (parsed.type === 'stream_event' && parsed.data?.type === 'tool_result');
+
+              if (isToolResult) {
+                const callId =
+                  parsed.tool_call_id ||
+                  parsed.tool_id ||
+                  parsed.callId ||
+                  parsed.id ||
+                  parsed.data?.tool_call_id ||
+                  parsed.data?.tool_id ||
+                  parsed.data?.id;
+                if (callId) {
+                  activeToolCalls.delete(callId);
+                }
+              }
+
               if (parsed.type === 'final_api_request') {
                 const finalReq = parsed.finalApiRequest || parsed.data?.finalApiRequest;
                 if (finalReq) {
@@ -1417,6 +1479,12 @@ export function executeGeminiCli(
                     callIndex: capturedRealRequests.length + 1,
                   };
                   capturedRealRequests.push(reqItem);
+
+                  if (reqItem.role === 'subagent' || parsed.role === 'subagent') {
+                    lastSubagentRequestId = reqItem.requestId;
+                    lastSubagentSessionId = reqItem.sessionId;
+                    lastSubagentModel = reqItem.model;
+                  }
 
                   params.onEvent({
                     type: 'final_api_request',
@@ -1628,42 +1696,110 @@ export function executeGeminiCli(
           }
         }
 
-        if (code !== 0 && code !== null) {
-          const combinedErrText = (stderrText + ' ' + reportedErrorText).toLowerCase();
-          const apiErrCode = getApiErrorCode(code, stderrText, reportedErrorText);
+        const combinedErrText = (stderrText + ' ' + reportedErrorText).toLowerCase();
+        const apiErrCode = getApiErrorCode(code, stderrText, reportedErrorText);
 
-          const isBadRequestError =
-            apiErrCode === 400 ||
-            combinedErrText.includes('400') ||
-            combinedErrText.includes('invalid argument') ||
-            combinedErrText.includes('invalid_argument') ||
-            combinedErrText.includes('bad request') ||
-            combinedErrText.includes('cannot set') ||
-            combinedErrText.includes('oneof field') ||
-            combinedErrText.includes('_thinking_level');
+        const isBadRequestError =
+          apiErrCode === 400 ||
+          combinedErrText.includes('400') ||
+          combinedErrText.includes('invalid argument') ||
+          combinedErrText.includes('invalid_argument') ||
+          combinedErrText.includes('bad request') ||
+          combinedErrText.includes('cannot set') ||
+          combinedErrText.includes('oneof field') ||
+          combinedErrText.includes('_thinking_level');
 
-          const isQuotaError = !isBadRequestError && (
-            stderrText.includes('TerminalQuotaError') ||
-            stderrText.includes('Quota exceeded') ||
-            stderrText.includes('429') ||
-            stderrText.includes('RESOURCE_EXHAUSTED') ||
-            reportedErrorText.toLowerCase().includes('quota') ||
-            reportedErrorText.includes('429') ||
-            reportedErrorText.includes('RESOURCE_EXHAUSTED')
-          );
+        const isQuotaError = !isBadRequestError && (
+          stderrText.includes('TerminalQuotaError') ||
+          stderrText.includes('Quota exceeded') ||
+          stderrText.includes('429') ||
+          stderrText.includes('RESOURCE_EXHAUSTED') ||
+          reportedErrorText.toLowerCase().includes('quota') ||
+          reportedErrorText.includes('429') ||
+          reportedErrorText.includes('RESOURCE_EXHAUSTED') ||
+          combinedErrText.includes('quota exceeded') ||
+          combinedErrText.includes('resource_exhausted')
+        );
 
-          const isOverloadedError = !isBadRequestError && (
-            stderrText.toLowerCase().includes('503') ||
-            stderrText.toLowerCase().includes('unavailable') ||
-            stderrText.toLowerCase().includes('high demand') ||
-            stderrText.toLowerCase().includes('overloaded') ||
-            stderrText.toLowerCase().includes('service unavailable') ||
-            reportedErrorText.toLowerCase().includes('503') ||
-            reportedErrorText.toLowerCase().includes('high demand') ||
-            reportedErrorText.toLowerCase().includes('overloaded') ||
-            reportedErrorText.toLowerCase().includes('service unavailable')
-          );
+        const isFetchFailed =
+          combinedErrText.includes('fetch failed') ||
+          combinedErrText.includes('typeerror: fetch failed') ||
+          combinedErrText.includes('fetcherror') ||
+          combinedErrText.includes('econnreset') ||
+          combinedErrText.includes('etimedout');
 
+        const isOverloadedError = !isBadRequestError && (
+          stderrText.toLowerCase().includes('503') ||
+          stderrText.toLowerCase().includes('unavailable') ||
+          stderrText.toLowerCase().includes('high demand') ||
+          stderrText.toLowerCase().includes('overloaded') ||
+          stderrText.toLowerCase().includes('service unavailable') ||
+          reportedErrorText.toLowerCase().includes('503') ||
+          reportedErrorText.toLowerCase().includes('high demand') ||
+          reportedErrorText.toLowerCase().includes('overloaded') ||
+          reportedErrorText.toLowerCase().includes('service unavailable')
+        );
+
+        const isAuthNotice = stderrText.includes('Both GOOGLE_API_KEY and GEMINI_API_KEY are set');
+        const isAuthError = !isAuthNotice && (
+          stderrText.includes('Please set an Auth method') ||
+          (stderrText.includes('GEMINI_API_KEY') && (
+            stderrText.includes('not set') ||
+            stderrText.includes('missing') ||
+            stderrText.includes('unauthorized') ||
+            stderrText.includes('invalid') ||
+            stderrText.includes('required') ||
+            stderrText.includes('não foi encontrada')
+          ))
+        );
+
+        const hasUnresolvedToolCalls = activeToolCalls.size > 0;
+        const hasFailed =
+          (code !== 0 && code !== null) ||
+          isQuotaError ||
+          isFetchFailed ||
+          isOverloadedError ||
+          isAuthError ||
+          hasUnresolvedToolCalls ||
+          Boolean(reportedErrorText);
+
+        // Se houver chamadas de ferramentas/subagentes pendentes sem fechamento formal, emitir tool_result terminal
+        if (hasUnresolvedToolCalls) {
+          for (const unres of activeToolCalls.values()) {
+            let toolFailureReason = reportedErrorText || stderrText.trim();
+            if (isQuotaError) {
+              toolFailureReason = 'Cota de requisições excedida na API Gemini (Erro 429 / Quota Exceeded / RESOURCE_EXHAUSTED) durante a execução do subagente.';
+            } else if (isFetchFailed) {
+              toolFailureReason = 'Falha de transporte de rede com a API Gemini (Fetch failed sending request) durante a execução do subagente.';
+            } else if (isOverloadedError) {
+              toolFailureReason = 'Serviço da API Gemini temporariamente sobrecarregado (Erro 503 / Model Overloaded) durante a execução do subagente.';
+            } else if (isAuthError) {
+              toolFailureReason = 'Falha de autenticação da chave de API (GEMINI_API_KEY) durante a execução do subagente.';
+            } else if (!toolFailureReason) {
+              toolFailureReason = `Execução do subagente/ferramenta finalizada sem retorno terminal formal (exitCode: ${code ?? 0}).`;
+            }
+
+            params.onEvent({
+              type: 'stream_event',
+              data: {
+                type: 'tool_result',
+                tool_call_id: unres.toolId,
+                tool_id: unres.toolId,
+                tool_name: unres.toolName,
+                status: 'failed',
+                error: toolFailureReason,
+                output: toolFailureReason,
+                executionId,
+                subagentSessionId: lastSubagentSessionId || effectiveSessionId || params.sessionId,
+                lastRequestId: lastSubagentRequestId,
+                subagentModel: lastSubagentModel,
+              },
+            });
+          }
+          activeToolCalls.clear();
+        }
+
+        if (hasFailed) {
           // Verificação do Agente Reserva (Fallback por Cotas ou Servidor Sobrecarregado)
           if (!isBadRequestError && (isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isBackupExecution && !execState.cancelled) {
             try {
@@ -1836,32 +1972,37 @@ export function executeGeminiCli(
           let finalMessage = reportedErrorText || stderrText.trim();
           if (code === -2 || stderrText.includes('ENOENT')) {
             finalMessage = `O executável do Gemini CLI (${cliPath}) ou o diretório de trabalho (${cwd}) não foi localizado no sistema (Erro -2 / ENOENT).`;
-          } else if (stderrText.includes('Please set an Auth method') || stderrText.includes('GEMINI_API_KEY')) {
+          } else if (isAuthError) {
             finalMessage = 'A chave de API do Gemini (GEMINI_API_KEY) não está configurada no seu ambiente. Configure-a no menu de Configurações da GUI ou exporte a variável no terminal.';
           } else if (isBadRequestError) {
             finalMessage = `⚠️ Requisição Inválida / Parâmetros Incompatíveis (Erro 400): ${reportedErrorText || stderrText.trim()}`;
           } else if (isQuotaError) {
             const { origin, retryAfter } = parseQuotaDetails(stderrText, reportedErrorText);
             const retryTime = retryAfter ? ` em aproximadamente ${Math.round(retryAfter / 1000)}s` : ' em alguns instantes';
-            finalMessage = `⚠️ Cota Excedida (Erro 429) em: ${origin}
+            finalMessage = `⚠️ Cota Excedida (Erro 429 / Quota Exceeded) em: ${origin}
 Você atingiu o limite de requisições.
 • Tente novamente${retryTime}.
 • Recomendação: utilize o modelo "Gemini 3.5 Flash-Lite" para maiores limites.
 • Verifique se há processos em segundo plano consumindo sua cota.`;
+          } else if (isFetchFailed) {
+            finalMessage = `⚠️ Falha na Comunicação de Rede com a API Gemini (Fetch failed sending request): ${reportedErrorText || stderrText.trim()}`;
           } else if (!finalMessage) {
-            finalMessage = `O Gemini CLI encerrou com código de erro ${code}.`;
+            finalMessage = `O Gemini CLI encerrou com código de erro ${code ?? 0}.`;
           }
 
           params.onEvent({
             type: 'process_error',
             data: {
               type: 'process_error',
-              exitCode: code,
+              exitCode: code ?? 1,
               stderr: stderrText,
               message: finalMessage,
+              executionId,
+              subagentSessionId: lastSubagentSessionId,
+              lastRequestId: lastSubagentRequestId,
             },
           });
-          sysLog.error('CLI', `Gemini CLI finalizado com erro (código: ${code}): ${finalMessage.substring(0, 100)}`, { exitCode: code, stderr: stderrText.substring(0, 200) });
+          sysLog.error('CLI', `Gemini CLI finalizado com falha (código: ${code}): ${finalMessage.substring(0, 100)}`, { exitCode: code, stderr: stderrText.substring(0, 200) });
         } else {
           sysLog.success('CLI', `Execução do Gemini CLI concluída com sucesso (código 0).`, { sessionId: params.sessionId });
         }
