@@ -154,56 +154,58 @@ export async function validateGeminiApiKey(
   }
 
   const startTime = Date.now();
-  const validationModels = [
-    targetModel,
-    'gemini-2.5-flash-native-audio-latest',
-    'antigravity-preview-05-2026'
-  ];
+  const validationModels = Array.from(new Set([
+    targetModel || 'gemini-3.1-flash-lite',
+    'gemini-3.6-flash',
+    'gemini-3.1-flash-lite'
+  ]));
 
   let lastError: any = null;
   let validatedModel = '';
 
   for (const model of validationModels) {
+    let timer: NodeJS.Timeout | null = null;
     try {
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
-        },
-      });
+      const ai = new GoogleGenAI({ apiKey });
 
-      // Se for um agente gerenciado, precisa usar o Interactions API com parâmetro 'agent'
-      if (model.includes('antigravity') || model.includes('deep-research')) {
-        await ai.interactions.create({
-          agent: model,
-          input: 'ping',
-          environment: 'remote',
-        });
-      } else {
-        // Para modelos padrão, tentamos primeiro o Interactions API que é o mais moderno e exigido por alguns modelos novos
-        try {
+      const requestPromise = (async () => {
+        // Se for um agente gerenciado, precisa usar o Interactions API com parâmetro 'agent'
+        if (model.includes('antigravity') || model.includes('deep-research')) {
           await ai.interactions.create({
-            model: model,
+            agent: model,
             input: 'ping',
+            environment: 'remote',
           });
-        } catch (intErr: any) {
-          // Se falhar informando que o modelo NÃO suporta Interactions, tentamos o generateContent tradicional
-          if (intErr.message?.includes('not supported') || intErr.message?.includes('generateContent')) {
-            await ai.models.generateContent({
-              model,
-              contents: 'ping',
-              config: {
-                maxOutputTokens: 2,
-                temperature: 0,
-              },
+        } else {
+          // Para modelos padrão, tentamos primeiro o Interactions API que é o mais moderno e exigido por alguns modelos novos
+          try {
+            await ai.interactions.create({
+              model: model,
+              input: 'ping',
             });
-          } else {
-            throw intErr;
+          } catch (intErr: any) {
+            // Se falhar informando que o modelo NÃO suporta Interactions, tentamos o generateContent tradicional
+            if (intErr.message?.includes('not supported') || intErr.message?.includes('generateContent')) {
+              await ai.models.generateContent({
+                model,
+                contents: 'ping',
+                config: {
+                  maxOutputTokens: 2,
+                  temperature: 0,
+                },
+              });
+            } else {
+              throw intErr;
+            }
           }
         }
-      }
+      })();
+
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Timeout de validação (10s)')), 10000);
+      });
+
+      await Promise.race([requestPromise, timeoutPromise]);
 
       validatedModel = model;
       break; // Success!
@@ -219,6 +221,8 @@ export async function validateGeminiApiKey(
       }
       
       sysLog.warn('API', `Falha ao validar modelo ${model}: ${err.message || err}`);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -398,7 +402,38 @@ export async function detectCliStatus(
     }),
   ]);
 
+  // Fast-path: if local CLI version was already discovered and cliPath matches local bin, resolve directly
+  if (localVersion && (cliPath === localCliPath || cliPath.includes('node_modules'))) {
+    return {
+      available: true,
+      version: localVersion,
+      cliPath,
+      localCliPath,
+      localVersion,
+      globalCliPath,
+      globalVersion: globalVersion || undefined,
+      connectionState: 'connected',
+      authConfigured,
+      maskedApiKey,
+      apiValid: apiCheck.valid,
+      apiChecked: true,
+      apiError: !apiCheck.valid ? apiCheck.message : undefined,
+      latencyMs: apiCheck.latencyMs,
+      modelTested: apiCheck.modelTested,
+      approvalMode: 'default',
+      errorMessage: !authConfigured ? 'Atenção: Nenhuma GEMINI_API_KEY detectada no ambiente.' : undefined,
+    };
+  }
+
   return new Promise((resolve) => {
+    let settled = false;
+    const safeResolve = (val: CliStatus) => {
+      if (!settled) {
+        settled = true;
+        resolve(val);
+      }
+    };
+
     try {
       const child = spawn(cliPath, ['--version'], {
         env: { ...process.env, NO_COLOR: '1' },
@@ -406,6 +441,29 @@ export async function detectCliStatus(
 
       let stdout = '';
       let stderr = '';
+
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch {}
+        safeResolve({
+          available: Boolean(localVersion || globalVersion),
+          version: localVersion || globalVersion || 'Timeout',
+          cliPath,
+          localCliPath,
+          localVersion: localVersion || undefined,
+          globalCliPath,
+          globalVersion: globalVersion || undefined,
+          connectionState: localVersion || globalVersion ? 'connected' : 'error',
+          authConfigured,
+          maskedApiKey,
+          apiValid: apiCheck.valid,
+          apiChecked: true,
+          apiError: !apiCheck.valid ? apiCheck.message : undefined,
+          latencyMs: apiCheck.latencyMs,
+          modelTested: apiCheck.modelTested,
+          approvalMode: 'default',
+          errorMessage: stderr.trim() || undefined,
+        });
+      }, 3500);
 
       child.stdout?.on('data', (data) => {
         stdout += data.toString();
@@ -416,7 +474,8 @@ export async function detectCliStatus(
       });
 
       child.on('error', (err) => {
-        resolve({
+        clearTimeout(timer);
+        safeResolve({
           available: false,
           version: 'Não detectado',
           cliPath,
@@ -438,8 +497,9 @@ export async function detectCliStatus(
       });
 
       child.on('close', (code) => {
+        clearTimeout(timer);
         if (code === 0 && stdout.trim()) {
-          resolve({
+          safeResolve({
             available: true,
             version: stdout.trim(),
             cliPath,
@@ -459,15 +519,15 @@ export async function detectCliStatus(
             errorMessage: !authConfigured ? 'Atenção: Nenhuma GEMINI_API_KEY detectada no ambiente.' : undefined,
           });
         } else {
-          resolve({
-            available: false,
-            version: 'Indisponível',
+          safeResolve({
+            available: Boolean(localVersion),
+            version: localVersion || 'Indisponível',
             cliPath,
             localCliPath,
             localVersion: localVersion || undefined,
             globalCliPath,
             globalVersion: globalVersion || undefined,
-            connectionState: 'error',
+            connectionState: localVersion ? 'connected' : 'error',
             authConfigured,
             maskedApiKey,
             apiValid: apiCheck.valid,
@@ -481,7 +541,7 @@ export async function detectCliStatus(
         }
       });
     } catch (err: any) {
-      resolve({
+      safeResolve({
         available: false,
         version: 'Falha',
         cliPath,

@@ -11,11 +11,6 @@ function getGenAiClient(customApiKey?: string, customApiUrl?: string): GoogleGen
   
   const config: any = {
     apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
   };
 
   if (customApiUrl) {
