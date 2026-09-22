@@ -459,3 +459,65 @@ export interface FactoryResetResult {
   error?: string;
 }
 
+// App Versions types
+export interface AppVersionItem {
+  id: string;
+  versionNumber: number;
+  timestamp: string;
+  prompt: string;
+  agentName?: string;
+  model?: string;
+  executionId?: string;
+  projectId?: string;
+  workspaceDir: string;
+  changedFiles: string[];
+  snapshotRef: string;
+  isBackup?: boolean;
+  backupForVersionId?: string;
+}
+
+export interface AppVersionDiff {
+  path: string;
+  status: 'modified' | 'added' | 'deleted';
+  diff: string;
+}
+
+export interface AppVersionRestoreResult {
+  success: boolean;
+  message: string;
+  restoredVersionId: string;
+  backupVersionId?: string;
+  restoredFiles: string[];
+  error?: string;
+}
+
+// Shared Persistent Memory types
+export interface SharedMemoryVersion {
+  id: string;
+  versionNumber: number;
+  content: string;
+  timestamp: string;
+  author: 'user' | 'agent' | 'memory-agent';
+  summary?: string;
+}
+
+export interface SharedMemoryItem {
+  id: string;
+  projectId?: string;
+  name: string;
+  description?: string;
+  content: string;
+  associatedAgentId?: string;
+  createdAt: string;
+  updatedAt: string;
+  versions?: SharedMemoryVersion[];
+}
+
+export interface MemoryAgentConfig {
+  name: string;
+  model: string;
+  temperature?: number;
+  instructions: string;
+  statusGrade: StatusGrade;
+}
+

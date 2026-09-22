@@ -86,6 +86,29 @@ import {
   resetSystemToFactoryDefaults,
 } from './server/backup-reset-service.js';
 import { sendError } from './server/error-service.js';
+import {
+  getAppVersions,
+  getAppVersionById,
+  createAppVersion,
+  restoreAppVersion,
+  getAppVersionDiff,
+  deleteAppVersion,
+  detectChangedFiles,
+} from './server/app-versions-service.js';
+import {
+  loadAllMemories,
+  getMemories,
+  getMemoryById,
+  createMemory,
+  updateMemoryContent,
+  restoreMemoryVersion,
+  deleteMemory,
+  refactorMemoryWithAgent,
+  loadMemoryAgentConfig,
+  saveMemoryAgentConfig,
+  updateWorkflowStepState,
+  recordOperationalAttempt,
+} from './server/memory-service.js';
 
 const PORT = 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -866,6 +889,190 @@ priority = 90
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(text);
+  });
+
+  // 15. App Versions (Snapshots)
+  app.get('/api/versions', (req, res) => {
+    const { projectId, workspaceDir } = req.query;
+    const versions = getAppVersions(projectId as string, workspaceDir as string);
+    res.json(versions);
+  });
+
+  app.get('/api/versions/:id', (req, res) => {
+    const { id } = req.params;
+    const version = getAppVersionById(id);
+    if (!version) {
+      return res.status(404).json({ error: 'Versão não encontrada' });
+    }
+    res.json(version);
+  });
+
+  app.post('/api/versions', (req, res) => {
+    const { prompt, workspaceDir, projectId, agentName, model, executionId, changedFiles } = req.body;
+    const targetDir = workspaceDir || process.cwd();
+    const version = createAppVersion({
+      prompt: prompt || 'Criação manual de versão',
+      workspaceDir: targetDir,
+      projectId,
+      agentName,
+      model,
+      executionId,
+      changedFiles,
+    });
+    if (!version) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nenhum arquivo alterado detectado ou erro ao criar snapshot.',
+      });
+    }
+    res.json({ success: true, version });
+  });
+
+  app.get('/api/versions/:id/diff', (req, res) => {
+    const { id } = req.params;
+    const diffs = getAppVersionDiff(id);
+    res.json(diffs);
+  });
+
+  app.post('/api/versions/:id/restore', (req, res) => {
+    const { id } = req.params;
+    const result = restoreAppVersion(id);
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
+  });
+
+  app.delete('/api/versions/:id', (req, res) => {
+    const { id } = req.params;
+    const ok = deleteAppVersion(id);
+    res.json({ success: ok });
+  });
+
+  // 16. Shared Persistent & Manipulable Memory
+  app.get('/api/memory', (req, res) => {
+    const { projectId } = req.query;
+    const memories = getMemories(projectId as string);
+    res.json(memories);
+  });
+
+  app.get('/api/memory/config', (req, res) => {
+    res.json(loadMemoryAgentConfig());
+  });
+
+  app.post('/api/memory/config', (req, res) => {
+    const config = req.body;
+    if (!config || !config.name) {
+      return res.status(400).json({ error: 'Configuração inválida' });
+    }
+    saveMemoryAgentConfig(config);
+    res.json({ success: true, config: loadMemoryAgentConfig() });
+  });
+
+  app.get('/api/memory/:id', (req, res) => {
+    const { id } = req.params;
+    const memory = getMemoryById(id);
+    if (!memory) {
+      return res.status(404).json({ error: 'Memória não encontrada' });
+    }
+    res.json(memory);
+  });
+
+  app.get('/api/memory/:id/versions', (req, res) => {
+    const { id } = req.params;
+    const memory = getMemoryById(id);
+    if (!memory) {
+      return res.status(404).json({ error: 'Memória não encontrada' });
+    }
+    res.json(memory.versions || []);
+  });
+
+  app.post('/api/memory', (req, res) => {
+    const { name, description, content, projectId, associatedAgentId } = req.body;
+    const created = createMemory({
+      name: name || 'Nova Memória',
+      description,
+      content,
+      projectId,
+      associatedAgentId,
+    });
+    res.json(created);
+  });
+
+  app.put('/api/memory/:id', (req, res) => {
+    const { id } = req.params;
+    const { content, author, summary } = req.body;
+    if (content === undefined) {
+      return res.status(400).json({ error: 'Conteúdo é obrigatório' });
+    }
+    const updated = updateMemoryContent(id, content, author || 'user', summary);
+    if (!updated) {
+      return res.status(404).json({ error: 'Memória não encontrada' });
+    }
+    res.json(updated);
+  });
+
+  app.post('/api/memory/:id/restore-version', (req, res) => {
+    const { id } = req.params;
+    const { versionId } = req.body;
+    if (!versionId) {
+      return res.status(400).json({ error: 'ID da versão é obrigatório' });
+    }
+    const restored = restoreMemoryVersion(id, versionId);
+    if (!restored) {
+      return res.status(400).json({ error: 'Falha ao restaurar versão da memória' });
+    }
+    res.json(restored);
+  });
+
+  app.delete('/api/memory/:id', (req, res) => {
+    const { id } = req.params;
+    const ok = deleteMemory(id);
+    res.json({ success: ok });
+  });
+
+  app.post('/api/memory/agent/refactor', async (req, res) => {
+    const { memoryId, instruction, customContent } = req.body;
+    if (!memoryId || !instruction) {
+      return res.status(400).json({ error: 'memoryId e instruction são obrigatórios' });
+    }
+    const result = await refactorMemoryWithAgent({ memoryId, instruction, customContent });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
+  });
+
+  app.post('/api/memory/:id/step', (req, res) => {
+    const { id } = req.params;
+    const { stepPattern, newState, reason } = req.body;
+    if (!stepPattern || !newState) {
+      return res.status(400).json({ error: 'stepPattern e newState são obrigatórios' });
+    }
+    const updated = updateWorkflowStepState(id, stepPattern, newState, reason);
+    if (!updated) {
+      return res.status(400).json({ error: 'Não foi possível atualizar a etapa' });
+    }
+    res.json(updated);
+  });
+
+  app.post('/api/memory/:id/record-attempt', (req, res) => {
+    const { id } = req.params;
+    const { target, attemptDescription, result, reasonOrConfirmation, affectedFiles } = req.body;
+    if (!target || !attemptDescription || !result) {
+      return res.status(400).json({ error: 'target, attemptDescription e result são obrigatórios' });
+    }
+    const updated = recordOperationalAttempt(id, {
+      target,
+      attemptDescription,
+      result,
+      reasonOrConfirmation,
+      affectedFiles,
+    });
+    if (!updated) {
+      return res.status(400).json({ error: 'Não foi possível registrar tentativa' });
+    }
+    res.json(updated);
   });
 
   // --- Vite middleware / static files ---

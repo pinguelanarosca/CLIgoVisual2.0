@@ -8,6 +8,9 @@ import { HistoryDrawer } from './components/HistoryDrawer.js';
 import { SettingsModal } from './components/SettingsModal.js';
 import { LeftSidebar } from './components/LeftSidebar.js';
 import { ArchivedChatsModal } from './components/ArchivedChatsModal.js';
+import { VersionsModal } from './components/VersionsModal.js';
+import { MemoryModal } from './components/MemoryModal.js';
+import { RightPayloadDrawer } from './components/RightPayloadDrawer.js';
 import {
   ContextSettings,
   DEFAULT_CONTEXT_SETTINGS,
@@ -122,6 +125,41 @@ export function App() {
   const [settingsTab, setSettingsTab] = useState<string>('cli');
   const [isArchivedChatsOpen, setIsArchivedChatsOpen] = useState(false);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
+
+  // App Versions, Shared Memory & 3rd Column Drawer States
+  const [isVersionsModalOpen, setIsVersionsModalOpen] = useState(false);
+  const [isMemoryModalOpen, setIsMemoryModalOpen] = useState(false);
+  const [isRightDrawerOpen, setIsRightDrawerOpen] = useState(false);
+  const [selectedMessageForInspection, setSelectedMessageForInspection] = useState<ChatMessage | null>(null);
+
+  const handleDeriveChat = (msg: ChatMessage, msgIndex: number) => {
+    const subMessages = messages.slice(0, msgIndex + 1);
+    const newId = generateSessionId();
+    const newSession: SessionItem = {
+      id: newId,
+      title: `Ramificação: ${msg.content.slice(0, 24)}...`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messageCount: subMessages.length,
+      messages: subMessages,
+      projectId: activeProject?.id,
+      statusGrade: 'CONFIGURED',
+    };
+
+    setSessions((prev) => [newSession, ...prev]);
+    setCurrentSessionId(newId);
+    setMessages(subMessages);
+    fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newSession),
+    }).catch(console.error);
+  };
+
+  const handleSelectMessageForInspection = (msg: ChatMessage) => {
+    setSelectedMessageForInspection(msg);
+    setIsRightDrawerOpen(true);
+  };
 
   // Audio Settings & Narration State
   const [audioSettings, setAudioSettings] = useState<AudioSettings>({
@@ -1074,6 +1112,10 @@ export function App() {
           if (tab) setSettingsTab(tab);
           setIsSettingsOpen(true);
         }}
+        onOpenVersions={() => setIsVersionsModalOpen(true)}
+        onOpenMemory={() => setIsMemoryModalOpen(true)}
+        isRightDrawerOpen={isRightDrawerOpen}
+        onToggleRightDrawer={() => setIsRightDrawerOpen(!isRightDrawerOpen)}
         autoPlayTts={audioSettings.autoPlayTts}
         onToggleAutoPlayTts={() =>
           setAudioSettings((prev) => ({ ...prev, autoPlayTts: !prev.autoPlayTts }))
@@ -1091,8 +1133,9 @@ export function App() {
         metrics={liveMetrics}
       />
 
-      {/* Main Content Area with Left Sidebar */}
+      {/* Main Content Area with 3-Column Glow-up Architecture */}
       <main className="flex-1 flex overflow-hidden relative">
+        {/* Column 1: Left Navigation / Session History Sidebar */}
         <LeftSidebar
           isExpanded={isSidebarExpanded}
           onToggleExpand={() => setIsSidebarExpanded(!isSidebarExpanded)}
@@ -1122,6 +1165,7 @@ export function App() {
           onArchiveMultipleSessions={handleArchiveMultipleSessions}
         />
 
+        {/* Column 2: Center Main Workspace (Chat or Files & Diffs) */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           {activeView === 'chat' ? (
             <ChatView
@@ -1148,6 +1192,10 @@ export function App() {
               authorizedDirs={authorizedDirs}
               skills={skills}
               mcpServers={mcpServers}
+              onDeriveChat={handleDeriveChat}
+              onSelectMessageForInspection={handleSelectMessageForInspection}
+              onOpenMemoryModal={() => setIsMemoryModalOpen(true)}
+              onOpenVersionsModal={() => setIsVersionsModalOpen(true)}
             />
           ) : (
             <FilesAndDiffsView
@@ -1159,6 +1207,21 @@ export function App() {
             />
           )}
         </div>
+
+        {/* Column 3: Right Payloads, Context & MCP Inspector Drawer */}
+        <RightPayloadDrawer
+          isOpen={isRightDrawerOpen}
+          onClose={() => setIsRightDrawerOpen(false)}
+          latestMessage={messages[messages.length - 1] || null}
+          selectedMessage={selectedMessageForInspection}
+          activeAgent={agents.find((a) => a.id === selectedAgentId) || null}
+          mcpServers={mcpServers}
+          skills={skills}
+          cliStatus={cliStatus}
+          activeProject={activeProject}
+          onOpenMemoryModal={() => setIsMemoryModalOpen(true)}
+          onOpenVersionsModal={() => setIsVersionsModalOpen(true)}
+        />
       </main>
 
       {/* Authorized Directories Modal */}
@@ -1253,6 +1316,21 @@ export function App() {
         onChangeTheme={setTheme}
         selectedAgentId={selectedAgentId}
         onSelectAgent={setSelectedAgentId}
+      />
+
+      {/* App Versions (Snapshots) Modal */}
+      <VersionsModal
+        isOpen={isVersionsModalOpen}
+        onClose={() => setIsVersionsModalOpen(false)}
+        activeProject={activeProject}
+        authorizedDirs={authorizedDirs}
+      />
+
+      {/* Shared Persistent Memory Modal */}
+      <MemoryModal
+        isOpen={isMemoryModalOpen}
+        onClose={() => setIsMemoryModalOpen(false)}
+        activeProjectId={activeProject?.id}
       />
     </div>
   );

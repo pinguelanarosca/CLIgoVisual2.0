@@ -4,11 +4,12 @@ import {
   Settings,
   Volume2,
   VolumeX,
-  Sun,
-  Moon,
   RefreshCw,
   Activity,
   Square,
+  History,
+  Brain,
+  PanelRight,
 } from 'lucide-react';
 import { CliStatus, ProjectItem, AgentConfig, ChatMessage, AuthorizedDir, SkillConfig, McpConfig } from '../types.js';
 import { TokenMonitorBar } from './TokenMonitorBar.js';
@@ -27,10 +28,14 @@ interface HeaderProps {
   onOpenDirsModal: () => void;
   onOpenHistory: () => void;
   onOpenSettings: (tab?: string) => void;
+  onOpenVersions?: () => void;
+  onOpenMemory?: () => void;
+  isRightDrawerOpen?: boolean;
+  onToggleRightDrawer?: () => void;
   autoPlayTts: boolean;
   onToggleAutoPlayTts: () => void;
-  theme: 'dark' | 'light';
-  onToggleTheme: () => void;
+  theme?: 'dark' | 'light';
+  onToggleTheme?: () => void;
   onRefreshStatus: () => void;
   isCheckingStatus: boolean;
   messages?: ChatMessage[];
@@ -56,10 +61,12 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenDirsModal,
   onOpenHistory,
   onOpenSettings,
+  onOpenVersions,
+  onOpenMemory,
+  isRightDrawerOpen = false,
+  onToggleRightDrawer,
   autoPlayTts,
   onToggleAutoPlayTts,
-  theme,
-  onToggleTheme,
   onRefreshStatus,
   isCheckingStatus,
   messages = [],
@@ -192,6 +199,26 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
+        {/* Versões (App Versions) Button */}
+        <button
+          onClick={onOpenVersions}
+          title="App Versions (Snapshots de Código)"
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md text-indigo-300 bg-indigo-950/40 hover:bg-indigo-900/50 transition border border-indigo-500/30 cursor-pointer shadow-2xs"
+        >
+          <History className="w-3.5 h-3.5 text-indigo-400" />
+          <span className="hidden sm:inline">Versões</span>
+        </button>
+
+        {/* Memória Compartilhada Button */}
+        <button
+          onClick={onOpenMemory}
+          title="Memória Compartilhada Persistente"
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md text-teal-300 bg-teal-950/40 hover:bg-teal-900/50 transition border border-teal-500/30 cursor-pointer shadow-2xs"
+        >
+          <Brain className="w-3.5 h-3.5 text-teal-400" />
+          <span className="hidden sm:inline">Memória</span>
+        </button>
+
         <button
           onClick={onToggleAutoPlayTts}
           title={autoPlayTts ? 'TTS Ativo' : 'TTS Desativado'}
@@ -205,14 +232,6 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         <button
-          onClick={onToggleTheme}
-          title="Alternar Tema"
-          className="p-1.5 rounded-md text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition border border-zinc-200/60 dark:border-zinc-800 cursor-pointer"
-        >
-          {theme === 'dark' ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-zinc-600" />}
-        </button>
-
-        <button
           onClick={() => onOpenSettings()}
           title="Configurações"
           className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 hover:opacity-90 transition shadow-2xs cursor-pointer"
@@ -220,6 +239,21 @@ export const Header: React.FC<HeaderProps> = ({
           <Settings className="w-3 h-3" />
           <span className="hidden sm:inline">Ajustes</span>
         </button>
+
+        {/* 3rd Column Drawer Toggle Button */}
+        {onToggleRightDrawer && (
+          <button
+            onClick={onToggleRightDrawer}
+            title={isRightDrawerOpen ? 'Ocultar Painel Lateral (3ª Coluna)' : 'Exibir Painel de Payloads & Contexto (3ª Coluna)'}
+            className={`p-1.5 rounded-md transition border cursor-pointer ${
+              isRightDrawerOpen
+                ? 'bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-2xs'
+                : 'text-zinc-400 hover:text-white border-zinc-200/60 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+            }`}
+          >
+            <PanelRight className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
     </header>
   );

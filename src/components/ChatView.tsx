@@ -24,6 +24,10 @@ import {
   Sliders,
   Eye,
   EyeOff,
+  Plus,
+  GitBranch,
+  GitFork,
+  Paperclip,
 } from 'lucide-react';
 import { ChatMessage, ToolCallStep, CommandConfig, AgentConfig, ProjectItem, AuthorizedDir, SkillConfig, McpConfig, ThinkingLevel } from '../types.js';
 import { DEFAULT_AGENTS } from '../constants/defaultAgents.js';
@@ -70,6 +74,11 @@ interface ChatViewProps {
   authorizedDirs?: AuthorizedDir[];
   skills?: SkillConfig[];
   mcpServers?: McpConfig[];
+  onDeriveMessage?: (msg: ChatMessage) => void;
+  onDeriveChat?: (msg: ChatMessage, index: number) => void;
+  onSelectMessageForInspection?: (msg: ChatMessage) => void;
+  onOpenMemoryModal?: () => void;
+  onOpenVersionsModal?: () => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -96,12 +105,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
   authorizedDirs = [],
   skills = [],
   mcpServers = [],
+  onDeriveMessage,
+  onDeriveChat,
+  onSelectMessageForInspection,
+  onOpenMemoryModal,
+  onOpenVersionsModal,
 }) => {
   const [inputText, setInputText] = useState('');
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({});
   const [showCommandsPopup, setShowCommandsPopup] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
+
+  const handleDeriveMsg = (msg: ChatMessage) => {
+    if (onDeriveMessage) {
+      onDeriveMessage(msg);
+    } else {
+      const snippet = msg.content.length > 160 ? msg.content.slice(0, 160) + '...' : msg.content;
+      setInputText((prev) => `> ${snippet.replace(/\n/g, '\n> ')}\n\n${prev}`);
+      textareaRef.current?.focus();
+    }
+  };
 
   // Raw Payload Inspection State ("Mostrar Oculto / Olho")
   const [showRawPayloadGlobal, setShowRawPayloadGlobal] = useState<boolean>(false);
@@ -414,6 +439,52 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     </div>
 
                     <div className="flex items-center gap-1">
+                      {/* Derive Message Button */}
+                      <button
+                        onClick={() => handleDeriveMsg(msg)}
+                        title="Derivar Mensagem (Continuar instrução a partir deste ponto)"
+                        className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded transition cursor-pointer ${
+                          isUser
+                            ? 'text-blue-200 hover:text-white hover:bg-blue-500/50'
+                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                        }`}
+                      >
+                        <GitFork className="w-3 h-3 text-indigo-400" />
+                        <span className="hidden md:inline">Derivar Msg</span>
+                      </button>
+
+                      {/* Derive Chat Button */}
+                      {onDeriveChat && (
+                        <button
+                          onClick={() => onDeriveChat(msg, messages.indexOf(msg))}
+                          title="Derivar Chat (Criar ramificação independente com o histórico até aqui)"
+                          className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded transition cursor-pointer ${
+                            isUser
+                              ? 'text-blue-200 hover:text-white hover:bg-blue-500/50'
+                              : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                          }`}
+                        >
+                          <GitBranch className="w-3 h-3 text-emerald-400" />
+                          <span className="hidden md:inline">Derivar Chat</span>
+                        </button>
+                      )}
+
+                      {/* Inspecionar Payload no Painel Lateral */}
+                      {onSelectMessageForInspection && (
+                        <button
+                          onClick={() => onSelectMessageForInspection(msg)}
+                          title="Inspecionar no Painel de Payloads (3ª Coluna)"
+                          className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded transition cursor-pointer ${
+                            isUser
+                              ? 'text-blue-200 hover:text-white hover:bg-blue-500/50'
+                              : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                          }`}
+                        >
+                          <Cpu className="w-3 h-3 text-amber-400" />
+                          <span className="hidden md:inline">Payload</span>
+                        </button>
+                      )}
+
                       {/* Individual Message Eye Button (Mostrar Oculto) */}
                       <button
                         onClick={() =>
@@ -424,8 +495,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         }
                         title={
                           isRawExpanded
-                            ? 'Ocultar payload bruto'
-                            : 'Inspecionar payload bruto (Eye)'
+                            ? 'Ocultar payload inline'
+                            : 'Inspecionar payload inline (Eye)'
                         }
                         className={`p-1 rounded transition cursor-pointer ${
                           isRawExpanded
@@ -609,9 +680,142 @@ export const ChatView: React.FC<ChatViewProps> = ({
         )}
 
         <div className="max-w-4xl mx-auto flex flex-col gap-1.5">
-          {/* Input Box */}
-          <div className="flex items-end gap-1.5 bg-zinc-100 dark:bg-zinc-800/80 rounded-xl p-1.5 border border-zinc-200 dark:border-zinc-700/60 focus-within:border-blue-500/80 focus-within:ring-1 focus-within:ring-blue-500/20 transition">
-            {/* Microphone Button (STT) */}
+          {/* Input Box with Integrated +, Thinker, Mic, and Send */}
+          <div className="flex items-end gap-1.5 bg-zinc-100 dark:bg-zinc-800/90 rounded-xl p-1.5 border border-zinc-200 dark:border-zinc-700/60 focus-within:border-blue-500/80 focus-within:ring-1 focus-within:ring-blue-500/20 transition relative">
+            {/* '+' Button for attachments & quick connections */}
+            <div className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowPlusMenu(!showPlusMenu)}
+                title="Adicionar / Conexões / Ações Rápidas (+)"
+                className="p-2 rounded-lg text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition cursor-pointer flex items-center justify-center"
+              >
+                <Plus className={`w-3.5 h-3.5 transition-transform ${showPlusMenu ? 'rotate-45 text-rose-400' : ''}`} />
+              </button>
+
+              {showPlusMenu && (
+                <div className="absolute bottom-full left-0 mb-2 w-56 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl p-1.5 z-40 flex flex-col gap-1 text-xs animate-in fade-in slide-in-from-bottom-2">
+                  <button
+                    onClick={() => {
+                      setInputText('/');
+                      setShowPlusMenu(false);
+                      setShowCommandsPopup(true);
+                      textareaRef.current?.focus();
+                    }}
+                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-left cursor-pointer"
+                  >
+                    <Terminal className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Inserir Comando (/)</span>
+                  </button>
+
+                  {onOpenMemoryModal && (
+                    <button
+                      onClick={() => {
+                        onOpenMemoryModal();
+                        setShowPlusMenu(false);
+                      }}
+                      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-left cursor-pointer"
+                    >
+                      <Brain className="w-3.5 h-3.5 text-teal-400" />
+                      <span>Memória Compartilhada</span>
+                    </button>
+                  )}
+
+                  {onOpenVersionsModal && (
+                    <button
+                      onClick={() => {
+                        onOpenVersionsModal();
+                        setShowPlusMenu(false);
+                      }}
+                      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-left cursor-pointer"
+                    >
+                      <GitBranch className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>App Versions (Snapshots)</span>
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => {
+                      setInputText((prev) => `${prev} @`);
+                      setShowPlusMenu(false);
+                      textareaRef.current?.focus();
+                    }}
+                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-left cursor-pointer"
+                  >
+                    <Paperclip className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Referenciar Arquivo (@)</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Recording Feedback Banner */}
+            {isRecording ? (
+              <div className="flex-1 flex items-center justify-between px-2 py-1 text-xs font-medium text-rose-600 dark:text-rose-400">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping" />
+                  <span>Gravando ({recordingSeconds}s)...</span>
+                </div>
+                <span className="text-[10px] text-zinc-500">Clique no microfone para parar e transcrever</span>
+              </div>
+            ) : isTranscribing ? (
+              <div className="flex-1 flex items-center gap-1.5 px-2 py-1 text-xs text-amber-600 dark:text-amber-400 font-medium">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>Transcrevendo áudio com Gemini...</span>
+              </div>
+            ) : (
+              <textarea
+                ref={textareaRef}
+                value={inputText}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                placeholder="Digite sua instrução... ('+' para anexos/memória, '/' para comandos)"
+                rows={1}
+                className="flex-1 bg-transparent border-0 outline-none resize-none text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 px-1.5 py-1 max-h-36"
+              />
+            )}
+
+            {/* Thinker Level Integrated into Input Bar */}
+            {(() => {
+              const supportsThinking = isThinkingSupported(currentAgent?.model);
+              const currentLevel: ThinkingLevel = (thinkingLevel === 'low' || thinkingLevel === 'high' || thinkingLevel === 'medium') ? thinkingLevel : 'medium';
+              const nextLevels: Record<ThinkingLevel, ThinkingLevel> = {
+                low: 'medium',
+                medium: 'high',
+                high: 'low',
+              };
+
+              return (
+                <button
+                  type="button"
+                  disabled={!supportsThinking}
+                  onClick={() => {
+                    if (onSelectThinkingLevel && supportsThinking) {
+                      onSelectThinkingLevel(nextLevels[currentLevel]);
+                    }
+                  }}
+                  title={
+                    !supportsThinking
+                      ? `Modelo (${currentAgent?.model || 'atual'}) não suporta thinker`
+                      : `Thinker: ${currentLevel.toUpperCase()} (Clique para alternar Rápido/Médio/Profundo)`
+                  }
+                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold transition shrink-0 cursor-pointer border ${
+                    !supportsThinking
+                      ? 'bg-zinc-800/40 text-zinc-600 border-zinc-800 opacity-50 cursor-not-allowed'
+                      : currentLevel === 'high'
+                      ? 'bg-purple-950/50 text-purple-300 border-purple-800/60 shadow-2xs hover:bg-purple-900/60'
+                      : currentLevel === 'low'
+                      ? 'bg-blue-950/50 text-blue-300 border-blue-800/60 shadow-2xs hover:bg-blue-900/60'
+                      : 'bg-indigo-950/50 text-indigo-300 border-indigo-800/60 shadow-2xs hover:bg-indigo-900/60'
+                  }`}
+                >
+                  <Brain className="w-3 h-3 shrink-0" />
+                  <span className="hidden sm:inline capitalize">{currentLevel}</span>
+                </button>
+              );
+            })()}
+
+            {/* Microphone Button (STT) Integrated into Input Bar */}
             <button
               type="button"
               onClick={isRecording ? stopRecording : startRecording}
@@ -633,32 +837,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 <Mic className="w-3.5 h-3.5" />
               )}
             </button>
-
-            {/* Recording Feedback Banner */}
-            {isRecording ? (
-              <div className="flex-1 flex items-center justify-between px-2 py-1 text-xs font-medium text-rose-600 dark:text-rose-400">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping" />
-                  <span>Gravando ({recordingSeconds}s)...</span>
-                </div>
-                <span className="text-[10px] text-zinc-500">Clique para enviar</span>
-              </div>
-            ) : isTranscribing ? (
-              <div className="flex-1 flex items-center gap-1.5 px-2 py-1 text-xs text-amber-600 dark:text-amber-400 font-medium">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span>Transcrevendo áudio...</span>
-              </div>
-            ) : (
-              <textarea
-                ref={textareaRef}
-                value={inputText}
-                onChange={handleInputChange}
-                onKeyDown={handleKeyDown}
-                placeholder="Digite sua instrução... (use '/' para comandos rápidos)"
-                rows={1}
-                className="flex-1 bg-transparent border-0 outline-none resize-none text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 px-1.5 py-1 max-h-36"
-              />
-            )}
 
             {/* Send / Stop Button */}
             {isStreaming ? (
@@ -705,67 +883,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </select>
                 </div>
               </div>
-
-              {/* Thinker Button and Level Selector */}
-              {(() => {
-                const supportsThinking = isThinkingSupported(currentAgent?.model);
-                const currentLevel: ThinkingLevel = (thinkingLevel === 'low' || thinkingLevel === 'high' || thinkingLevel === 'medium') ? thinkingLevel : 'medium';
-                return (
-                  <div className="flex items-center gap-1.5" id="thinker-control-container">
-                    <div
-                      id="thinker-button-wrapper"
-                      className={`flex items-center gap-1.5 px-2 py-0.5 rounded-lg border transition text-[10px] font-semibold ${
-                        !supportsThinking
-                          ? 'bg-zinc-100 dark:bg-zinc-800/40 text-zinc-400 dark:text-zinc-600 border-zinc-200 dark:border-zinc-800/50 cursor-not-allowed opacity-60'
-                          : currentLevel === 'high'
-                          ? 'bg-purple-50/90 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200/80 dark:border-purple-800/60 shadow-2xs'
-                          : currentLevel === 'low'
-                          ? 'bg-blue-50/90 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200/80 dark:border-blue-800/60 shadow-2xs'
-                          : 'bg-indigo-50/90 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-200/80 dark:border-indigo-800/60 shadow-2xs'
-                      }`}
-                      title={
-                        !supportsThinking
-                          ? `O modelo (${currentAgent?.model || 'atual'}) não suporta controle de thinkingLevel`
-                          : `Thinker: ${currentLevel.toUpperCase()} (Nível de Raciocínio Explícito)`
-                      }
-                    >
-                      <Brain
-                        className={`w-3.5 h-3.5 shrink-0 ${
-                          !supportsThinking
-                            ? 'text-zinc-400'
-                            : currentLevel === 'high'
-                            ? 'text-purple-600 dark:text-purple-400'
-                            : currentLevel === 'low'
-                            ? 'text-blue-600 dark:text-blue-400'
-                            : 'text-indigo-600 dark:text-indigo-400'
-                        }`}
-                      />
-                      <span className="font-bold tracking-tight">Thinker:</span>
-                      <select
-                        id="thinker-level-select"
-                        disabled={!supportsThinking}
-                        value={currentLevel}
-                        onChange={(e) => {
-                          if (onSelectThinkingLevel) {
-                            onSelectThinkingLevel(e.target.value as ThinkingLevel);
-                          }
-                        }}
-                        className="bg-transparent font-bold outline-none cursor-pointer text-[10px] pr-0.5"
-                      >
-                        <option value="low" className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
-                          Low (Rápido)
-                        </option>
-                        <option value="medium" className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
-                          Medium (Balanceado)
-                        </option>
-                        <option value="high" className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
-                          High (Profundo)
-                        </option>
-                      </select>
-                    </div>
-                  </div>
-                );
-              })()}
             </div>
 
             {/* Right side: Clickable Approval Mode Selector */}

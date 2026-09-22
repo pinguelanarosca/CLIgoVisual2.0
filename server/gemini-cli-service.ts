@@ -13,6 +13,8 @@ import { syncPoliciesToSettings } from './policies-service.js';
 import { getGuiDataDir } from './paths-service.js';
 import { loadMcpSettings } from './mcp-service.js';
 import { acpManager } from './acp-client.js';
+import { loadAllMemories } from './memory-service.js';
+import { detectChangedFiles, createAppVersion } from './app-versions-service.js';
 
 const persistentProcesses = new Map<string, ChildProcess>();
 
@@ -1174,11 +1176,29 @@ export function executeGeminiCli(
       }
 
       // Construir o prompt de sistema efetivo preservando a arquitetura base + override sem duplicidade
-      const effectiveSystemPrompt = buildEffectiveSystemPrompt(
+      let effectiveSystemPrompt = buildEffectiveSystemPrompt(
         params.baseInstructions,
         params.systemInstructions,
         params.overrideBasePrompt
       );
+
+      // Injetar contexto da Memória Compartilhada persistente para evitar repetição de soluções falhas
+      try {
+        const primaryMem = loadAllMemories()[0];
+        if (primaryMem && primaryMem.content && primaryMem.content.trim()) {
+          effectiveSystemPrompt = `${effectiveSystemPrompt ? effectiveSystemPrompt + '\n\n' : ''}--- MEMÓRIA COMPARTILHADA PERSISTENTE (ESTADO DO TRABALHO & PIPELINE) ---
+O conteúdo a seguir é a memória viva compartilhada entre usuário e agentes.
+DIRETRIZES RÍGIDAS:
+1. Respeite as etapas e tentativas já documentadas.
+2. NUNCA repita abordagens documentadas como FALHOU ou comprovadamente falhas.
+3. Se uma etapa de fluxo de trabalho estiver concluída (✓), considere-a resolvida e avance para a próxima.
+4. Utilize a memória para manter o contexto operacional reutilizável entre sessões.
+
+[CONTEÚDO DA MEMÓRIA ATUAL]:
+${primaryMem.content.trim()}
+------------------------------------------------------------------------`;
+        }
+      } catch {}
 
       if (effectiveSystemPrompt && effectiveSystemPrompt.trim()) {
         try {
@@ -1834,6 +1854,28 @@ Você atingiu o limite de requisições.
           } catch {
             // Ignorar se já removido
           }
+        }
+
+        // Snapshot de versão assíncrono e não-bloqueante se arquivos foram modificados
+        if (!execState.cancelled) {
+          const targetWorkDir = params.workDir || process.cwd();
+          setTimeout(() => {
+            try {
+              const changed = detectChangedFiles(targetWorkDir);
+              if (changed && changed.length > 0) {
+                createAppVersion({
+                  prompt: params.prompt,
+                  workspaceDir: targetWorkDir,
+                  agentName: params.agentId,
+                  model: chosenModel,
+                  executionId,
+                  changedFiles: changed,
+                });
+              }
+            } catch (verErr: any) {
+              sysLog.warn('SYSTEM', `Aviso ao detectar alterações para App Version: ${verErr?.message}`);
+            }
+          }, 200);
         }
 
         executions.delete(executionId);
