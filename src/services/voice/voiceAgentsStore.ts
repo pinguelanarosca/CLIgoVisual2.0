@@ -74,10 +74,11 @@ export function createVoiceAgent(
   description: string,
   config: VoiceDirectorConfig,
   sttInstructions?: string,
-  type: 'narrator' | 'transcriber' | 'hybrid' = 'narrator'
+  type: 'narrator' | 'transcriber' | 'hybrid' = 'narrator',
+  customCompiledPrompt?: string
 ): VoiceAgent {
   const agents = getSavedVoiceAgents();
-  const compiledPrompt = compileDirectorPrompt(config);
+  const compiledPrompt = customCompiledPrompt !== undefined ? customCompiledPrompt : compileDirectorPrompt(config);
 
   const newAgent: VoiceAgent = {
     id: `agent_custom_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,

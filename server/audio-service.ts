@@ -28,24 +28,28 @@ function getGenAiClient(customApiKey?: string, customApiUrl?: string): GoogleGen
   return geminiClient;
 }
 
-// Fallback Model Chain Mapping: Gemini 3.5 Flash Lite -> Gemini 3.1 Flash Lite -> Gemini 3.6 Flash
+// Fallback Model Chain Mapping: Gemini 2.5 Flash -> Gemini 1.5 Flash -> Gemini 3.5 Flash Lite -> Gemini 3.5 Flash -> Gemini 3.6 Flash
+// Production stable models (high limit, 1500 req/day) are 1st and 2nd.
+// 20 requests/day preview/experimental models are strictly 3rd and 4th.
 const FALLBACK_CHAIN: Record<string, string> = {
-  'gemini-3.5-transcribe': 'gemini-3.5-flash-lite',
-  'gemini-3.5-flash-lite': 'gemini-3.1-flash-lite',
-  'gemini-3.1-flash-lite': 'gemini-3.6-flash',
-  'gemini-3.5-flash': 'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-tts-preview': 'gemini-3.5-flash-lite',
+  'gemini-2.5-flash': 'gemini-1.5-flash',
+  'gemini-1.5-flash': 'gemini-3.5-flash-lite',
+  'gemini-3.5-flash-lite': 'gemini-3.5-flash',
+  'gemini-3.5-flash': 'gemini-3.6-flash',
+  'gemini-3.1-flash-tts': 'gemini-2.5-flash',
+  'gemini-3.5-transcribe': 'gemini-2.5-flash',
 };
 
 export function normalizeAudioModel(rawModel?: string): string {
-  if (!rawModel || rawModel === 'auto') return 'gemini-3.5-flash-lite';
+  if (!rawModel || rawModel === 'auto') return 'gemini-2.5-flash';
   const m = rawModel.trim().toLowerCase();
-  if (m.includes('transcribe') || m === 'gemini-3.5-flash' || m.includes('2.5') || m.includes('tts')) {
-    return 'gemini-3.5-flash-lite';
-  }
-  if (m.includes('3.1-flash-lite')) return 'gemini-3.1-flash-lite';
+  if (m.includes('2.5-flash') || m.includes('2.5')) return 'gemini-2.5-flash';
+  if (m.includes('1.5-flash') || m.includes('1.5')) return 'gemini-1.5-flash';
+  if (m.includes('3.5-flash-lite')) return 'gemini-3.5-flash-lite';
+  if (m.includes('3.5-flash')) return 'gemini-3.5-flash';
+  if (m.includes('3.1-flash-tts')) return 'gemini-3.1-flash-tts';
   if (m.includes('3.6-flash')) return 'gemini-3.6-flash';
-  return 'gemini-3.5-flash-lite';
+  return 'gemini-2.5-flash';
 }
 
 function isRetryableError(err: any): boolean {
@@ -145,9 +149,9 @@ export async function checkAudioModelsAvailability(): Promise<AudioServiceStatus
   if (!authConfigured) {
     return {
       sttAvailable: false,
-      sttModel: 'gemini-3.5-flash-lite',
+      sttModel: 'gemini-2.5-flash',
       ttsAvailable: false,
-      ttsModel: 'gemini-3.5-flash-lite',
+      ttsModel: 'gemini-2.5-flash',
       liveAvailable: false,
       liveModel: 'gemini-3.1-flash-live-preview (arquitetura preparada)',
       message: 'Chave GEMINI_API_KEY não configurada no ambiente. Web Speech API nativa do navegador pode ser utilizada.',
@@ -158,12 +162,12 @@ export async function checkAudioModelsAvailability(): Promise<AudioServiceStatus
   // Verify models
   return {
     sttAvailable: true,
-    sttModel: 'gemini-3.5-flash-lite',
+    sttModel: 'gemini-2.5-flash',
     ttsAvailable: true,
-    ttsModel: 'gemini-3.5-flash-lite',
+    ttsModel: 'gemini-2.5-flash',
     liveAvailable: false, // Live API voice marked as prepared architecture, not mandatory initial
     liveModel: 'gemini-3.1-flash-live-preview',
-    message: 'Modelos de interface configurados: STT (gemini-3.5-flash-lite) e TTS (gemini-3.5-flash-lite).',
+    message: 'Modelos de interface configurados: STT (gemini-2.5-flash) e TTS (gemini-2.5-flash).',
     authConfigured: true,
   };
 }

@@ -238,11 +238,36 @@ priority = 90
     res.json(status);
   });
 
-  app.get('/api/api-key/validate', async (req, res) => {
-    const model = typeof req.query.model === 'string' && req.query.model.trim() ? req.query.model.trim() : 'gemini-3.1-flash-lite';
-    const result = await validateGeminiApiKey(true, model);
-    res.json(result);
-  });
+  const handleApiKeyValidation = async (req: express.Request, res: express.Response) => {
+    try {
+      const modelQuery = req.query.model || req.body?.model;
+      const model = typeof modelQuery === 'string' && modelQuery.trim() ? modelQuery.trim() : 'gemini-2.5-flash';
+      const result = await validateGeminiApiKey(true, model);
+      
+      // Map properties for complete compatibility across all front-end sections
+      res.json({
+        success: result.valid,
+        valid: result.valid,
+        configured: result.configured,
+        message: result.message,
+        modelTested: result.modelTested,
+        latencyMs: result.latencyMs,
+      });
+    } catch (err: any) {
+      console.error('Error validating API key:', err);
+      res.status(500).json({
+        success: false,
+        valid: false,
+        configured: false,
+        message: `Erro interno ao validar chave: ${err.message || err}`,
+      });
+    }
+  };
+
+  app.get('/api/api-key/validate', handleApiKeyValidation);
+  app.post('/api/api-key/validate', handleApiKeyValidation);
+  app.get('/api/cli/validate-key', handleApiKeyValidation);
+  app.post('/api/cli/validate-key', handleApiKeyValidation);
 
   app.post('/api/cli/config', (req, res) => {
     const { cliPath } = req.body;
@@ -683,40 +708,54 @@ priority = 90
   });
 
   app.post('/api/audio/stt', async (req, res) => {
-    const { audioBase64, mimeType, model, apiKey, apiUrl, instructions } = req.body;
-    if (!audioBase64) {
-      return res.status(400).json({ error: 'Dados de áudio não fornecidos.' });
-    }
-
-    const controller = new AbortController();
-    req.on('close', () => {
-      if (!res.writableEnded) {
-        controller.abort();
+    try {
+      const { audioBase64, mimeType, model, apiKey, apiUrl, instructions } = req.body;
+      if (!audioBase64) {
+        return res.status(400).json({ error: 'Dados de áudio não fornecidos.' });
       }
-    });
 
-    const result = await transcribeAudio(audioBase64, mimeType, model, apiKey, apiUrl, instructions, controller.signal);
-    if (!res.writableEnded) {
-      res.json(result);
+      const controller = new AbortController();
+      req.on('close', () => {
+        if (!res.writableEnded) {
+          controller.abort();
+        }
+      });
+
+      const result = await transcribeAudio(audioBase64, mimeType, model, apiKey, apiUrl, instructions, controller.signal);
+      if (!res.writableEnded) {
+        res.json(result);
+      }
+    } catch (err: any) {
+      console.error('Error in STT API:', err);
+      if (!res.writableEnded) {
+        res.status(500).json({ error: err.message || 'Erro interno no serviço de transcrição.' });
+      }
     }
   });
 
   app.post('/api/audio/tts', async (req, res) => {
-    const { text, voice, apiKey, apiUrl, model, instructions } = req.body;
-    if (!text) {
-      return res.status(400).json({ error: 'Texto para narração é obrigatório.' });
-    }
-
-    const controller = new AbortController();
-    req.on('close', () => {
-      if (!res.writableEnded) {
-        controller.abort();
+    try {
+      const { text, voice, apiKey, apiUrl, model, instructions } = req.body;
+      if (!text) {
+        return res.status(400).json({ error: 'Texto para narração é obrigatório.' });
       }
-    });
 
-    const result = await synthesizeSpeech(text, voice, model, apiKey, apiUrl, instructions, controller.signal);
-    if (!res.writableEnded) {
-      res.json(result);
+      const controller = new AbortController();
+      req.on('close', () => {
+        if (!res.writableEnded) {
+          controller.abort();
+        }
+      });
+
+      const result = await synthesizeSpeech(text, voice, model, apiKey, apiUrl, instructions, controller.signal);
+      if (!res.writableEnded) {
+        res.json(result);
+      }
+    } catch (err: any) {
+      console.error('Error in TTS API:', err);
+      if (!res.writableEnded) {
+        res.status(500).json({ error: err.message || 'Erro interno no serviço de síntese de voz.' });
+      }
     }
   });
 

@@ -7,9 +7,10 @@ export async function generateTtsPreviewAudio(
   sampleText: string,
   config: VoiceDirectorConfig,
   apiKey?: string,
-  apiUrl?: string
+  apiUrl?: string,
+  customCompiledPrompt?: string
 ): Promise<{ audioUrl?: string; audioBase64?: string; error?: string }> {
-  const compiledDirectorPrompt = compileDirectorPrompt(config);
+  const compiledDirectorPrompt = customCompiledPrompt !== undefined ? customCompiledPrompt : compileDirectorPrompt(config);
 
   try {
     const response = await fetch('/api/audio/tts', {

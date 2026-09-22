@@ -1,5 +1,5 @@
 import React from 'react';
-import { Volume2, AlertTriangle, AlertCircle } from 'lucide-react';
+import { Volume2, AlertTriangle, AlertCircle, Check } from 'lucide-react';
 import { AudioSettings } from '../../types.js';
 
 interface AudioSettingsSectionProps {
@@ -126,13 +126,10 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
             onChange={(e) => onUpdateAudioSettings({ sttModel: e.target.value })}
             className="w-full mt-1.5 px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-900 dark:text-zinc-100"
           >
-            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (Padrão do Sistema)</option>
-            <option value="gemini-3.5-transcribe">Gemini 3.5 Transcribe</option>
-            <option value="gemini-3.5-transcribe-live">Gemini 3.5 Transcribe Live (API Live)</option>
-            <option value="gemini-3.5-live-translate">Gemini 3.5 Live Translate (API Live)</option>
-            <option value="gemini-3-flash-live">Gemini 3 Flash Live (API Live)</option>
-            <option value="gemini-2.5-flash-native-audio-dialog">Gemini 2.5 Flash Native Audio Dialog (API Live)</option>
-            <option value="gemini-3.8-flash">Gemini 3.8 Flash (Altamente Estável)</option>
+            <option value="gemini-2.5-flash">Gemini 2.5 Flash (Padrão de Alta Estabilidade - 1500 req/dia)</option>
+            <option value="gemini-1.5-flash">Gemini 1.5 Flash (Forte Estabilidade - 1500 req/dia)</option>
+            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (Experimental - Limite 20 req/dia)</option>
+            <option value="gemini-3.5-flash">Gemini 3.5 Flash (Experimental - Limite 20 req/dia)</option>
             <option value="browser-native">Web Speech API (Conversão local do navegador - Instantânea)</option>
           </select>
 
@@ -152,11 +149,11 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
             </p>
           </div>
 
-          {audioSettings.sttModel === 'gemini-3.5-flash-lite' && (
-            <div className="mt-2 text-[10px] bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 p-2.5 rounded-lg flex gap-1.5 leading-normal">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          {(audioSettings.sttModel === 'gemini-2.5-flash' || audioSettings.sttModel === 'gemini-1.5-flash') && (
+            <div className="mt-2 text-[10px] bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 p-2.5 rounded-lg flex gap-1.5 leading-normal">
+              <Check className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-500" />
               <div>
-                <strong>Nota de Estabilidade:</strong> Se o modelo <code>gemini-3.5-flash-lite</code> apresentar erros ou ficar inativo em sua conta, o sistema ativará automaticamente o fallback para o modelo <code>gemini-3.1-flash-lite</code> e depois <code>gemini-3.5-flash</code>.
+                <strong>Fallback Inteligente Ativo:</strong> Se o modelo principal esgotar sua cota de Tier Gratuito (1500 req/dia), o sistema acionará automaticamente a linha de fallback: <strong>Gemini 1.5 Flash</strong> &rarr; <strong>Gemini 3.5 Flash Lite</strong> (3º) &rarr; <strong>Gemini 3.5 Flash</strong> (4º).
               </div>
             </div>
           )}
@@ -180,9 +177,10 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
             onChange={(e) => onUpdateAudioSettings({ ttsModel: e.target.value })}
             className="w-full px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-900 dark:text-zinc-100"
           >
-            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (Padrão do Sistema)</option>
-            <option value="gemini-3.1-flash-tts">Gemini 3.1 Flash TTS</option>
-            <option value="gemini-2.5-flash-tts">Gemini 2.5 Flash TTS</option>
+            <option value="gemini-2.5-flash">Gemini 2.5 Flash (Padrão de Alta Estabilidade - 1500 req/dia)</option>
+            <option value="gemini-1.5-flash">Gemini 1.5 Flash (Forte Estabilidade - 1500 req/dia)</option>
+            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (Experimental - Limite 20 req/dia)</option>
+            <option value="gemini-3.5-flash">Gemini 3.5 Flash (Experimental - Limite 20 req/dia)</option>
             <option value="browser-native">SpeechSynthesis Nativo (Instantâneo - Resposta imediata sem rede)</option>
           </select>
 

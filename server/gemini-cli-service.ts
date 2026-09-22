@@ -196,9 +196,10 @@ export async function validateGeminiApiKey(
 
   const startTime = Date.now();
   const validationModels = Array.from(new Set([
-    targetModel && targetModel !== 'gemini-3.1-flash-lite' ? targetModel : 'gemini-3.5-flash-lite',
-    'gemini-3.5-flash-lite',
-    'gemini-3.6-flash',
+    targetModel && targetModel !== 'gemini-3.1-flash-lite' ? targetModel : 'gemini-2.5-flash',
+    'gemini-2.5-flash',
+    'gemini-1.5-flash',
+    'gemini-2.0-flash',
   ]));
 
   let lastError: any = null;

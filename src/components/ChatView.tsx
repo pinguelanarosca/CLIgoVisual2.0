@@ -164,6 +164,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<any>(null);
   const autoScrollRef = useRef(true);
+  const thinkingMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (thinkingMenuRef.current && !thinkingMenuRef.current.contains(event.target as Node)) {
+        setShowThinkingMenu(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   const scrollToBottom = () => {
     if (autoScrollRef.current) {
@@ -891,7 +904,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </div>
                 <button
                   type="button"
+                  tabIndex={-1}
                   onClick={cancelTranscription}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }
+                  }}
                   className="px-2 py-0.5 text-xs rounded bg-red-950/80 hover:bg-red-900 border border-red-800/80 text-red-300 transition flex items-center gap-1 cursor-pointer font-sans"
                   title="Cancelar transcrição"
                 >
@@ -966,7 +986,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               )}
 
               {/* 3. Nível de pensamento (Cérebro) */}
-              <div className="relative">
+              <div ref={thinkingMenuRef} className="relative">
                 {(() => {
                   const supportsThinking = isThinkingSupported(currentAgent?.model);
                   const currentLevel: ThinkingLevel =

@@ -147,7 +147,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // API Live Validation state
   const [isValidatingApi, setIsValidatingApi] = useState(false);
-  const [validationModel, setValidationModel] = useState<string>('gemini-3.1-flash-lite');
+  const [validationModel, setValidationModel] = useState<string>('gemini-2.5-flash');
   const [apiValidationResult, setApiValidationResult] = useState<{
     success: boolean;
     message: string;

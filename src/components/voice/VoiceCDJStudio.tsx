@@ -177,7 +177,8 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
       sampleText,
       deckConfig,
       audioSettings.audioApiKey,
-      audioSettings.audioApiUrl
+      audioSettings.audioApiUrl,
+      editedPrompt
     );
 
     setIsBuffering(false);
@@ -227,7 +228,9 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
       agentNameInput.trim(),
       agentDescInput.trim(),
       deckConfig,
-      audioSettings.sttInstructions
+      audioSettings.sttInstructions,
+      'narrator',
+      editedPrompt
     );
     setAgents(getSavedVoiceAgents());
     setShowSaveAgentModal(false);
@@ -245,10 +248,14 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
   const handleLoadAgentToDeck = (agent: VoiceAgent) => {
     setDeckConfig(agent.config);
     if (agent.directorPrompt) {
+      setEditedPrompt(agent.directorPrompt);
+      setIsPromptEdited(true);
       onUpdateAudioSettings({
         ttsVoice: agent.config.baseGeminiVoice,
         ttsInstructions: agent.directorPrompt,
       });
+    } else {
+      setIsPromptEdited(false);
     }
   };
 
@@ -316,7 +323,15 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
     reader.readAsText(file);
   };
 
-  const compiledPromptPreview = compileDirectorPrompt(deckConfig);
+  const autoCompiled = compileDirectorPrompt(deckConfig);
+  const [editedPrompt, setEditedPrompt] = useState<string>('');
+  const [isPromptEdited, setIsPromptEdited] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!isPromptEdited) {
+      setEditedPrompt(autoCompiled);
+    }
+  }, [autoCompiled, isPromptEdited]);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -447,9 +462,10 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
               }}
               className="w-full px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-900 dark:text-zinc-100"
             >
-              <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (Recomendado do Sistema)</option>
-              <option value="gemini-3.1-flash-tts">Gemini 3.1 Flash TTS</option>
-              <option value="gemini-2.5-flash-tts">Gemini 2.5 Flash TTS</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash (Padrão de Alta Estabilidade - 1500 req/dia)</option>
+              <option value="gemini-1.5-flash">Gemini 1.5 Flash (Forte Estabilidade - 1500 req/dia)</option>
+              <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (Experimental - Limite 20 req/dia)</option>
+              <option value="gemini-3.5-flash">Gemini 3.5 Flash (Experimental - Limite 20 req/dia)</option>
               <option value="browser-native">SpeechSynthesis Nativo Local</option>
             </select>
           </div>
@@ -662,14 +678,43 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
         />
 
         {/* Visualização Transparente do Director Prompt Compilado */}
-        <div className="p-3 bg-zinc-900 text-zinc-300 rounded-xl border border-zinc-800 font-mono text-[10px] leading-relaxed space-y-1">
+        <div className="p-3 bg-zinc-900 text-zinc-300 rounded-xl border border-zinc-800 font-mono text-[10px] leading-relaxed space-y-1.5">
           <div className="text-zinc-400 font-bold flex items-center justify-between">
-            <span>PROMPT DO DIRETOR GEMINI COMPILADO (TRANSPARÊNCIA TOTAL API):</span>
-            <span className="text-emerald-400">STATUS: REGRA ABSOLUTA</span>
+            <span className="flex items-center gap-1.5">
+              PROMPT DO DIRETOR GEMINI COMPILADO (TRANSPARÊNCIA TOTAL API):
+              {isPromptEdited && (
+                <span className="text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1 rounded">
+                  Editado Manualmente
+                </span>
+              )}
+            </span>
+            <div className="flex items-center gap-2">
+              {isPromptEdited && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsPromptEdited(false);
+                    setEditedPrompt(autoCompiled);
+                  }}
+                  className="text-amber-400 hover:text-amber-300 transition text-[9px] font-bold underline cursor-pointer"
+                >
+                  Resetar para os Knobs da Mesa
+                </button>
+              )}
+              <span className="text-emerald-400">STATUS: REGRA ABSOLUTA</span>
+            </div>
           </div>
-          <pre className="whitespace-pre-wrap text-zinc-300 font-mono text-[10px]">
-            {compiledPromptPreview}
-          </pre>
+          <textarea
+            value={editedPrompt}
+            onChange={(e) => {
+              setEditedPrompt(e.target.value);
+              setIsPromptEdited(true);
+              onUpdateAudioSettings({ ttsInstructions: e.target.value });
+            }}
+            rows={5}
+            className="w-full p-2 bg-zinc-950 text-zinc-300 border border-zinc-800 rounded-lg font-mono text-[10px] leading-relaxed focus:outline-none focus:ring-1 focus:ring-emerald-500/20 resize-y"
+            placeholder="Edite as regras absolutas da direção vocal livremente..."
+          />
         </div>
       </div>
 
