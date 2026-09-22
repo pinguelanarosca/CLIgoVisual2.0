@@ -30,6 +30,7 @@ import {
   FileJson,
   File,
   X,
+  Globe,
 } from 'lucide-react';
 import { LiveAudioWaveform } from './LiveAudioWaveform.js';
 import {
@@ -48,6 +49,7 @@ import { TokenMonitorBar } from './TokenMonitorBar.js';
 import { MessageRenderer } from './MessageRenderer.js';
 import { AgentProcessAccordion } from './AgentProcessAccordion.js';
 import { ContentViewerSidebar, ContentViewerItem } from './ContentViewerSidebar.js';
+import { classifyToolActivity, generateActivityTitle } from '../utils/activityTraceUtils.js';
 
 export const isThinkingSupported = (model?: string): boolean => {
   if (!model) return true;
@@ -449,31 +451,47 @@ export const ChatView: React.FC<ChatViewProps> = ({
               if (msg.isStreaming) {
                 const runningTool = msg.toolCalls?.find((t) => t.status === 'running');
                 if (runningTool) {
-                  const name = runningTool.toolName.toLowerCase();
-                  if (name.includes('edit') || name.includes('write')) {
+                  const { type, isWebSearch } = classifyToolActivity(runningTool.toolName, runningTool.parameters);
+                  const title = generateActivityTitle(type, 'running', runningTool.toolName, runningTool.parameters);
+
+                  if (isWebSearch) {
+                    return {
+                      icon: <Globe className="w-3 h-3 text-cyan-400 animate-pulse" />,
+                      label: title,
+                      color: 'text-cyan-400',
+                    };
+                  }
+                  if (type === 'file_edit' || type === 'file_create') {
                     return {
                       icon: <FileEdit className="w-3 h-3 text-blue-400 animate-pulse" />,
-                      label: `Editando arquivo (${runningTool.toolName})...`,
+                      label: title,
                       color: 'text-blue-400',
                     };
                   }
-                  if (name.includes('read') || name.includes('dir') || name.includes('list') || name.includes('search') || name.includes('view') || name.includes('grep')) {
+                  if (type === 'file_read') {
                     return {
                       icon: <FolderOpen className="w-3 h-3 text-amber-400 animate-pulse" />,
-                      label: `Lendo workspace (${runningTool.toolName})...`,
+                      label: title,
                       color: 'text-amber-400',
                     };
                   }
-                  if (name.includes('command') || name.includes('bash') || name.includes('exec') || name.includes('run')) {
+                  if (type === 'command') {
                     return {
                       icon: <Terminal className="w-3 h-3 text-emerald-400 animate-pulse" />,
-                      label: `Executando comando no terminal...`,
+                      label: title,
                       color: 'text-emerald-400',
+                    };
+                  }
+                  if (type === 'invoke_agent') {
+                    return {
+                      icon: <Bot className="w-3 h-3 text-violet-400 animate-pulse" />,
+                      label: title,
+                      color: 'text-violet-400',
                     };
                   }
                   return {
                     icon: <Cpu className="w-3 h-3 text-purple-400 animate-pulse" />,
-                    label: `Executando ${runningTool.toolName}...`,
+                    label: title,
                     color: 'text-purple-400',
                   };
                 }
@@ -486,8 +504,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
               // Finished state
               if (msg.toolCalls && msg.toolCalls.length > 0) {
-                const hasEdits = msg.toolCalls.some((t) => t.toolName.toLowerCase().includes('edit') || t.toolName.toLowerCase().includes('write'));
-                const hasCmds = msg.toolCalls.some((t) => t.toolName.toLowerCase().includes('command') || t.toolName.toLowerCase().includes('exec') || t.toolName.toLowerCase().includes('run'));
+                const hasEdits = msg.toolCalls.some((t) => {
+                  const { type } = classifyToolActivity(t.toolName, t.parameters);
+                  return type === 'file_edit' || type === 'file_create';
+                });
+                const hasCmds = msg.toolCalls.some((t) => {
+                  const { type } = classifyToolActivity(t.toolName, t.parameters);
+                  return type === 'command';
+                });
+                const hasSearch = msg.toolCalls.some((t) => {
+                  const { isWebSearch } = classifyToolActivity(t.toolName, t.parameters);
+                  return isWebSearch;
+                });
+
+                if (hasSearch) {
+                  return {
+                    icon: <Globe className="w-3 h-3 text-cyan-400" />,
+                    label: 'Concluído: Pesquisa web realizada',
+                    color: 'text-cyan-400',
+                  };
+                }
                 if (hasEdits) {
                   return {
                     icon: <FileEdit className="w-3 h-3 text-blue-400" />,
@@ -555,10 +591,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     )}
                   </div>
 
-                  {/* Tool Invocations Accordion Simples */}
-                  {!isUser && msg.toolCalls && msg.toolCalls.length > 0 && (
+                  {/* Tool Invocations Accordion & Activity Trace */}
+                  {!isUser && (
+                    (msg.activities && msg.activities.length > 0) ||
+                    (msg.toolCalls && msg.toolCalls.length > 0) ||
+                    (msg.rawPayloadReceived?.rawEvents && msg.rawPayloadReceived.rawEvents.length > 0)
+                  ) && (
                     <div className="w-full">
-                      <AgentProcessAccordion toolCalls={msg.toolCalls} />
+                      <AgentProcessAccordion
+                        toolCalls={msg.toolCalls}
+                        activities={msg.activities}
+                        rawEvents={msg.rawPayloadReceived?.rawEvents}
+                        isStreaming={msg.isStreaming}
+                        agentName={msg.agentName}
+                        model={msg.model}
+                        error={msg.error}
+                      />
                     </div>
                   )}
 

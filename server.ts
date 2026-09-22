@@ -1025,6 +1025,11 @@ priority = 90
     res.json(result);
   });
 
+  // API 404 Fallback: Ensure unhandled API routes always return JSON and never fall through to Vite HTML
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: `Rota API não encontrada: ${req.method} ${req.path}` });
+  });
+
   // --- Vite middleware / static files ---
   const isProduction = process.env.NODE_ENV === 'production' || !fs.existsSync(path.join(process.cwd(), 'index.html'));
 

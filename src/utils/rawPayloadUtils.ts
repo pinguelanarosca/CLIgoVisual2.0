@@ -3,8 +3,10 @@ import { estimateTokens } from './tokenUtils.js';
 import { buildEffectiveSystemPrompt } from './systemPromptUtils.js';
 
 export interface RawInspectionData {
-  finalApiRequest: FinalApiRequest;
-  parameterOrigins: ParameterOrigins;
+  finalApiRequest: FinalApiRequest | null;
+  isRealCapturedRequest: boolean;
+  allRealRequests?: any[];
+  parameterOrigins?: ParameterOrigins;
   input: {
     cliExecutable: string;
     model: string;
@@ -159,105 +161,19 @@ export function getRawInspectionData(
     });
   }
 
-  const finalApiRequest: FinalApiRequest = msg.finalApiRequest || msg.rawPayloadSent?.finalApiRequest || {
-    model: resolvedModel,
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          {
-            text: inputData.promptText || msg.content,
-          },
-        ],
-      },
-    ],
-    systemInstruction: sysInst.trim()
-      ? {
-          parts: [
-            {
-              text: sysInst.trim(),
-            },
-          ],
-        }
-      : null,
-    generationConfig: {
-      temperature: resolvedTemp,
-      topP: resolvedTopP,
-      topK: resolvedTopK,
-      ...(typeof resolvedMaxTokens === 'number' ? { maxOutputTokens: resolvedMaxTokens } : {}),
-      thinkingConfig: {
-        includeThoughts: true,
-        thinkingLevel: resolvedThinkingLevel,
-      },
-    },
-    tools: resolvedFunctionDeclarations.length > 0
-      ? [
-          {
-            functionDeclarations: resolvedFunctionDeclarations,
-          },
-        ]
-      : [],
-    safetySettings: [
-      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-    ],
-  };
+  // EXCLUSIVAMENTE o request real capturado do runtime do Gemini CLI
+  const finalApiRequest: FinalApiRequest | null = msg.finalApiRequest || null;
+  const isRealCapturedRequest = Boolean(msg.finalApiRequest);
+  const allRealRequests = msg.allFinalApiRequests && msg.allFinalApiRequests.length > 0
+    ? msg.allFinalApiRequests
+    : (msg.finalApiRequest ? [{
+        model: msg.finalApiRequest.model,
+        finalApiRequest: msg.finalApiRequest,
+        timestamp: msg.timestamp,
+        callIndex: 1,
+      }] : []);
 
-  const parameterOrigins: ParameterOrigins = msg.parameterOrigins || msg.rawPayloadSent?.parameterOrigins || {
-    model: {
-      value: finalApiRequest.model,
-      source: `Configuração do Agente (${agent?.id || agentName}) sincronizada no .gemini/settings.json`,
-      category: 'Model Routing',
-    },
-    'generationConfig.temperature': {
-      value: resolvedTemp,
-      source: agent?.temperature !== undefined
-        ? `Configuração explícita do Agente (${agent.id || agentName})`
-        : 'Valor padrão do modelo (0.2)',
-      category: 'Hyperparameters',
-    },
-    'generationConfig.topP': {
-      value: resolvedTopP,
-      source: agent?.topP !== undefined
-        ? `Configuração explícita do Agente (${agent.id || agentName})`
-        : 'Valor padrão do modelo (0.95)',
-      category: 'Hyperparameters',
-    },
-    'generationConfig.topK': {
-      value: resolvedTopK,
-      source: agent?.topK !== undefined
-        ? `Configuração explícita do Agente (${agent.id || agentName})`
-        : 'Valor padrão do modelo (40)',
-      category: 'Hyperparameters',
-    },
-    'generationConfig.maxOutputTokens': {
-      value: resolvedMaxTokens ?? 'Padrão / Janela Máxima',
-      source: agent?.maxOutputTokens !== undefined
-        ? `Configuração explícita do Agente (${agent.id || agentName})`
-        : 'Padrão não limitado pela chamada',
-      category: 'Token Limits',
-    },
-    'generationConfig.thinkingConfig': {
-      value: {
-        includeThoughts: true,
-        thinkingLevel: resolvedThinkingLevel,
-      },
-      source: `Nível de Raciocínio explícito selecionado (thinkingLevel: "${resolvedThinkingLevel}", includeThoughts: true)`,
-      category: 'Reasoning Mode',
-    },
-    systemInstruction: {
-      value: sysInst ? `${sysInst.length} caracteres` : 'Nenhum',
-      source: `Instruções de Sistema do Agente (.gemini/agents/${agent?.id || 'principal'}.md)`,
-      category: 'Agent Directives',
-    },
-    contents: {
-      value: `${(inputData.fullInjectedPrompt || msg.content).length} caracteres`,
-      source: 'Prompt do usuário + Cabeçalho de Contexto de Workspace injetado',
-      category: 'Context & Prompt',
-    },
-  };
+  const parameterOrigins: ParameterOrigins = msg.parameterOrigins || {};
 
   // Build raw events log if missing
   const rawEventsFromMsg = msg.rawPayloadReceived?.rawEvents || [];
@@ -309,6 +225,8 @@ export function getRawInspectionData(
 
   return {
     finalApiRequest,
+    isRealCapturedRequest,
+    allRealRequests,
     parameterOrigins,
     input: {
       cliExecutable: inputData.cliExecutable || 'gemini',

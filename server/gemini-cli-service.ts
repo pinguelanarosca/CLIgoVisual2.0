@@ -1226,174 +1226,58 @@ export function executeGeminiCli(
         env.GEMINI_SYSTEM_MD = systemPromptFile;
       }
 
-      // Montar e registrar o objeto final de requisição da API do Google antes da chamada (sem credenciais sensíveis)
-      const resolvedTemp = typeof params.temperature === 'number' ? params.temperature : 0.2;
-      const resolvedTopP = typeof params.topP === 'number' ? params.topP : 0.95;
-      const resolvedTopK = typeof params.topK === 'number' ? params.topK : 40;
-      const resolvedMaxTokens = typeof params.maxOutputTokens === 'number' ? params.maxOutputTokens : undefined;
-      const resolvedThinkingLevel: 'low' | 'medium' | 'high' =
-        (params.thinkingLevel === 'low' || params.thinkingLevel === 'high' || params.thinkingLevel === 'medium')
-          ? params.thinkingLevel
-          : (params.thinking_level === 'low' || params.thinking_level === 'high' || params.thinking_level === 'medium')
-          ? params.thinking_level
-          : 'medium';
-
-      const finalApiRequest = {
-        model: chosenModel.startsWith('models/') ? chosenModel : `models/${chosenModel}`,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: finalPrompt,
-              },
-            ],
-          },
-        ],
-        systemInstruction: effectiveSystemPrompt && effectiveSystemPrompt.trim()
-          ? {
-              parts: [
-                {
-                  text: effectiveSystemPrompt.trim(),
-                },
-              ],
-            }
-          : null,
-        generationConfig: {
-          temperature: resolvedTemp,
-          topP: resolvedTopP,
-          topK: resolvedTopK,
-          ...(typeof resolvedMaxTokens === 'number' ? { maxOutputTokens: resolvedMaxTokens } : {}),
-          ...(params.thinking !== false ? {
-            thinkingConfig: (chosenModel.toLowerCase().includes('pro') || chosenModel.toLowerCase().includes('thinking') || chosenModel.toLowerCase().includes('gemini-3.7') || chosenModel.toLowerCase().includes('gemini-3.8'))
-              ? (chosenModel.toLowerCase().includes('gemini-3'))
-                ? { includeThoughts: true, thinkingLevel: resolvedThinkingLevel }
-                : { includeThoughts: true, thinkingBudget: -1 }
-              : undefined
-          } : {})
-        },
-        tools: [] as Array<{ functionDeclarations: Array<{ name: string; description: string; parameters?: any }> }>,
-        safetySettings: [
-          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-        ],
+      // Configuração da GUI e Invocação da CLI (Conceitos separados do Final Model Request)
+      const guiConfiguration = {
+        model: chosenModel,
+        agentId: agentId || 'principal',
+        temperature: typeof params.temperature === 'number' ? params.temperature : undefined,
+        topP: typeof params.topP === 'number' ? params.topP : undefined,
+        topK: typeof params.topK === 'number' ? params.topK : undefined,
+        maxOutputTokens: typeof params.maxOutputTokens === 'number' ? params.maxOutputTokens : undefined,
+        thinkingLevel: params.thinkingLevel || params.thinking_level || 'medium',
+        thinkingActive: params.thinking !== false,
+        systemPrompt: effectiveSystemPrompt || undefined,
+        mcpToolsCount: mcpTools?.length || 0,
+        requestedTools: params.tools || [],
       };
 
-      // Mapear ferramentas reais (MCPs como Exa AI e ferramentas do agente)
-      const realFunctionDeclarations: Array<{ name: string; description: string; parameters?: any }> = [];
-      if (mcpTools && mcpTools.length > 0) {
-        const mappedTools = mcpTools.map((t: any) => ({
-          name: t.name,
-          description: t.description || '',
-          parameters: t.inputSchema || { type: 'OBJECT', properties: {} }
-        }));
-        realFunctionDeclarations.push(...mappedTools);
-      }
-
-      if (params.tools && Array.isArray(params.tools) && params.tools.length > 0) {
-        const knownToolDescriptions: Record<string, string> = {
-          read_file: 'Lê o conteúdo de arquivos locais no diretório de trabalho autorizado.',
-          write_file: 'Cria ou sobrescreve arquivos no diretório de trabalho autorizado.',
-          edit_file: 'Aplica alterações cirúrgicas e substituições de texto em arquivos existentes.',
-          list_directory: 'Lista arquivos e diretórios da árvore de trabalho.',
-          run_command: 'Executa comandos shell controlados no workspace Ubuntu Linux.',
-          search_files: 'Pesquisa padrões de texto ou expressões regulares no projeto.',
-        };
-        params.tools.forEach((toolName: string) => {
-          if (!realFunctionDeclarations.some((f) => f.name === toolName)) {
-            realFunctionDeclarations.push({
-              name: toolName,
-              description: knownToolDescriptions[toolName] || `Ferramenta customizada do agente: ${toolName}`,
-            });
-          }
-        });
-      }
-
-      if (realFunctionDeclarations.length > 0) {
-        finalApiRequest.tools = [
-          {
-            functionDeclarations: realFunctionDeclarations,
-          },
-        ];
-      }
-
-      const parameterOrigins = {
-        model: {
-          value: finalApiRequest.model,
-          source: params.model
-            ? `Definido explicitamente na requisição da GUI / Agente Selecionado (${agentId || 'N/D'})`
-            : `Padrão do Agente (${agentId || 'principal'}) sincronizado no .gemini/settings.json`,
-          category: 'Model Routing',
+      const cliInvocation = {
+        executable: cliPath,
+        args,
+        cwd,
+        envSummary: {
+          NODE_ENV: env.NODE_ENV,
+          GEMINI_CLI_TRUST_WORKSPACE: env.GEMINI_CLI_TRUST_WORKSPACE,
         },
-        'generationConfig.temperature': {
-          value: resolvedTemp,
-          source: params.temperature !== undefined
-            ? `Configuração explícita do Agente / Payload da GUI (${params.temperature})`
-            : 'Valor padrão configurado do modelo (0.2)',
-          category: 'Hyperparameters',
-        },
-        'generationConfig.topP': {
-          value: resolvedTopP,
-          source: params.topP !== undefined
-            ? `Configuração explícita do Agente / Payload da GUI (${params.topP})`
-            : 'Valor padrão configurado do modelo (0.95)',
-          category: 'Hyperparameters',
-        },
-        'generationConfig.topK': {
-          value: resolvedTopK,
-          source: params.topK !== undefined
-            ? `Configuração explícita do Agente / Payload da GUI (${params.topK})`
-            : 'Valor padrão configurado do modelo (40)',
-          category: 'Hyperparameters',
-        },
-        'generationConfig.maxOutputTokens': {
-          value: resolvedMaxTokens ?? 'Padrão / Janela Máxima',
-          source: params.maxOutputTokens !== undefined
-            ? `Configuração explícita do Agente / Payload da GUI (${params.maxOutputTokens})`
-            : 'Padrão não limitado pela chamada',
-          category: 'Token Limits',
-        },
-        'generationConfig.thinkingConfig': {
-          value: {
-            includeThoughts: true,
-            thinkingLevel: resolvedThinkingLevel,
-          },
-          source: `Nível de Raciocínio explícito selecionado (thinkingLevel: "${resolvedThinkingLevel}", includeThoughts: true)`,
-          category: 'Reasoning Mode',
-        },
-        systemInstruction: {
-          value: effectiveSystemPrompt ? `${effectiveSystemPrompt.length} caracteres` : 'Nenhum',
-          source: params.overrideBasePrompt
-            ? `Sobrescrita de Instruções (.gemini/agents/${agentId || 'custom'}.md)`
-            : params.systemInstructions
-            ? `Instruções de Sistema do Agente (.gemini/agents/${agentId || 'principal'}.md) combinadas com base`
-            : 'Instruções base do Gemini CLI Orchestrator',
-          category: 'Agent Directives',
-        },
-        contents: {
-          value: `${finalPrompt.length} caracteres`,
-          source: 'Prompt do usuário concatenado ao cabeçalho de contexto do workspace e diretórios autorizados',
-          category: 'Context & Prompt',
-        },
-        mcpTools: {
-          value: `${mcpTools.length} ferramentas`,
-          source: `MCP Exa (${discoverySource === 'live' ? 'Live Discovery Cache' : 'Fallback Cache Resiliente'})`,
-          category: 'MCP & Extensions',
-        },
+        timestamp: new Date().toISOString(),
       };
 
-      // Notificar imediatamente o cliente SSE sobre o payload final montado para auditoria
+      // Notificar cliente sobre a configuração inicial da GUI e chamada CLI (NÃO é o Final Model Request)
       try {
         params.onEvent({
-          type: 'final_api_request',
+          type: 'gui_configuration',
           data: {
-            finalApiRequest,
-            parameterOrigins,
+            guiConfiguration,
+            cliInvocation,
           },
         });
       } catch {}
+
+      // Preparar diretório isolado para dump de requisições reais capturadas
+      const requestDumpDir = path.join(os.tmpdir(), `gcli-reqs-${executionId}`);
+      try { fs.mkdirSync(requestDumpDir, { recursive: true }); } catch {}
+      env.GEMINI_CLI_REQUEST_DUMP_DIR = requestDumpDir;
+
+      const capturedRealRequests: Array<{
+        requestId?: string;
+        promptId?: string;
+        sessionId?: string;
+        model: string;
+        role?: string;
+        timestamp: string;
+        finalApiRequest: any;
+        callIndex: number;
+      }> = [];
 
       const isCwdHome = cwd === os.homedir();
       const authDirs = params.authorizedDirs || [];
@@ -1401,7 +1285,7 @@ export function executeGeminiCli(
       sysLog.info('CLI', `[WORKSPACE] cwd: "${cwd}" (isHome: ${isCwdHome}), authorizedDirs: [${authDirs.join(', ')}] (containsHome: ${containsHome})`);
 
       const tSpawn = performance.now();
-      console.log(`[PERF] [${executionId}] spawn_start=${(tSpawn - t0).toFixed(1)}ms (model: ${chosenModel}, thinking: ${resolvedThinkingLevel}, thinkingActive: ${params.thinking !== false})`);
+      console.log(`[PERF] [${executionId}] spawn_start=${(tSpawn - t0).toFixed(1)}ms (model: ${chosenModel}, thinking: ${params.thinkingLevel || 'medium'}, thinkingActive: ${params.thinking !== false})`);
 
       const child = spawn(cliPath, args, {
         cwd,
@@ -1460,14 +1344,35 @@ export function executeGeminiCli(
               }
 
               if (parsed.type === 'final_api_request') {
-                const finalReq = parsed.finalApiRequest || parsed.data?.finalApiRequest || parsed;
-                params.onEvent({
-                  type: 'final_api_request',
-                  data: {
+                const finalReq = parsed.finalApiRequest || parsed.data?.finalApiRequest;
+                if (finalReq) {
+                  const reqItem = {
+                    requestId: parsed.requestId || parsed.promptId || `req_${Date.now()}_${capturedRealRequests.length + 1}`,
+                    promptId: parsed.promptId,
+                    sessionId: parsed.sessionId || effectiveSessionId || params.sessionId,
+                    model: parsed.model || finalReq.model,
+                    role: parsed.role,
+                    timestamp: parsed.timestamp || new Date().toISOString(),
                     finalApiRequest: finalReq,
-                    parameterOrigins: parsed.parameterOrigins || parsed.data?.parameterOrigins,
-                  },
-                });
+                    callIndex: capturedRealRequests.length + 1,
+                  };
+                  capturedRealRequests.push(reqItem);
+
+                  params.onEvent({
+                    type: 'final_api_request',
+                    data: {
+                      finalApiRequest: finalReq,
+                      allRealRequests: capturedRealRequests,
+                      requestId: reqItem.requestId,
+                      promptId: reqItem.promptId,
+                      sessionId: reqItem.sessionId,
+                      model: reqItem.model,
+                      timestamp: reqItem.timestamp,
+                      callIndex: reqItem.callIndex,
+                      role: reqItem.role,
+                    },
+                  });
+                }
                 continue;
               }
               if (parsed.type === 'result' && parsed.status === 'error') {
@@ -1561,6 +1466,47 @@ export function executeGeminiCli(
         if (tempSettingsFile && fs.existsSync(tempSettingsFile)) {
           try { fs.unlinkSync(tempSettingsFile); } catch {}
         }
+
+        // Se o evento final_api_request não foi capturado do stream de stdout, inspecionar o diretório de dump em disco
+        if (capturedRealRequests.length === 0 && fs.existsSync(requestDumpDir)) {
+          try {
+            const dumpedFiles = fs.readdirSync(requestDumpDir).filter(f => f.endsWith('.json')).sort();
+            for (const df of dumpedFiles) {
+              const fullFp = path.join(requestDumpDir, df);
+              const content = fs.readFileSync(fullFp, 'utf8');
+              const parsedDump = JSON.parse(content);
+              const finalReq = parsedDump.finalApiRequest || parsedDump.data?.finalApiRequest;
+              if (finalReq) {
+                const reqItem = {
+                  requestId: parsedDump.requestId || parsedDump.promptId || `req_${Date.now()}_${capturedRealRequests.length + 1}`,
+                  promptId: parsedDump.promptId,
+                  sessionId: parsedDump.sessionId || effectiveSessionId || params.sessionId,
+                  model: parsedDump.model || finalReq.model,
+                  role: parsedDump.role,
+                  timestamp: parsedDump.timestamp || new Date().toISOString(),
+                  finalApiRequest: finalReq,
+                  callIndex: capturedRealRequests.length + 1,
+                };
+                capturedRealRequests.push(reqItem);
+                params.onEvent({
+                  type: 'final_api_request',
+                  data: {
+                    finalApiRequest: finalReq,
+                    allRealRequests: capturedRealRequests,
+                    requestId: reqItem.requestId,
+                    promptId: reqItem.promptId,
+                    sessionId: reqItem.sessionId,
+                    model: reqItem.model,
+                    timestamp: reqItem.timestamp,
+                    callIndex: reqItem.callIndex,
+                    role: reqItem.role,
+                  },
+                });
+              }
+            }
+          } catch {}
+        }
+        try { fs.rmSync(requestDumpDir, { recursive: true, force: true }); } catch {}
         if (code !== 0 && stderrText.includes("No previous sessions found")) {
           sysLog.warn('CLI', `Sessão ${params.sessionId} não encontrada, limpando cache.`);
           if (params.sessionId) knownSessions.delete(params.sessionId);

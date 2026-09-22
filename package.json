@@ -10,6 +10,7 @@
     "package:linux": "node scripts/package-ubuntu.cjs",
     "build:ubuntu": "node scripts/package-ubuntu.cjs",
     "preview": "vite preview",
+    "postinstall": "node scripts/patch-gemini-cli.cjs",
     "reset": "./reset.sh",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"

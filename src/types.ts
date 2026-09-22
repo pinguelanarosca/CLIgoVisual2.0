@@ -132,6 +132,57 @@ export interface ToolCallStep {
   componentExecutor?: string;
   origin?: string;
   wrapperRelation?: string;
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+}
+
+export type ActivityType =
+  | 'thinking'
+  | 'command'
+  | 'file_read'
+  | 'file_edit'
+  | 'file_create'
+  | 'web_search'
+  | 'mcp_tool'
+  | 'invoke_agent'
+  | 'tool'
+  | 'validation'
+  | 'error'
+  | 'cancelled'
+  | 'completed';
+
+export type ActivityStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface NormalizedActivity {
+  id: string;
+  sequence: number;
+  type: ActivityType;
+  status: ActivityStatus;
+  title: string;
+  timestamp: string;
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+
+  // Origin & correlation identifiers
+  toolCallId?: string;
+  eventId?: string;
+  requestId?: string;
+
+  // Real data for detail layer (Layer 3)
+  toolName?: string;
+  command?: string;
+  filePath?: string;
+  searchQuery?: string;
+  targetAgent?: string;
+  agentName?: string;
+  model?: string;
+  arguments?: Record<string, any>;
+  result?: string;
+  error?: string;
+  metadata?: Record<string, any>;
+  rawEvent?: any;
 }
 
 export interface FinalApiRequest {
@@ -157,6 +208,17 @@ export interface ParameterOrigin {
   category?: string;
 }
 
+export interface CapturedRealRequest {
+  requestId?: string;
+  promptId?: string;
+  sessionId?: string;
+  model: string;
+  role?: string;
+  timestamp: string;
+  finalApiRequest: FinalApiRequest;
+  callIndex?: number;
+}
+
 export interface ParameterOrigins {
   [paramName: string]: ParameterOrigin;
 }
@@ -169,11 +231,13 @@ export interface ChatMessage {
   model?: string;
   agentName?: string;
   toolCalls?: ToolCallStep[];
+  activities?: NormalizedActivity[];
   isStreaming?: boolean;
   error?: string;
   audioUrl?: string;
   isNarrating?: boolean;
   finalApiRequest?: FinalApiRequest;
+  allFinalApiRequests?: CapturedRealRequest[];
   parameterOrigins?: ParameterOrigins;
   rawPayloadSent?: {
     cliExecutable?: string;

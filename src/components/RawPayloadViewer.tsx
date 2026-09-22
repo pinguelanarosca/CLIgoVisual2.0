@@ -30,15 +30,28 @@ export const RawPayloadViewer: React.FC<RawPayloadViewerProps> = ({ data, isUser
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(true);
 
+  const [selectedCallIndex, setSelectedCallIndex] = useState<number>(0);
+
+  const realRequestsList = data.allRealRequests && data.allRealRequests.length > 0
+    ? data.allRealRequests
+    : data.finalApiRequest
+    ? [{ finalApiRequest: data.finalApiRequest, callIndex: 1, timestamp: new Date().toISOString(), model: data.finalApiRequest.model }]
+    : [];
+
+  const activeRequestObj = realRequestsList[selectedCallIndex]?.finalApiRequest || data.finalApiRequest;
+  const isRealCaptured = data.isRealCapturedRequest || realRequestsList.length > 0;
+
   const fullJsonStructure = {
-    finalApiRequest: data.finalApiRequest,
+    finalApiRequest: activeRequestObj || data.finalApiRequest,
+    isRealCapturedRequest: isRealCaptured,
+    allRealRequests: data.allRealRequests,
     parameterOrigins: data.parameterOrigins,
     cliInvocation: data.input,
     output: data.output,
   };
 
   const fullJsonString = JSON.stringify(fullJsonStructure, null, 2);
-  const finalApiJsonString = JSON.stringify(data.finalApiRequest, null, 2);
+  const finalApiJsonString = JSON.stringify(activeRequestObj, null, 2);
 
   const handleCopy = (text: string, section?: string) => {
     try {
@@ -100,7 +113,7 @@ export const RawPayloadViewer: React.FC<RawPayloadViewerProps> = ({ data, isUser
     }
   };
 
-  const genConfig = data.finalApiRequest?.generationConfig || {};
+  const genConfig = activeRequestObj?.generationConfig || {};
 
   return (
     <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-950/20 dark:bg-amber-950/30 overflow-hidden text-xs shadow-xs">
@@ -198,177 +211,221 @@ export const RawPayloadViewer: React.FC<RawPayloadViewerProps> = ({ data, isUser
           {/* TAB 1: FINAL API REQUEST (O PAYLOAD REAL EFETIVAMENTE ENVIADO AO GOOGLE) */}
           {activeTab === 'finalApi' && (
             <div className="space-y-3 font-mono text-[11px] text-zinc-300">
-              {/* Alert / Explanation Banner */}
-              <div className="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30 flex items-start justify-between gap-3">
-                <div className="space-y-0.5 font-sans">
-                  <div className="text-emerald-400 font-semibold flex items-center gap-1.5 text-xs">
-                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <span>Payload Efetivo Montado Imediatamente Antes da Chamada à API Google</span>
+              {!activeRequestObj ? (
+                <div className="p-4 rounded-lg bg-zinc-900/80 border border-zinc-800 text-center space-y-2 font-sans">
+                  <div className="flex items-center justify-center gap-2 text-amber-400 font-semibold text-xs">
+                    <ShieldCheck className="w-4 h-4 text-amber-400" />
+                    <span>Nenhum Final API Request capturado para esta mensagem</span>
                   </div>
-                  <p className="text-zinc-400 text-[11px]">
-                    Valores e hiperparâmetros consolidados e transmitidos diretamente na chamada de inferência ao Google Gemini API (sem expor chaves ou credenciais sensíveis).
+                  <p className="text-[11px] text-zinc-400 max-w-md mx-auto leading-relaxed">
+                    Esta mensagem foi gerada antes da captura em tempo real ou foi restaurada de uma sessão legada.
+                    Envie uma nova mensagem no chat para inspecionar o payload real capturado no ponto de envio do Gemini CLI.
                   </p>
                 </div>
-                <button
-                  onClick={() => handleCopy(finalApiJsonString, 'finalApi')}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition text-[11px] shrink-0 font-mono"
-                >
-                  {copiedSection === 'finalApi' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedSection === 'finalApi' ? 'Copiado!' : 'Copiar finalApiRequest'}</span>
-                </button>
-              </div>
-
-              {/* Resolved Target Model */}
-              <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-between">
-                <div>
-                  <span className="text-zinc-500">Modelo Efetivo Resolvido:</span>{' '}
-                  <code className="text-emerald-400 font-bold text-xs">{data.finalApiRequest.model}</code>
-                </div>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-400">
-                  {data.parameterOrigins?.['model']?.source || 'Catálogo de Modelos'}
-                </span>
-              </div>
-
-              {/* Generation Parameters Grid (temperature, topP, topK, maxTokens, thinking) */}
-              <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-2">
-                <div className="text-amber-400 font-bold flex items-center gap-1.5">
-                  <Sliders className="w-3.5 h-3.5" />
-                  <span>Hiperparâmetros de Geração (generationConfig)</span>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
-                  <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
-                    <span className="text-zinc-500 text-[10px] block uppercase">temperature</span>
-                    <span className="text-amber-400 font-bold text-sm">{genConfig.temperature ?? '0.2'}</span>
-                    <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.temperature']?.source}>
-                      {data.parameterOrigins?.['generationConfig.temperature']?.value !== undefined ? 'Resolvido' : 'Padrão'}
-                    </span>
-                  </div>
-
-                  <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
-                    <span className="text-zinc-500 text-[10px] block uppercase">topP</span>
-                    <span className="text-cyan-400 font-bold text-sm">{genConfig.topP ?? '0.95'}</span>
-                    <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.topP']?.source}>
-                      {data.parameterOrigins?.['generationConfig.topP']?.value !== undefined ? 'Resolvido' : 'Padrão'}
-                    </span>
-                  </div>
-
-                  <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
-                    <span className="text-zinc-500 text-[10px] block uppercase">topK</span>
-                    <span className="text-purple-400 font-bold text-sm">{genConfig.topK ?? '40'}</span>
-                    <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.topK']?.source}>
-                      {data.parameterOrigins?.['generationConfig.topK']?.value !== undefined ? 'Resolvido' : 'Padrão'}
-                    </span>
-                  </div>
-
-                  <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
-                    <span className="text-zinc-500 text-[10px] block uppercase">maxOutputTokens</span>
-                    <span className="text-blue-400 font-bold text-sm">{genConfig.maxOutputTokens ?? 'Janela Total'}</span>
-                    <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.maxOutputTokens']?.source}>
-                      {genConfig.maxOutputTokens ? 'Limitado' : 'Sem Limite'}
-                    </span>
-                  </div>
-
-                  <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
-                    <span className="text-zinc-500 text-[10px] block uppercase">thinkingConfig</span>
-                    <span className={`font-bold text-sm ${genConfig.thinkingConfig?.includeThoughts ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                      {genConfig.thinkingConfig?.includeThoughts
-                        ? (genConfig.thinkingConfig?.thinkingLevel || genConfig.thinkingConfig?.thinking_level)
-                          ? `Ativo (${genConfig.thinkingConfig?.thinkingLevel || genConfig.thinkingConfig?.thinking_level})`
-                          : 'Ativo'
-                        : 'Desativado'}
-                    </span>
-                    <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.thinkingConfig']?.source}>
-                      {genConfig.thinkingConfig?.includeThoughts ? 'Thoughts ON' : 'Padrão'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* System Instruction (systemInstruction) */}
-              <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-1">
-                <div className="flex items-center justify-between text-amber-400 font-bold">
-                  <div className="flex items-center gap-1.5">
-                    <FileText className="w-3.5 h-3.5" />
-                    <span>systemInstruction (Diretivas Injetadas no Modelo)</span>
-                  </div>
-                  <span className="text-zinc-500 text-[10px] font-normal">
-                    {data.parameterOrigins?.['systemInstruction']?.source || 'Instruções do Agente'}
-                  </span>
-                </div>
-                <pre className="p-2 rounded bg-black/50 text-zinc-300 whitespace-pre-wrap max-h-40 overflow-y-auto font-sans leading-relaxed">
-                  {typeof data.finalApiRequest.systemInstruction === 'object' && data.finalApiRequest.systemInstruction?.parts
-                    ? data.finalApiRequest.systemInstruction.parts.map((p) => p.text).join('\n\n')
-                    : typeof data.finalApiRequest.systemInstruction === 'string'
-                    ? data.finalApiRequest.systemInstruction
-                    : '(Nenhuma systemInstruction customizada)'}
-                </pre>
-              </div>
-
-              {/* Contents Parts (Prompt + Context) */}
-              <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-1">
-                <div className="flex items-center justify-between text-amber-400 font-bold">
-                  <div className="flex items-center gap-1.5">
-                    <Code className="w-3.5 h-3.5" />
-                    <span>contents (Array de Mensagens & Partes de Texto)</span>
-                  </div>
-                  <span className="text-zinc-500 text-[10px] font-normal">
-                    {data.finalApiRequest.contents?.length || 1} entrada(s)
-                  </span>
-                </div>
-                <pre className="p-2 rounded bg-black/60 text-emerald-400 whitespace-pre-wrap max-h-48 overflow-y-auto">
-                  {JSON.stringify(data.finalApiRequest.contents, null, 2)}
-                </pre>
-              </div>
-
-              {/* Tools and Function Declarations */}
-              {data.finalApiRequest.tools && data.finalApiRequest.tools.length > 0 && (
-                <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-1">
-                  <div className="text-amber-400 font-bold flex items-center gap-1.5">
-                    <Terminal className="w-3.5 h-3.5" />
-                    <span>tools (Declarações de Funções Habilitadas na Chamada)</span>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 pt-1">
-                    {data.finalApiRequest.tools[0]?.functionDeclarations?.map((fn: any) => (
-                      <div key={fn.name} className="p-1.5 rounded bg-black/40 border border-zinc-800 text-[10px]">
-                        <code className="text-cyan-400 font-bold">{fn.name}</code>
-                        <span className="text-zinc-500 block truncate text-[9px] mt-0.5">{fn.description}</span>
+              ) : (
+                <>
+                  {/* Alert / Explanation Banner */}
+                  <div className="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30 flex items-start justify-between gap-3">
+                    <div className="space-y-0.5 font-sans">
+                      <div className="text-emerald-400 font-semibold flex items-center gap-1.5 text-xs">
+                        <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <span>Payload Efetivo Real Capturado do Gemini CLI</span>
+                        {isRealCaptured && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                            Real CLI Capture
+                          </span>
+                        )}
                       </div>
-                    ))}
+                      <p className="text-zinc-400 text-[11px]">
+                        Requisição real preparada pelo Gemini CLI imediatamente antes do envio ao modelo Gemini (sem reconstrução ou estimativa pela GUI).
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleCopy(finalApiJsonString, 'finalApi')}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition text-[11px] shrink-0 font-mono cursor-pointer"
+                    >
+                      {copiedSection === 'finalApi' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedSection === 'finalApi' ? 'Copiado!' : 'Copiar finalApiRequest'}</span>
+                    </button>
                   </div>
-                </div>
-              )}
 
-              {/* Parameter Provenance Table */}
-              <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-1.5">
-                <div className="text-zinc-400 font-bold flex items-center gap-1.5">
-                  <HelpCircle className="w-3.5 h-3.5 text-zinc-400" />
-                  <span>Rastreabilidade e Origem dos Parâmetros Resolvidos</span>
-                </div>
-                <div className="border border-zinc-800 rounded-md overflow-x-auto">
-                  <table className="w-full text-left text-[10px] divide-y divide-zinc-800">
-                    <thead className="bg-zinc-950/80 text-zinc-400 font-semibold uppercase tracking-wider">
-                      <tr>
-                        <th className="px-2.5 py-1.5">Parâmetro</th>
-                        <th className="px-2.5 py-1.5">Valor Resolvido</th>
-                        <th className="px-2.5 py-1.5">Origem da Configuração</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-800/60 font-sans">
-                      {Object.entries(data.parameterOrigins || {}).map(([paramKey, origin]) => {
-                        const org = origin as { value?: any; source?: string };
-                        return (
-                          <tr key={paramKey} className="hover:bg-zinc-800/30 font-mono">
-                            <td className="px-2.5 py-1 text-amber-300 font-medium">{paramKey}</td>
-                            <td className="px-2.5 py-1 text-emerald-400 font-semibold">{String(org?.value ?? '')}</td>
-                            <td className="px-2.5 py-1 text-zinc-400 font-sans text-[10px]">{org?.source || ''}</td>
+                  {/* Multi-turn selector if more than 1 API request happened in this interaction */}
+                  {realRequestsList.length > 1 && (
+                    <div className="flex items-center gap-1.5 p-1.5 rounded bg-zinc-900 border border-zinc-800 text-[10.5px]">
+                      <span className="text-zinc-400 font-mono text-[10px] pl-1 shrink-0">
+                        Chamadas API do Turno ({realRequestsList.length}):
+                      </span>
+                      <div className="flex items-center gap-1 overflow-x-auto">
+                        {realRequestsList.map((req, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => setSelectedCallIndex(idx)}
+                            className={`px-2 py-0.5 rounded font-mono text-[10px] transition cursor-pointer shrink-0 ${
+                              selectedCallIndex === idx
+                                ? 'bg-amber-500 text-zinc-950 font-bold'
+                                : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                            }`}
+                          >
+                            Chamada #{idx + 1}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Resolved Target Model */}
+                  <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-between">
+                    <div>
+                      <span className="text-zinc-500">Modelo Efetivo Resolvido:</span>{' '}
+                      <code className="text-emerald-400 font-bold text-xs">{activeRequestObj.model || 'models/gemini-2.5-flash'}</code>
+                    </div>
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                      {data.parameterOrigins?.['model']?.source || 'Gemini CLI Target'}
+                    </span>
+                  </div>
+
+                  {/* Generation Parameters Grid (temperature, topP, topK, maxTokens, thinking) */}
+                  <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-2">
+                    <div className="text-amber-400 font-bold flex items-center gap-1.5">
+                      <Sliders className="w-3.5 h-3.5" />
+                      <span>Hiperparâmetros de Geração (generationConfig)</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+                      <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
+                        <span className="text-zinc-500 text-[10px] block uppercase">temperature</span>
+                        <span className="text-amber-400 font-bold text-sm">{genConfig.temperature ?? '0.2'}</span>
+                        <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.temperature']?.source}>
+                          {data.parameterOrigins?.['generationConfig.temperature']?.value !== undefined ? 'Resolvido' : 'Padrão'}
+                        </span>
+                      </div>
+
+                      <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
+                        <span className="text-zinc-500 text-[10px] block uppercase">topP</span>
+                        <span className="text-cyan-400 font-bold text-sm">{genConfig.topP ?? '0.95'}</span>
+                        <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.topP']?.source}>
+                          {data.parameterOrigins?.['generationConfig.topP']?.value !== undefined ? 'Resolvido' : 'Padrão'}
+                        </span>
+                      </div>
+
+                      <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
+                        <span className="text-zinc-500 text-[10px] block uppercase">topK</span>
+                        <span className="text-purple-400 font-bold text-sm">{genConfig.topK ?? '40'}</span>
+                        <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.topK']?.source}>
+                          {data.parameterOrigins?.['generationConfig.topK']?.value !== undefined ? 'Resolvido' : 'Padrão'}
+                        </span>
+                      </div>
+
+                      <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
+                        <span className="text-zinc-500 text-[10px] block uppercase">maxOutputTokens</span>
+                        <span className="text-blue-400 font-bold text-sm">{genConfig.maxOutputTokens ?? 'Janela Total'}</span>
+                        <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.maxOutputTokens']?.source}>
+                          {genConfig.maxOutputTokens ? 'Limitado' : 'Sem Limite'}
+                        </span>
+                      </div>
+
+                      <div className="p-2 rounded bg-black/50 border border-zinc-800/80">
+                        <span className="text-zinc-500 text-[10px] block uppercase">thinkingConfig</span>
+                        <span className={`font-bold text-sm ${genConfig.thinkingConfig?.includeThoughts ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                          {genConfig.thinkingConfig?.includeThoughts
+                            ? (genConfig.thinkingConfig?.thinkingLevel || genConfig.thinkingConfig?.thinking_level)
+                              ? `Ativo (${genConfig.thinkingConfig?.thinkingLevel || genConfig.thinkingConfig?.thinking_level})`
+                              : 'Ativo'
+                            : 'Desativado'}
+                        </span>
+                        <span className="text-[9px] text-zinc-500 block truncate mt-0.5" title={data.parameterOrigins?.['generationConfig.thinkingConfig']?.source}>
+                          {genConfig.thinkingConfig?.includeThoughts ? 'Thoughts ON' : 'Padrão'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* System Instruction (systemInstruction) */}
+                  <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-1">
+                    <div className="flex items-center justify-between text-amber-400 font-bold">
+                      <div className="flex items-center gap-1.5">
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>systemInstruction (Diretivas Injetadas no Modelo)</span>
+                      </div>
+                      <span className="text-zinc-500 text-[10px] font-normal">
+                        {data.parameterOrigins?.['systemInstruction']?.source || 'Instruções do Agente'}
+                      </span>
+                    </div>
+                    <pre className="p-2 rounded bg-black/50 text-zinc-300 whitespace-pre-wrap max-h-40 overflow-y-auto font-sans leading-relaxed">
+                      {activeRequestObj?.systemInstruction && typeof activeRequestObj.systemInstruction === 'object' && activeRequestObj.systemInstruction?.parts
+                        ? activeRequestObj.systemInstruction.parts.map((p: any) => p.text).join('\n\n')
+                        : typeof activeRequestObj?.systemInstruction === 'string'
+                        ? activeRequestObj.systemInstruction
+                        : (data.input?.systemInstructions || '(Nenhuma systemInstruction customizada)')}
+                    </pre>
+                  </div>
+
+                  {/* Contents Parts (Prompt + Context) */}
+                  <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-1">
+                    <div className="flex items-center justify-between text-amber-400 font-bold">
+                      <div className="flex items-center gap-1.5">
+                        <Code className="w-3.5 h-3.5" />
+                        <span>contents (Array de Mensagens & Partes de Texto)</span>
+                      </div>
+                      <span className="text-zinc-500 text-[10px] font-normal">
+                        {activeRequestObj.contents?.length || 1} entrada(s)
+                      </span>
+                    </div>
+                    <pre className="p-2 rounded bg-black/60 text-emerald-400 whitespace-pre-wrap max-h-48 overflow-y-auto">
+                      {JSON.stringify(activeRequestObj.contents, null, 2)}
+                    </pre>
+                  </div>
+
+                  {/* Tools and Function Declarations */}
+                  {activeRequestObj.tools && activeRequestObj.tools.length > 0 && (
+                    <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-1">
+                      <div className="text-amber-400 font-bold flex items-center gap-1.5">
+                        <Terminal className="w-3.5 h-3.5" />
+                        <span>tools (Declarações de Funções Habilitadas na Chamada)</span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 pt-1">
+                        {activeRequestObj.tools[0]?.functionDeclarations?.map((fn: any) => (
+                          <div key={fn.name} className="p-1.5 rounded bg-black/40 border border-zinc-800 text-[10px]">
+                            <code className="text-cyan-400 font-bold">{fn.name}</code>
+                            <span className="text-zinc-500 block truncate text-[9px] mt-0.5">{fn.description}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Parameter Provenance Table */}
+                  <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 space-y-1.5">
+                    <div className="text-zinc-400 font-bold flex items-center gap-1.5">
+                      <HelpCircle className="w-3.5 h-3.5 text-zinc-400" />
+                      <span>Rastreabilidade e Origem dos Parâmetros Resolvidos</span>
+                    </div>
+                    <div className="border border-zinc-800 rounded-md overflow-x-auto">
+                      <table className="w-full text-left text-[10px] divide-y divide-zinc-800">
+                        <thead className="bg-zinc-950/80 text-zinc-400 font-semibold uppercase tracking-wider">
+                          <tr>
+                            <th className="px-2.5 py-1.5">Parâmetro</th>
+                            <th className="px-2.5 py-1.5">Valor Resolvido</th>
+                            <th className="px-2.5 py-1.5">Origem da Configuração</th>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+                        </thead>
+                        <tbody className="divide-y divide-zinc-800/60 font-sans">
+                          {Object.entries(data.parameterOrigins || {}).map(([paramKey, origin]) => {
+                            const org = origin as { value?: any; source?: string };
+                            return (
+                              <tr key={paramKey} className="hover:bg-zinc-800/30 font-mono">
+                                <td className="px-2.5 py-1 text-amber-300 font-medium">{paramKey}</td>
+                                <td className="px-2.5 py-1 text-emerald-400 font-semibold">{String(org?.value ?? '')}</td>
+                                <td className="px-2.5 py-1 text-zinc-400 font-sans text-[10px]">{org?.source || ''}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
 

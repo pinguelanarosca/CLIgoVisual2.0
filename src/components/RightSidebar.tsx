@@ -53,6 +53,12 @@ const formatSseText = (
       .join('\n\n');
   }
 
+  const sysText = data.finalApiRequest
+    ? (typeof data.finalApiRequest.systemInstruction === 'string'
+        ? data.finalApiRequest.systemInstruction
+        : data.finalApiRequest.systemInstruction?.parts?.[0]?.text || '')
+    : (data.input?.systemInstructions || '');
+
   const chunks = [
     `event: session_start\ndata: ${JSON.stringify({
       model: resolvedModel,
@@ -62,7 +68,7 @@ const formatSseText = (
       timestamp: message.timestamp,
     }, null, 2)}`,
     `event: prompt_inject\ndata: ${JSON.stringify({
-      systemTokens: estimateTokens(typeof data.finalApiRequest.systemInstruction === 'string' ? data.finalApiRequest.systemInstruction : data.finalApiRequest.systemInstruction?.parts?.[0]?.text || ''),
+      systemTokens: estimateTokens(sysText),
       promptTokens: estimateTokens(data.input.promptText || message.content),
     }, null, 2)}`,
   ];
@@ -150,10 +156,23 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
     role: message.role,
     timestamp: message.timestamp,
     finalApiRequest: data.finalApiRequest,
+    isRealCapturedRequest: data.isRealCapturedRequest,
+    allRealRequests: data.allRealRequests,
     parameterOrigins: data.parameterOrigins,
     cliInvocation: data.input,
     output: data.output,
   };
+
+  const [selectedRequestIndex, setSelectedRequestIndex] = useState<number>(0);
+
+  const realRequestsList = data.allRealRequests && data.allRealRequests.length > 0
+    ? data.allRealRequests
+    : data.finalApiRequest
+    ? [{ finalApiRequest: data.finalApiRequest, callIndex: 1, timestamp: message.timestamp, model: data.finalApiRequest.model, role: 'assistant' }]
+    : [];
+
+  const activeRequestObj = realRequestsList[selectedRequestIndex]?.finalApiRequest || data.finalApiRequest;
+  const isRealCaptured = data.isRealCapturedRequest || realRequestsList.length > 0;
 
   const handleCopy = (text: string, section: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
@@ -164,10 +183,12 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   };
 
   // Calculate estimated total tokens
-  const sysText =
-    typeof data.finalApiRequest.systemInstruction === 'string'
-      ? data.finalApiRequest.systemInstruction
-      : data.finalApiRequest.systemInstruction?.parts?.[0]?.text || '';
+  const sysText = activeRequestObj
+    ? (typeof activeRequestObj.systemInstruction === 'string'
+        ? activeRequestObj.systemInstruction
+        : activeRequestObj.systemInstruction?.parts?.[0]?.text || '')
+    : (data.input?.systemInstructions || '');
+
   const promptText = data.input.promptText || message.content || '';
   const estimatedTotalTokens =
     data.output.tokenStats?.totalTokens ||
@@ -175,13 +196,13 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
 
   const sseEventsCount = data.output.rawEvents?.length || 3;
   const toolCallsList = data.output.toolCalls || message.toolCalls || [];
-  const toolDeclarations = data.finalApiRequest.tools?.[0]?.functionDeclarations || [];
+  const toolDeclarations = activeRequestObj?.tools?.[0]?.functionDeclarations || [];
 
-  const resolvedModel = data.finalApiRequest.model || 'models/gemini-3.5-flash-lite';
-  const genConfig = data.finalApiRequest.generationConfig || {};
-  const tempVal = genConfig.temperature !== undefined ? genConfig.temperature : 0.2;
-  const topPVal = genConfig.topP !== undefined ? genConfig.topP : 0.95;
-  const topKVal = genConfig.topK !== undefined ? genConfig.topK : 40;
+  const resolvedModel = activeRequestObj?.model || agent?.model || 'models/gemini-2.5-flash';
+  const genConfig = activeRequestObj?.generationConfig || {};
+  const tempVal = genConfig.temperature !== undefined ? genConfig.temperature : '0.2';
+  const topPVal = genConfig.topP !== undefined ? genConfig.topP : '0.95';
+  const topKVal = genConfig.topK !== undefined ? genConfig.topK : '40';
   const maxTokensVal = genConfig.maxOutputTokens !== undefined ? genConfig.maxOutputTokens : 'Janela Total';
   const thinkingVal =
     agent?.thinking || genConfig.thinkingConfig
@@ -277,7 +298,11 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
               <button
                 type="button"
                 onClick={(e) =>
-                  handleCopy(JSON.stringify(data.finalApiRequest, null, 2), 'finalApiReq', e)
+                  handleCopy(
+                    JSON.stringify(activeRequestObj || data.finalApiRequest || {}, null, 2),
+                    'finalApiReq',
+                    e
+                  )
                 }
                 className="p-1 text-zinc-400 hover:text-zinc-200 transition cursor-pointer"
                 title="Copiar finalApiRequest"
@@ -294,167 +319,211 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
           {/* Body */}
           {expandedSections.has('finalApi') && (
             <div className="p-2.5 space-y-2 bg-zinc-950/40">
-              {/* Emerald Banner Card */}
-              <div className="p-2 rounded bg-emerald-950/20 border border-emerald-500/25 flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 text-emerald-400 font-semibold text-[11.5px]">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    <span>Payload Efetivo Montado Imediatamente Antes da Chamada Google</span>
+              {!activeRequestObj ? (
+                <div className="p-3 rounded-lg bg-zinc-900/80 border border-zinc-800 text-center space-y-2">
+                  <div className="flex items-center justify-center gap-2 text-amber-400 font-medium text-xs">
+                    <ShieldCheck className="w-4 h-4 text-amber-400" />
+                    <span>Nenhum Final API Request capturado para esta mensagem</span>
                   </div>
-                  <p className="text-[10.5px] text-zinc-400 mt-0.5 leading-snug">
-                    Parâmetros e diretivas consolidados e transmitidos diretamente na chamada de inferência ao Google Gemini API.
+                  <p className="text-[11px] text-zinc-400 max-w-sm mx-auto leading-relaxed">
+                    Esta mensagem foi gerada antes da captura de runtime ou é uma mensagem de sistema.
+                    Envie uma nova mensagem no chat para inspecionar o payload real capturado no ponto de envio do Gemini CLI.
                   </p>
                 </div>
-              </div>
-
-              {/* Row: Modelo Efetivo Resolvido */}
-              <div className="flex items-center justify-between gap-2 p-2 rounded bg-zinc-900/60 border border-zinc-800/80 text-xs">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-zinc-400 font-mono text-[10.5px] shrink-0">Modelo Resolvido:</span>
-                  <span className="font-mono font-bold text-emerald-400 text-[11.5px] truncate">
-                    {resolvedModel}
-                  </span>
-                </div>
-                <span className="text-[9.5px] font-mono px-1.5 py-0.5 rounded bg-zinc-950 text-zinc-400 border border-zinc-800 shrink-0">
-                  Agente: {data.input.agentName || 'principal'}
-                </span>
-              </div>
-
-              {/* Hiperparâmetros de Geração (generationConfig) — 5 Cards compactos */}
-              <div className="space-y-1">
-                <div className="flex items-center gap-1.5 text-amber-400 font-semibold text-[11px]">
-                  <Sliders className="w-3 h-3 text-amber-400" />
-                  <span>Hiperparâmetros de Geração (generationConfig)</span>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
-                  {/* 1. TEMPERATURE */}
-                  <div className="p-1.5 rounded bg-zinc-900/80 border border-zinc-800/80 flex flex-col items-center justify-center text-center">
-                    <span className="text-[9px] uppercase font-mono font-semibold text-zinc-400">
-                      TEMPERATURE
-                    </span>
-                    <span className="text-xs font-mono font-bold text-amber-400 my-0.5">
-                      {tempVal}
-                    </span>
-                    <span className="text-[8.5px] font-mono text-zinc-500">Resolvido</span>
+              ) : (
+                <>
+                  {/* Emerald Banner Card */}
+                  <div className="p-2 rounded bg-emerald-950/20 border border-emerald-500/25 flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 text-emerald-400 font-semibold text-[11.5px]">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <span>Payload Efetivo Real Capturado do Gemini CLI</span>
+                        {isRealCaptured && (
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                            Real CLI Capture
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10.5px] text-zinc-400 mt-0.5 leading-snug">
+                        Requisição real preparada pelo Gemini CLI imediatamente antes do envio ao modelo Gemini (sem reconstrução ou estimativa pela GUI).
+                      </p>
+                    </div>
                   </div>
 
-                  {/* 2. TOPP */}
-                  <div className="p-1.5 rounded bg-zinc-900/80 border border-zinc-800/80 flex flex-col items-center justify-center text-center">
-                    <span className="text-[9px] uppercase font-mono font-semibold text-zinc-400">
-                      TOPP
-                    </span>
-                    <span className="text-xs font-mono font-bold text-cyan-400 my-0.5">
-                      {topPVal}
-                    </span>
-                    <span className="text-[8.5px] font-mono text-zinc-500">Resolvido</span>
-                  </div>
+                  {/* Multi-turn selector if more than 1 API request happened in this interaction */}
+                  {realRequestsList.length > 1 && (
+                    <div className="flex items-center gap-1.5 p-1.5 rounded bg-zinc-900/90 border border-zinc-800 text-[10.5px]">
+                      <span className="text-zinc-400 font-mono text-[10px] pl-1 shrink-0">
+                        Chamadas API do Turno ({realRequestsList.length}):
+                      </span>
+                      <div className="flex items-center gap-1 overflow-x-auto">
+                        {realRequestsList.map((req, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => setSelectedRequestIndex(idx)}
+                            className={`px-2 py-0.5 rounded font-mono text-[10px] transition cursor-pointer shrink-0 ${
+                              selectedRequestIndex === idx
+                                ? 'bg-amber-500 text-zinc-950 font-bold'
+                                : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                            }`}
+                          >
+                            Chamada #{idx + 1}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
-                  {/* 3. TOPK */}
-                  <div className="p-1.5 rounded bg-zinc-900/80 border border-zinc-800/80 flex flex-col items-center justify-center text-center">
-                    <span className="text-[9px] uppercase font-mono font-semibold text-zinc-400">
-                      TOPK
-                    </span>
-                    <span className="text-xs font-mono font-bold text-purple-400 my-0.5">
-                      {topKVal}
-                    </span>
-                    <span className="text-[8.5px] font-mono text-zinc-500">Resolvido</span>
-                  </div>
-
-                  {/* 4. MAXOUTPUTTOKENS */}
-                  <div className="p-1.5 rounded bg-zinc-900/80 border border-zinc-800/80 flex flex-col items-center justify-center text-center">
-                    <span className="text-[9px] uppercase font-mono font-semibold text-zinc-400">
-                      MAX TOKENS
-                    </span>
-                    <span className="text-xs font-mono font-bold text-blue-400 my-0.5 truncate w-full">
-                      {maxTokensVal}
-                    </span>
-                    <span className="text-[8.5px] font-mono text-zinc-500">
-                      {typeof maxTokensVal === 'number' ? 'Limite' : 'Total'}
+                  {/* Row: Modelo Efetivo Resolvido */}
+                  <div className="flex items-center justify-between gap-2 p-2 rounded bg-zinc-900/60 border border-zinc-800/80 text-xs">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-zinc-400 font-mono text-[10.5px] shrink-0">Modelo Resolvido:</span>
+                      <span className="font-mono font-bold text-emerald-400 text-[11.5px] truncate">
+                        {resolvedModel}
+                      </span>
+                    </div>
+                    <span className="text-[9.5px] font-mono px-1.5 py-0.5 rounded bg-zinc-950 text-zinc-400 border border-zinc-800 shrink-0">
+                      Agente: {data.input.agentName || 'principal'}
                     </span>
                   </div>
 
-                  {/* 5. THINKINGCONFIG */}
-                  <div className="p-1.5 rounded bg-zinc-900/80 border border-zinc-800/80 flex flex-col items-center justify-center text-center">
-                    <span className="text-[9px] uppercase font-mono font-semibold text-zinc-400">
-                      THINKING
-                    </span>
-                    <span className="text-[11px] font-mono font-bold text-amber-300 my-0.5 truncate w-full">
-                      {thinkingVal}
-                    </span>
-                    <span className="text-[8.5px] font-mono text-zinc-500">Config</span>
-                  </div>
-                </div>
-              </div>
+                  {/* Hiperparâmetros de Geração (generationConfig) — 5 Cards compactos */}
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5 text-amber-400 font-semibold text-[11px]">
+                      <Sliders className="w-3 h-3 text-amber-400" />
+                      <span>Hiperparâmetros de Geração (generationConfig)</span>
+                    </div>
 
-              {/* systemInstruction */}
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-[11px]">
-                  <div className="flex items-center gap-1.5 text-amber-400 font-semibold">
-                    <FileText className="w-3 h-3 text-amber-400" />
-                    <span>systemInstruction (Diretivas Injetadas no Modelo)</span>
-                  </div>
-                  <span className="text-[9.5px] text-zinc-500 font-mono">
-                    {estimateTokens(sysText)} tokens
-                  </span>
-                </div>
-
-                <div className="p-2 rounded bg-zinc-950 border border-zinc-800/80 text-zinc-300 font-mono text-[10.5px] leading-relaxed max-h-40 overflow-y-auto whitespace-pre-wrap select-text">
-                  {sysText || 'Nenhuma diretiva de sistema explícita definida.'}
-                </div>
-              </div>
-
-              {/* contents */}
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-[11px]">
-                  <div className="flex items-center gap-1.5 text-blue-400 font-semibold">
-                    <Code2 className="w-3 h-3 text-blue-400" />
-                    <span>contents.parts (Conteúdo & Prompt Enviado)</span>
-                  </div>
-                  <span className="text-[9.5px] text-zinc-500 font-mono">
-                    {estimateTokens(promptText)} tokens
-                  </span>
-                </div>
-
-                <div className="p-2 rounded bg-zinc-950 border border-zinc-800/80 text-zinc-300 font-mono text-[10.5px] leading-relaxed max-h-36 overflow-y-auto whitespace-pre-wrap select-text">
-                  {promptText}
-                </div>
-              </div>
-
-              {/* tools & functionDeclarations — Fidedigno à realidade */}
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-[11px]">
-                  <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
-                    <Wrench className="w-3 h-3 text-emerald-400" />
-                    <span>tools.functionDeclarations (Declarações de Ferramentas)</span>
-                  </div>
-                  <span className="text-[9.5px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 text-emerald-400 border border-emerald-500/20">
-                    {toolDeclarations.length > 0 ? `${toolDeclarations.length} ferramentas` : 'Nenhuma ferramenta declarada'}
-                  </span>
-                </div>
-
-                {toolDeclarations.length > 0 ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                    {toolDeclarations.map((fn) => (
-                      <div
-                        key={fn.name}
-                        className="p-1.5 rounded bg-zinc-900/60 border border-zinc-800/80 flex flex-col justify-between"
-                      >
-                        <span className="font-mono text-[11px] font-semibold text-emerald-400">
-                          {fn.name}
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                      {/* 1. TEMPERATURE */}
+                      <div className="p-1.5 rounded bg-zinc-900/80 border border-zinc-800/80 flex flex-col items-center justify-center text-center">
+                        <span className="text-[9px] uppercase font-mono font-semibold text-zinc-400">
+                          TEMPERATURE
                         </span>
-                        <span className="text-[9.5px] text-zinc-400 line-clamp-2 mt-0.5 leading-tight">
-                          {fn.description}
+                        <span className="text-xs font-mono font-bold text-amber-400 my-0.5">
+                          {tempVal}
+                        </span>
+                        <span className="text-[8.5px] font-mono text-zinc-500">Resolvido</span>
+                      </div>
+
+                      {/* 2. TOPP */}
+                      <div className="p-1.5 rounded bg-zinc-900/80 border border-zinc-800/80 flex flex-col items-center justify-center text-center">
+                        <span className="text-[9px] uppercase font-mono font-semibold text-zinc-400">
+                          TOPP
+                        </span>
+                        <span className="text-xs font-mono font-bold text-cyan-400 my-0.5">
+                          {topPVal}
+                        </span>
+                        <span className="text-[8.5px] font-mono text-zinc-500">Resolvido</span>
+                      </div>
+
+                      {/* 3. TOPK */}
+                      <div className="p-1.5 rounded bg-zinc-900/80 border border-zinc-800/80 flex flex-col items-center justify-center text-center">
+                        <span className="text-[9px] uppercase font-mono font-semibold text-zinc-400">
+                          TOPK
+                        </span>
+                        <span className="text-xs font-mono font-bold text-purple-400 my-0.5">
+                          {topKVal}
+                        </span>
+                        <span className="text-[8.5px] font-mono text-zinc-500">Resolvido</span>
+                      </div>
+
+                      {/* 4. MAXOUTPUTTOKENS */}
+                      <div className="p-1.5 rounded bg-zinc-900/80 border border-zinc-800/80 flex flex-col items-center justify-center text-center">
+                        <span className="text-[9px] uppercase font-mono font-semibold text-zinc-400">
+                          MAX TOKENS
+                        </span>
+                        <span className="text-xs font-mono font-bold text-blue-400 my-0.5 truncate w-full">
+                          {maxTokensVal}
+                        </span>
+                        <span className="text-[8.5px] font-mono text-zinc-500">
+                          {typeof maxTokensVal === 'number' ? 'Limite' : 'Total'}
                         </span>
                       </div>
-                    ))}
+
+                      {/* 5. THINKINGCONFIG */}
+                      <div className="p-1.5 rounded bg-zinc-900/80 border border-zinc-800/80 flex flex-col items-center justify-center text-center">
+                        <span className="text-[9px] uppercase font-mono font-semibold text-zinc-400">
+                          THINKING
+                        </span>
+                        <span className="text-[11px] font-mono font-bold text-amber-300 my-0.5 truncate w-full">
+                          {thinkingVal}
+                        </span>
+                        <span className="text-[8.5px] font-mono text-zinc-500">Config</span>
+                      </div>
+                    </div>
                   </div>
-                ) : (
-                  <div className="p-2 rounded bg-zinc-950/80 border border-zinc-800/80 text-zinc-500 text-[10.5px]">
-                    Nenhuma ferramenta externa (MCP ou Tools) vinculada a esta inferência específica.
+
+                  {/* systemInstruction */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <div className="flex items-center gap-1.5 text-amber-400 font-semibold">
+                        <FileText className="w-3 h-3 text-amber-400" />
+                        <span>systemInstruction (Diretivas Injetadas no Modelo)</span>
+                      </div>
+                      <span className="text-[9.5px] text-zinc-500 font-mono">
+                        {estimateTokens(sysText)} tokens
+                      </span>
+                    </div>
+
+                    <div className="p-2 rounded bg-zinc-950 border border-zinc-800/80 text-zinc-300 font-mono text-[10.5px] leading-relaxed max-h-40 overflow-y-auto whitespace-pre-wrap select-text">
+                      {sysText || 'Nenhuma diretiva de sistema explícita definida.'}
+                    </div>
                   </div>
-                )}
-              </div>
+
+                  {/* contents */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <div className="flex items-center gap-1.5 text-blue-400 font-semibold">
+                        <Code2 className="w-3 h-3 text-blue-400" />
+                        <span>contents.parts (Conteúdo & Prompt Enviado)</span>
+                      </div>
+                      <span className="text-[9.5px] text-zinc-500 font-mono">
+                        {estimateTokens(promptText)} tokens
+                      </span>
+                    </div>
+
+                    <div className="p-2 rounded bg-zinc-950 border border-zinc-800/80 text-zinc-300 font-mono text-[10.5px] leading-relaxed max-h-36 overflow-y-auto whitespace-pre-wrap select-text">
+                      {promptText}
+                    </div>
+                  </div>
+
+                  {/* tools & functionDeclarations — Fidedigno à realidade */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+                        <Wrench className="w-3 h-3 text-emerald-400" />
+                        <span>tools.functionDeclarations (Declarações de Ferramentas)</span>
+                      </div>
+                      <span className="text-[9.5px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 text-emerald-400 border border-emerald-500/20">
+                        {toolDeclarations.length > 0 ? `${toolDeclarations.length} ferramentas` : 'Nenhuma ferramenta declarada'}
+                      </span>
+                    </div>
+
+                    {toolDeclarations.length > 0 ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {toolDeclarations.map((fn) => (
+                          <div
+                            key={fn.name}
+                            className="p-1.5 rounded bg-zinc-900/60 border border-zinc-800/80 flex flex-col justify-between"
+                          >
+                            <span className="font-mono text-[11px] font-semibold text-emerald-400">
+                              {fn.name}
+                            </span>
+                            <span className="text-[9.5px] text-zinc-400 line-clamp-2 mt-0.5 leading-tight">
+                              {fn.description}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="p-2 rounded bg-zinc-950/80 border border-zinc-800/80 text-zinc-500 text-[10.5px]">
+                        Nenhuma ferramenta externa (MCP ou Tools) vinculada a esta inferência específica.
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>

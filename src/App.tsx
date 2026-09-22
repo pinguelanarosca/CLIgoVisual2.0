@@ -41,6 +41,8 @@ import {
 } from './types.js';
 import { DEFAULT_AGENTS } from './constants/defaultAgents.js';
 import { buildEffectiveSystemPrompt } from './utils/systemPromptUtils.js';
+import { fetchJsonSafely } from './utils/apiUtils.js';
+import { normalizeActivities } from './utils/activityTraceUtils.js';
 
 export function App() {
   // Theme
@@ -233,9 +235,8 @@ export function App() {
         const currentSession = sessions.find((s) => s.id === currentSessionId);
         params.append('sessionTitle', currentSession?.title || 'Conversa Isolada');
       }
-      const res = await fetch(`/api/memories/effective?${params.toString()}`);
-      if (res.ok) {
-        const mem: SharedMemoryItem = await res.json();
+      const mem = await fetchJsonSafely<SharedMemoryItem>(`/api/memories/effective?${params.toString()}`);
+      if (mem) {
         setActiveMemory(mem);
         setActiveMemoryVersion(mem.versions?.length || 1);
       }
@@ -279,14 +280,10 @@ export function App() {
   const refreshStatus = async (forceFresh = true) => {
     setIsCheckingStatus(true);
     try {
-      const res = await fetch(`/api/status?fresh=${forceFresh ? 'true' : 'false'}`);
-      const contentType = res.headers.get('content-type');
-      if (res.ok && contentType && contentType.includes('application/json')) {
-        const data = await res.json();
+      const data = await fetchJsonSafely<CliStatus>(`/api/status?fresh=${forceFresh ? 'true' : 'false'}`);
+      if (data) {
         setCliStatus(data);
         if (data.approvalMode) setApprovalMode(data.approvalMode);
-      } else if (!res.ok) {
-        console.warn(`Status check failed with status ${res.status}`);
       }
     } catch (err) {
       console.warn('Failed to get CLI status (network or parsing):', err);
@@ -296,58 +293,49 @@ export function App() {
   };
 
   const loadAllData = async () => {
-    await refreshStatus(false);
+    // Refresh status non-blockingly so it doesn't hold up data loading
+    refreshStatus(false);
 
     try {
-      // Projects
-      const projRes = await fetch('/api/projects');
-      if (projRes.ok) {
-        const projs: ProjectItem[] = await projRes.json();
+      const [projs, dirs, ags, sks, cmds, mcps, sList] = await Promise.all([
+        fetchJsonSafely<ProjectItem[]>('/api/projects'),
+        fetchJsonSafely<AuthorizedDir[]>('/api/directories'),
+        fetchJsonSafely<AgentConfig[]>('/api/agents'),
+        fetchJsonSafely<SkillConfig[]>('/api/skills'),
+        fetchJsonSafely<CommandConfig[]>('/api/commands'),
+        fetchJsonSafely<McpConfig[]>('/api/mcp'),
+        fetchJsonSafely<SessionItem[]>('/api/sessions'),
+      ]);
+
+      if (projs && Array.isArray(projs)) {
         setProjects(projs);
         if (projs.length > 0 && !activeProject) {
           setActiveProject(projs[0]);
+          setFilesViewDir(projs[0].associatedDirs?.[0] || '');
         }
       }
 
-      // Authorized Dirs
-      const dirsRes = await fetch('/api/directories');
-      if (dirsRes.ok) {
-        const dirs: AuthorizedDir[] = await dirsRes.json();
+      if (dirs && Array.isArray(dirs)) {
         setAuthorizedDirs(dirs);
       }
 
-      // Agents
-      const agentsRes = await fetch('/api/agents');
-      if (agentsRes.ok) {
-        const ags: AgentConfig[] = await agentsRes.json();
+      if (ags && Array.isArray(ags) && ags.length > 0) {
         setAgents(ags);
       }
 
-      // Skills
-      const skillsRes = await fetch('/api/skills');
-      if (skillsRes.ok) {
-        const sks: SkillConfig[] = await skillsRes.json();
+      if (sks && Array.isArray(sks)) {
         setSkills(sks);
       }
 
-      // Commands
-      const cmdsRes = await fetch('/api/commands');
-      if (cmdsRes.ok) {
-        const cmds: CommandConfig[] = await cmdsRes.json();
+      if (cmds && Array.isArray(cmds)) {
         setCommands(cmds);
       }
 
-      // MCP
-      const mcpRes = await fetch('/api/mcp');
-      if (mcpRes.ok) {
-        const mcps: McpConfig[] = await mcpRes.json();
+      if (mcps && Array.isArray(mcps)) {
         setMcpServers(mcps);
       }
 
-      // Sessions
-      const sessRes = await fetch('/api/sessions');
-      if (sessRes.ok) {
-        const sList: SessionItem[] = await sessRes.json();
+      if (sList && Array.isArray(sList)) {
         setSessions(sList);
       }
     } catch (err) {
@@ -501,6 +489,7 @@ export function App() {
       let errorMessage = '';
       let capturedFinalApiRequest: any = null;
       let capturedParameterOrigins: any = null;
+      let capturedAllRealRequests: any[] = [];
       const toolCalls: Record<string, any> = {};
 
       let updateScheduled = false;
@@ -515,6 +504,15 @@ export function App() {
             : '');
 
         const currentToolCalls = Object.values(toolCalls);
+        const currentActivities = normalizeActivities({
+          rawEvents: rawEventsList,
+          toolCalls: currentToolCalls,
+          isStreaming: true,
+          agentName: currentAgent?.displayName || currentAgent?.name,
+          model: currentAgent?.model || 'gemini-3.5-flash-lite',
+          error: hasError ? errorMessage : undefined,
+        });
+
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantMsgId
@@ -522,9 +520,15 @@ export function App() {
                   ...m,
                   content: displayContent,
                   toolCalls: currentToolCalls,
+                  activities: currentActivities,
                   isStreaming: true,
                   finalApiRequest: capturedFinalApiRequest || m.finalApiRequest,
+                  allFinalApiRequests: capturedAllRealRequests.length > 0 ? capturedAllRealRequests : m.allFinalApiRequests,
                   parameterOrigins: capturedParameterOrigins || m.parameterOrigins,
+                  rawPayloadReceived: {
+                    rawEvents: [...rawEventsList],
+                    rawTextStream: assistantContent,
+                  },
                 }
               : m
           )
@@ -562,10 +566,20 @@ export function App() {
               const eventPayload = JSON.parse(rawData);
               rawEventsList.push(eventPayload);
 
-              // Capture finalApiRequest from backend
-              if (eventPayload.type === 'final_api_request' && eventPayload.finalApiRequest) {
-                capturedFinalApiRequest = eventPayload.finalApiRequest;
-                capturedParameterOrigins = eventPayload.parameterOrigins;
+              // Capture finalApiRequest from backend (Exclusivamente o request real capturado)
+              if (eventPayload.type === 'final_api_request') {
+                const reqObj = eventPayload.finalApiRequest || eventPayload.data?.finalApiRequest;
+                if (reqObj) {
+                  capturedFinalApiRequest = reqObj;
+                }
+                const origins = eventPayload.parameterOrigins || eventPayload.data?.parameterOrigins;
+                if (origins) {
+                  capturedParameterOrigins = origins;
+                }
+                const allReqs = eventPayload.allRealRequests || eventPayload.data?.allRealRequests;
+                if (allReqs && Array.isArray(allReqs) && allReqs.length > 0) {
+                  capturedAllRealRequests = allReqs;
+                }
               }
 
               // Inspect Gemini CLI JSON stream event
@@ -585,12 +599,14 @@ export function App() {
                 }
               } else if (eventPayload.type === 'tool_use') {
                 const callId = eventPayload.tool_call_id || eventPayload.tool_id || `tool_${Date.now()}`;
+                const now = Date.now();
                 toolCalls[callId] = {
                   id: callId,
                   toolName: eventPayload.tool_name || eventPayload.name || eventPayload.id || eventPayload.tool || 'tool',
                   parameters: eventPayload.parameters || {},
                   status: 'running',
-                  timestamp: new Date().toISOString(),
+                  timestamp: eventPayload.timestamp || new Date().toISOString(),
+                  startedAt: now,
                   description: eventPayload.description,
                   schema: eventPayload.schema || eventPayload.definition,
                   componentRegister: eventPayload.componentRegister || eventPayload.registered_by,
@@ -601,10 +617,15 @@ export function App() {
               } else if (eventPayload.type === 'tool_result') {
                 const callId = eventPayload.tool_call_id || eventPayload.tool_id;
                 if (callId && toolCalls[callId]) {
-                  toolCalls[callId].result = eventPayload.output || '';
+                  const now = Date.now();
+                  toolCalls[callId].completedAt = now;
+                  if (toolCalls[callId].startedAt) {
+                    toolCalls[callId].durationMs = now - toolCalls[callId].startedAt!;
+                  }
+                  toolCalls[callId].result = typeof eventPayload.output === 'string' ? eventPayload.output : JSON.stringify(eventPayload.output || '');
                   toolCalls[callId].status = eventPayload.error ? 'failed' : 'completed';
                   if (eventPayload.error) {
-                    toolCalls[callId].error = eventPayload.error;
+                    toolCalls[callId].error = typeof eventPayload.error === 'string' ? eventPayload.error : JSON.stringify(eventPayload.error);
                   }
                 }
               } else if (eventPayload.text) {
@@ -666,6 +687,15 @@ export function App() {
         completedAt: new Date().toISOString(),
       };
 
+      const finalActivities = normalizeActivities({
+        rawEvents: rawEventsList,
+        toolCalls: Object.values(toolCalls),
+        isStreaming: false,
+        agentName: currentAgent?.displayName || currentAgent?.name,
+        model: currentAgent?.model || 'gemini-3.5-flash-lite',
+        error: hasError ? errorMessage : undefined,
+      });
+
       // Finalize message
       setMessages((prev) =>
         prev.map((m) =>
@@ -674,8 +704,10 @@ export function App() {
                 ...m,
                 content: finalContent,
                 toolCalls: Object.values(toolCalls),
+                activities: finalActivities,
                 isStreaming: false,
                 finalApiRequest: capturedFinalApiRequest || m.finalApiRequest,
+                allFinalApiRequests: capturedAllRealRequests.length > 0 ? capturedAllRealRequests : m.allFinalApiRequests,
                 parameterOrigins: capturedParameterOrigins || m.parameterOrigins,
                 rawPayloadReceived,
               }
@@ -688,8 +720,10 @@ export function App() {
         ...assistantPlaceholder,
         content: finalContent,
         toolCalls: Object.values(toolCalls),
+        activities: finalActivities,
         isStreaming: false,
         finalApiRequest: capturedFinalApiRequest || assistantPlaceholder.finalApiRequest,
+        allFinalApiRequests: capturedAllRealRequests.length > 0 ? capturedAllRealRequests : assistantPlaceholder.allFinalApiRequests,
         parameterOrigins: capturedParameterOrigins || assistantPlaceholder.parameterOrigins,
         rawPayloadReceived,
       };
@@ -721,9 +755,9 @@ export function App() {
       });
 
       // Reload sessions list
-      const sessRes = await fetch('/api/sessions');
-      if (sessRes.ok) {
-        setSessions(await sessRes.json());
+      const sessList = await fetchJsonSafely<SessionItem[]>('/api/sessions');
+      if (sessList) {
+        setSessions(sessList);
       }
 
       // Auto-play TTS if configured
@@ -992,13 +1026,8 @@ export function App() {
       setMessages(sess.messages);
     } else {
       try {
-        const res = await fetch(`/api/sessions/${sess.id}`);
-        if (res.ok) {
-          const fullSess = await res.json();
-          setMessages(fullSess.messages || []);
-        } else {
-          setMessages([]);
-        }
+        const fullSess = await fetchJsonSafely<SessionItem>(`/api/sessions/${sess.id}`);
+        setMessages(fullSess?.messages || []);
       } catch (err) {
         console.error('Erro ao carregar mensagens da sessão:', err);
         setMessages([]);
@@ -1038,9 +1067,8 @@ export function App() {
       body: JSON.stringify(updatedSess),
     });
     if (res.ok) {
-      const sessRes = await fetch('/api/sessions');
-      if (sessRes.ok) {
-        const data = await sessRes.json();
+      const data = await fetchJsonSafely<SessionItem[]>('/api/sessions');
+      if (data) {
         setSessions(data);
 
         if (id === currentSessionId) {
@@ -1083,9 +1111,8 @@ export function App() {
     });
 
     if (res.ok) {
-      const sessRes = await fetch('/api/sessions');
-      if (sessRes.ok) {
-        const data = await sessRes.json();
+      const data = await fetchJsonSafely<SessionItem[]>('/api/sessions');
+      if (data) {
         setSessions(data);
         setCurrentSessionId(newSessionId);
         setMessages(freshMessages);
@@ -1122,9 +1149,8 @@ export function App() {
     });
 
     if (res.ok) {
-      const sessRes = await fetch('/api/sessions');
-      if (sessRes.ok) {
-        const data = await sessRes.json();
+      const data = await fetchJsonSafely<SessionItem[]>('/api/sessions');
+      if (data) {
         setSessions(data);
         setCurrentSessionId(newSessionId);
         setMessages([singleMsg]);
@@ -1158,9 +1184,8 @@ export function App() {
     });
 
     if (res.ok) {
-      const sessRes = await fetch('/api/sessions');
-      if (sessRes.ok) {
-        const data = await sessRes.json();
+      const data = await fetchJsonSafely<SessionItem[]>('/api/sessions');
+      if (data) {
         setSessions(data);
         setCurrentSessionId(newSessionId);
         setMessages(sliced);
@@ -1190,9 +1215,9 @@ export function App() {
         });
       }
     }
-    const sessRes = await fetch('/api/sessions');
-    if (sessRes.ok) {
-      setSessions(await sessRes.json());
+    const data = await fetchJsonSafely<SessionItem[]>('/api/sessions');
+    if (data) {
+      setSessions(data);
     }
     if (ids.includes(currentSessionId)) {
       handleNewSession();
