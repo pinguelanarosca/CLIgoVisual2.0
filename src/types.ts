@@ -459,65 +459,55 @@ export interface FactoryResetResult {
   error?: string;
 }
 
-// App Versions types
 export interface AppVersionItem {
   id: string;
   versionNumber: number;
-  timestamp: string;
+  createdAt: string;
   prompt: string;
-  agentName?: string;
-  model?: string;
-  executionId?: string;
+  agentName: string;
+  model: string;
+  executionId: string;
   projectId?: string;
   workspaceDir: string;
   changedFiles: string[];
-  snapshotRef: string;
+  snapshotDirName: string;
   isBackup?: boolean;
-  backupForVersionId?: string;
 }
 
-export interface AppVersionDiff {
-  path: string;
-  status: 'modified' | 'added' | 'deleted';
-  diff: string;
+export interface VersionDiffItem {
+  filePath: string;
+  status: 'added' | 'modified' | 'deleted';
+  originalContent: string;
+  versionContent: string;
 }
 
-export interface AppVersionRestoreResult {
-  success: boolean;
-  message: string;
-  restoredVersionId: string;
-  backupVersionId?: string;
-  restoredFiles: string[];
-  error?: string;
-}
-
-// Shared Persistent Memory types
-export interface SharedMemoryVersion {
-  id: string;
-  versionNumber: number;
+export interface MemoryVersionEntry {
+  version: number;
   content: string;
   timestamp: string;
-  author: 'user' | 'agent' | 'memory-agent';
-  summary?: string;
-}
-
-export interface SharedMemoryItem {
-  id: string;
-  projectId?: string;
-  name: string;
+  author: 'user' | 'agent';
   description?: string;
-  content: string;
-  associatedAgentId?: string;
-  createdAt: string;
-  updatedAt: string;
-  versions?: SharedMemoryVersion[];
 }
 
 export interface MemoryAgentConfig {
   name: string;
   model: string;
+  agentId?: string;
+  systemInstructions: string;
   temperature?: number;
-  instructions: string;
-  statusGrade: StatusGrade;
+}
+
+export interface SharedMemoryItem {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+  projectId?: string;
+  sessionId?: string;
+  scope?: 'project' | 'session' | 'global';
+  agentConfig?: MemoryAgentConfig;
+  versions: MemoryVersionEntry[];
 }
 

@@ -3,6 +3,7 @@
  */
 
 import { ChatMessage, AgentConfig, ProjectItem, AuthorizedDir, SkillConfig, McpConfig } from '../types.js';
+import { buildEffectiveSystemPrompt } from './systemPromptUtils.js';
 
 export interface ContextSettings {
   autoCompress: boolean;
@@ -111,12 +112,22 @@ export function calculateContextBreakdown(
   mcpServers?: McpConfig[],
   maxContextWindow = 1000000
 ): ContextBreakdown {
-  // 1. System instructions
-  const systemText = agent?.systemInstructions || 'You are an AI coding assistant powered by Gemini CLI.';
+  // 1. System instructions (incorporates baseInstructions and systemInstructions)
+  let systemText = '';
+  if (agent) {
+    systemText = buildEffectiveSystemPrompt(
+      agent.baseInstructions,
+      agent.systemInstructions,
+      agent.overrideBasePrompt
+    );
+  }
+  if (!systemText.trim()) {
+    systemText = 'Você é o assistente virtual inteligente do Gemini CLI Orchestrator.';
+  }
   const systemInstructionsTokens = estimateTokens(systemText);
 
   // 2. Project context & authorized dirs
-  let projectText = activeProject ? `Projeto: ${activeProject.name}\nDescrição: ${activeProject.description}\n` : '';
+  let projectText = activeProject ? `Projeto: ${activeProject.name}\nDescrição: ${activeProject.description || 'Sem descrição'}\n` : '';
   if (activeProject?.associatedDirs?.length) {
     projectText += `Diretórios do Projeto: ${activeProject.associatedDirs.join(', ')}\n`;
   }
@@ -128,19 +139,35 @@ export function calculateContextBreakdown(
   }
   const projectContextTokens = estimateTokens(projectText);
 
-  // 3. Active Messages
-  const sessionStats = calculateSessionTokens(messages);
-  const messagesTokens = sessionStats.totalTokens;
+  // 3. Active Messages (accurately counts user prompts, AI responses, and tool call payload content)
+  let messagesTokens = 0;
+  if (messages && messages.length > 0) {
+    for (const msg of messages) {
+      if (msg.rawPayloadReceived?.tokenStats?.totalTokens) {
+        messagesTokens += msg.rawPayloadReceived.tokenStats.totalTokens;
+      } else {
+        let msgText = msg.content || '';
+        if (msg.toolCalls) {
+          for (const tc of msg.toolCalls) {
+            msgText += `\n[Tool: ${tc.toolName}] ` + JSON.stringify(tc.parameters || {}) + ` Result: ${tc.result || ''}`;
+          }
+        }
+        messagesTokens += estimateTokens(msgText);
+      }
+    }
+  }
 
   // 4. Tools & MCPs
-  let toolsText = '';
-  if (skills?.length) {
-    toolsText += skills.map((s) => `${s.name}: ${s.description}`).join('\n');
+  let toolsText = 'Base System Tools: view_file, edit_file, create_file, run_command, list_dir, search, compile_applet, lint_applet\n';
+  const activeSkills = skills?.filter((s) => s.enabled !== false) || [];
+  if (activeSkills.length > 0) {
+    toolsText += activeSkills.map((s) => `Skill [${s.name}]: ${s.description}\n${s.content || ''}`).join('\n');
   }
-  if (mcpServers?.length) {
-    toolsText += mcpServers.map((m) => `${m.name}: ${m.command}`).join('\n');
+  const activeMcp = mcpServers?.filter((m) => m.enabled !== false) || [];
+  if (activeMcp.length > 0) {
+    toolsText += activeMcp.map((m) => `MCP [${m.name}]: ${m.command || m.httpUrl || ''}`).join('\n');
   }
-  const toolsAndMcpTokens = estimateTokens(toolsText) + 1200; // base tool definitions
+  const toolsAndMcpTokens = estimateTokens(toolsText);
 
   const totalActiveTokens =
     systemInstructionsTokens + projectContextTokens + messagesTokens + toolsAndMcpTokens;
@@ -154,7 +181,7 @@ export function calculateContextBreakdown(
     totalActiveTokens,
     maxContextWindow,
     utilizationPercent,
-    messageCount: messages.length,
+    messageCount: messages ? messages.length : 0,
   };
 }
 

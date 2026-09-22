@@ -226,9 +226,11 @@ export function saveSessionSqlite(session: SessionItem): SessionItem {
     database.prepare('DELETE FROM messages WHERE sessionId = ?').run(session.id);
 
     const insertMessage = database.prepare(`
-      INSERT INTO messages (id, sessionId, role, content, timestamp, model, agentName, sequence, payloadJson)
+      INSERT OR REPLACE INTO messages (id, sessionId, role, content, timestamp, model, agentName, sequence, payloadJson)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+
+    const seenIdsInThisBatch = new Set<string>();
 
     session.messages.forEach((msg, idx) => {
       const payload = {
@@ -242,17 +244,37 @@ export function saveSessionSqlite(session: SessionItem): SessionItem {
         rawPayloadReceived: msg.rawPayloadReceived,
       };
 
-      insertMessage.run(
-        msg.id,
-        session.id,
-        msg.role,
-        msg.content || '',
-        msg.timestamp || now,
-        msg.model || null,
-        msg.agentName || null,
-        idx,
-        JSON.stringify(payload)
-      );
+      // Determine unique ID for the message
+      let msgId = msg.id && typeof msg.id === 'string' && msg.id.trim() ? msg.id.trim() : `msg_${session.id}_${idx}_${Date.now()}`;
+      
+      // If the ID was already used by another message in this batch, or belongs to another session
+      if (seenIdsInThisBatch.has(msgId)) {
+        msgId = `${session.id}_${msgId}_${idx}_${Date.now()}`;
+      } else {
+        try {
+          const existingMsg = database.prepare('SELECT sessionId FROM messages WHERE id = ?').get(msgId) as { sessionId: string } | undefined;
+          if (existingMsg && existingMsg.sessionId !== session.id) {
+            msgId = `${session.id}_${msgId}_${idx}`;
+          }
+        } catch {}
+      }
+      seenIdsInThisBatch.add(msgId);
+
+      try {
+        insertMessage.run(
+          msgId,
+          session.id,
+          msg.role || 'user',
+          msg.content || '',
+          msg.timestamp || now,
+          msg.model || null,
+          msg.agentName || null,
+          idx,
+          JSON.stringify(payload)
+        );
+      } catch (insertErr) {
+        sysLog.warn('SQLITE', `Aviso ao inserir mensagem ${msgId} na sessão ${session.id}:`, insertErr);
+      }
     });
   }
 
@@ -268,4 +290,10 @@ export function deleteSessionSqlite(id: string): boolean {
   database.prepare('DELETE FROM messages WHERE sessionId = ?').run(id);
   database.prepare('DELETE FROM sessions WHERE id = ?').run(id);
   return true;
+}
+
+export function clearAllSessionsSqlite(): void {
+  const database = getDb();
+  database.prepare('DELETE FROM messages').run();
+  database.prepare('DELETE FROM sessions').run();
 }

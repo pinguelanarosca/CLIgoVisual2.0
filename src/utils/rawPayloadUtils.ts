@@ -80,6 +80,85 @@ export function getRawInspectionData(
       ? agent.thinkingLevel
       : 'medium';
 
+  // Dynamically resolve authentic tool declarations (strictly reflection of active MCPs, agent tools and real tool calls)
+  const resolvedFunctionDeclarations: Array<{ name: string; description: string; parameters?: any }> = [];
+
+  // 1. Tool calls captured in this message execution
+  if (msg.toolCalls && msg.toolCalls.length > 0) {
+    msg.toolCalls.forEach((tc) => {
+      const toolName = tc.toolName || (tc as any).name;
+      if (toolName && !resolvedFunctionDeclarations.some((f) => f.name === toolName)) {
+        resolvedFunctionDeclarations.push({
+          name: toolName,
+          description: `Ferramenta invocada em tempo de execução: ${toolName}`,
+          parameters: tc.parameters || {},
+        });
+      }
+    });
+  }
+
+  // 2. Active MCP Servers tools (e.g., Exa, GitHub, etc.)
+  const activeMcps = mcpServers.filter((m) => m.enabled);
+  activeMcps.forEach((mcp) => {
+    if (mcp.name === 'exa') {
+      if (!resolvedFunctionDeclarations.some((f) => f.name === 'web_search_exa')) {
+        resolvedFunctionDeclarations.push({
+          name: 'web_search_exa',
+          description: 'Busca neural em tempo real na web através do MCP Exa AI (neural web search).',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              query: { type: 'STRING', description: 'Termo de busca na web' },
+              numResults: { type: 'INTEGER', description: 'Quantidade de resultados (padrão 5)' },
+            },
+            required: ['query'],
+          },
+        });
+      }
+      if (!resolvedFunctionDeclarations.some((f) => f.name === 'get_contents_exa')) {
+        resolvedFunctionDeclarations.push({
+          name: 'get_contents_exa',
+          description: 'Extrai texto limpo e metadados estruturados de URLs via MCP Exa AI.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              urls: { type: 'ARRAY', items: { type: 'STRING' }, description: 'Lista de URLs para extração' },
+            },
+            required: ['urls'],
+          },
+        });
+      }
+    } else if (mcp.name === 'github') {
+      if (!resolvedFunctionDeclarations.some((f) => f.name === 'github_search_repos')) {
+        resolvedFunctionDeclarations.push({
+          name: 'github_search_repos',
+          description: 'Pesquisa repositórios e código no GitHub através do MCP oficial.',
+        });
+      }
+    }
+  });
+
+  // 3. Agent configured tools (if explicitly configured on agent)
+  if (agent && Array.isArray(agent.tools) && agent.tools.length > 0) {
+    const knownToolDescriptions: Record<string, string> = {
+      read_file: 'Lê o conteúdo de arquivos locais no diretório de trabalho autorizado.',
+      write_file: 'Cria ou sobrescreve arquivos no diretório de trabalho autorizado.',
+      edit_file: 'Aplica alterações cirúrgicas e substituições de texto em arquivos existentes.',
+      list_directory: 'Lista arquivos e diretórios da árvore de trabalho.',
+      run_command: 'Executa comandos shell controlados no workspace Ubuntu Linux.',
+      search_files: 'Pesquisa padrões de texto ou expressões regulares no projeto.',
+    };
+
+    agent.tools.forEach((toolName) => {
+      if (!resolvedFunctionDeclarations.some((f) => f.name === toolName)) {
+        resolvedFunctionDeclarations.push({
+          name: toolName,
+          description: knownToolDescriptions[toolName] || `Ferramenta customizada do agente: ${toolName}`,
+        });
+      }
+    });
+  }
+
   const finalApiRequest: FinalApiRequest = msg.finalApiRequest || msg.rawPayloadSent?.finalApiRequest || {
     model: resolvedModel,
     contents: [
@@ -111,18 +190,13 @@ export function getRawInspectionData(
         thinkingLevel: resolvedThinkingLevel,
       },
     },
-    tools: [
-      {
-        functionDeclarations: [
-          { name: 'read_file', description: 'Reads content from a local file within authorized directory' },
-          { name: 'write_file', description: 'Writes or overwrites content in a file within authorized directory' },
-          { name: 'edit_file', description: 'Performs precise replacement of text in file' },
-          { name: 'list_directory', description: 'Lists directory contents' },
-          { name: 'run_command', description: 'Executes shell command in authorized workspace' },
-          { name: 'search_files', description: 'Searches for regex/text patterns in project codebase' },
-        ],
-      },
-    ],
+    tools: resolvedFunctionDeclarations.length > 0
+      ? [
+          {
+            functionDeclarations: resolvedFunctionDeclarations,
+          },
+        ]
+      : [],
     safetySettings: [
       { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
       { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },

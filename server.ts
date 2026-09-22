@@ -54,6 +54,7 @@ import {
   updateProject,
   deleteProject,
   getSessions,
+  getSessionById,
   saveSession,
   deleteSession,
   inspectFilesAndDiffs,
@@ -85,30 +86,26 @@ import {
   restoreSystemBackup,
   resetSystemToFactoryDefaults,
 } from './server/backup-reset-service.js';
-import { sendError } from './server/error-service.js';
 import {
-  getAppVersions,
-  getAppVersionById,
-  createAppVersion,
-  restoreAppVersion,
-  getAppVersionDiff,
-  deleteAppVersion,
-  detectChangedFiles,
-} from './server/app-versions-service.js';
+  listVersions,
+  getVersion,
+  createVersionSnapshot,
+  restoreVersion,
+  getVersionDiff,
+  deleteVersion,
+} from './server/versions-service.js';
 import {
-  loadAllMemories,
-  getMemories,
-  getMemoryById,
+  loadMemories,
+  getMemory,
   createMemory,
   updateMemoryContent,
+  updateMemoryMetadata,
   restoreMemoryVersion,
   deleteMemory,
   refactorMemoryWithAgent,
-  loadMemoryAgentConfig,
-  saveMemoryAgentConfig,
-  updateWorkflowStepState,
-  recordOperationalAttempt,
-} from './server/memory-service.js';
+  getOrCreateEffectiveMemory,
+} from './server/memories-service.js';
+import { sendError } from './server/error-service.js';
 
 const PORT = 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -630,6 +627,15 @@ priority = 90
     res.json(getSessions(projectId as string));
   });
 
+  app.get('/api/sessions/:id', (req, res) => {
+    const { id } = req.params;
+    const session = getSessionById(id);
+    if (!session) {
+      return res.status(404).json({ error: 'Sessão não encontrada.' });
+    }
+    res.json(session);
+  });
+
   app.post('/api/sessions', (req, res) => {
     const session = req.body;
     if (!session || !session.id) {
@@ -891,188 +897,132 @@ priority = 90
     res.send(text);
   });
 
-  // 15. App Versions (Snapshots)
+  // 15. App Versions (File Snapshots & Safe Restore)
   app.get('/api/versions', (req, res) => {
     const { projectId, workspaceDir } = req.query;
-    const versions = getAppVersions(projectId as string, workspaceDir as string);
-    res.json(versions);
+    res.json(listVersions(projectId as string, workspaceDir as string));
   });
 
   app.get('/api/versions/:id', (req, res) => {
-    const { id } = req.params;
-    const version = getAppVersionById(id);
-    if (!version) {
-      return res.status(404).json({ error: 'Versão não encontrada' });
-    }
+    const version = getVersion(req.params.id);
+    if (!version) return res.status(404).json({ error: 'Versão não encontrada' });
     res.json(version);
   });
 
-  app.post('/api/versions', (req, res) => {
-    const { prompt, workspaceDir, projectId, agentName, model, executionId, changedFiles } = req.body;
-    const targetDir = workspaceDir || process.cwd();
-    const version = createAppVersion({
-      prompt: prompt || 'Criação manual de versão',
-      workspaceDir: targetDir,
-      projectId,
-      agentName,
-      model,
-      executionId,
-      changedFiles,
-    });
-    if (!version) {
-      return res.status(400).json({
-        success: false,
-        message: 'Nenhum arquivo alterado detectado ou erro ao criar snapshot.',
+  app.post('/api/versions', async (req, res) => {
+    try {
+      const { prompt, agentName, model, executionId, workspaceDir, projectId, changedFiles } = req.body || {};
+      const version = await createVersionSnapshot({
+        prompt,
+        agentName,
+        model,
+        executionId,
+        workspaceDir: workspaceDir || process.cwd(),
+        projectId,
+        changedFiles: changedFiles || [],
       });
+      res.json({ success: true, version });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
-    res.json({ success: true, version });
+  });
+
+  app.post('/api/versions/:id/restore', async (req, res) => {
+    try {
+      const { workspaceDir } = req.body || {};
+      const result = await restoreVersion(req.params.id, workspaceDir || process.cwd());
+      if (!result.success) return res.status(400).json(result);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
   });
 
   app.get('/api/versions/:id/diff', (req, res) => {
-    const { id } = req.params;
-    const diffs = getAppVersionDiff(id);
-    res.json(diffs);
-  });
-
-  app.post('/api/versions/:id/restore', (req, res) => {
-    const { id } = req.params;
-    const result = restoreAppVersion(id);
-    if (!result.success) {
-      return res.status(400).json(result);
-    }
-    res.json(result);
+    const { workspaceDir } = req.query;
+    const diffs = getVersionDiff(req.params.id, (workspaceDir as string) || process.cwd());
+    res.json({ diffs });
   });
 
   app.delete('/api/versions/:id', (req, res) => {
-    const { id } = req.params;
-    const ok = deleteAppVersion(id);
-    res.json({ success: ok });
+    const success = deleteVersion(req.params.id);
+    res.json({ success });
   });
 
-  // 16. Shared Persistent & Manipulable Memory
-  app.get('/api/memory', (req, res) => {
-    const { projectId } = req.query;
-    const memories = getMemories(projectId as string);
-    res.json(memories);
-  });
-
-  app.get('/api/memory/config', (req, res) => {
-    res.json(loadMemoryAgentConfig());
-  });
-
-  app.post('/api/memory/config', (req, res) => {
-    const config = req.body;
-    if (!config || !config.name) {
-      return res.status(400).json({ error: 'Configuração inválida' });
+  // 16. Shared Memories & Isolated Memory Agent
+  app.get('/api/memories', (req, res) => {
+    const { projectId, sessionId, projectName, sessionTitle, effectiveOnly } = req.query as Record<string, string>;
+    if (effectiveOnly === 'true' || (projectId || sessionId)) {
+      const effective = getOrCreateEffectiveMemory({
+        projectId,
+        projectName,
+        sessionId,
+        sessionTitle,
+      });
+      return res.json({ effective, memories: loadMemories() });
     }
-    saveMemoryAgentConfig(config);
-    res.json({ success: true, config: loadMemoryAgentConfig() });
+    res.json(loadMemories());
   });
 
-  app.get('/api/memory/:id', (req, res) => {
-    const { id } = req.params;
-    const memory = getMemoryById(id);
-    if (!memory) {
-      return res.status(404).json({ error: 'Memória não encontrada' });
-    }
-    res.json(memory);
-  });
-
-  app.get('/api/memory/:id/versions', (req, res) => {
-    const { id } = req.params;
-    const memory = getMemoryById(id);
-    if (!memory) {
-      return res.status(404).json({ error: 'Memória não encontrada' });
-    }
-    res.json(memory.versions || []);
-  });
-
-  app.post('/api/memory', (req, res) => {
-    const { name, description, content, projectId, associatedAgentId } = req.body;
-    const created = createMemory({
-      name: name || 'Nova Memória',
-      description,
-      content,
+  app.get('/api/memories/effective', (req, res) => {
+    const { projectId, sessionId, projectName, sessionTitle } = req.query as Record<string, string>;
+    const effective = getOrCreateEffectiveMemory({
       projectId,
-      associatedAgentId,
+      projectName,
+      sessionId,
+      sessionTitle,
     });
+    res.json(effective);
+  });
+
+  app.post('/api/memories', (req, res) => {
+    const { name, description, content, agentConfig, projectId, sessionId, scope } = req.body || {};
+    const created = createMemory({ name, description, content, agentConfig, projectId, sessionId, scope });
     res.json(created);
   });
 
-  app.put('/api/memory/:id', (req, res) => {
-    const { id } = req.params;
-    const { content, author, summary } = req.body;
-    if (content === undefined) {
-      return res.status(400).json({ error: 'Conteúdo é obrigatório' });
+  app.get('/api/memories/:id', (req, res) => {
+    const mem = getMemory(req.params.id);
+    if (!mem) return res.status(404).json({ error: 'Memória não encontrada' });
+    res.json(mem);
+  });
+
+  app.put('/api/memories/:id', (req, res) => {
+    const { content, name, description, agentConfig, projectId, sessionId, scope, author, versionDescription } = req.body || {};
+    let updated = null;
+    if (content !== undefined) {
+      updated = updateMemoryContent(req.params.id, content, author || 'user', versionDescription);
     }
-    const updated = updateMemoryContent(id, content, author || 'user', summary);
-    if (!updated) {
-      return res.status(404).json({ error: 'Memória não encontrada' });
+    if (name !== undefined || description !== undefined || agentConfig !== undefined || projectId !== undefined || sessionId !== undefined || scope !== undefined) {
+      updated = updateMemoryMetadata(req.params.id, { name, description, agentConfig, projectId, sessionId, scope });
     }
+    if (!updated) return res.status(404).json({ error: 'Memória não encontrada' });
     res.json(updated);
   });
 
-  app.post('/api/memory/:id/restore-version', (req, res) => {
-    const { id } = req.params;
-    const { versionId } = req.body;
-    if (!versionId) {
-      return res.status(400).json({ error: 'ID da versão é obrigatório' });
+  app.post('/api/memories/:id/restore-version', (req, res) => {
+    const { version } = req.body || {};
+    if (typeof version !== 'number') {
+      return res.status(400).json({ error: 'Número da versão é obrigatório' });
     }
-    const restored = restoreMemoryVersion(id, versionId);
-    if (!restored) {
-      return res.status(400).json({ error: 'Falha ao restaurar versão da memória' });
-    }
+    const restored = restoreMemoryVersion(req.params.id, version);
+    if (!restored) return res.status(404).json({ error: 'Versão ou memória não encontrada' });
     res.json(restored);
   });
 
-  app.delete('/api/memory/:id', (req, res) => {
-    const { id } = req.params;
-    const ok = deleteMemory(id);
-    res.json({ success: ok });
+  app.delete('/api/memories/:id', (req, res) => {
+    const success = deleteMemory(req.params.id);
+    res.json({ success });
   });
 
-  app.post('/api/memory/agent/refactor', async (req, res) => {
-    const { memoryId, instruction, customContent } = req.body;
-    if (!memoryId || !instruction) {
-      return res.status(400).json({ error: 'memoryId e instruction são obrigatórios' });
+  app.post('/api/memories/:id/refactor-agent', async (req, res) => {
+    const { instruction, agentId, model } = req.body || {};
+    if (!instruction || typeof instruction !== 'string') {
+      return res.status(400).json({ error: 'Instrução do usuário é obrigatória' });
     }
-    const result = await refactorMemoryWithAgent({ memoryId, instruction, customContent });
-    if (!result.success) {
-      return res.status(400).json(result);
-    }
+    const result = await refactorMemoryWithAgent(req.params.id, instruction, agentId, model);
+    if (!result.success) return res.status(400).json(result);
     res.json(result);
-  });
-
-  app.post('/api/memory/:id/step', (req, res) => {
-    const { id } = req.params;
-    const { stepPattern, newState, reason } = req.body;
-    if (!stepPattern || !newState) {
-      return res.status(400).json({ error: 'stepPattern e newState são obrigatórios' });
-    }
-    const updated = updateWorkflowStepState(id, stepPattern, newState, reason);
-    if (!updated) {
-      return res.status(400).json({ error: 'Não foi possível atualizar a etapa' });
-    }
-    res.json(updated);
-  });
-
-  app.post('/api/memory/:id/record-attempt', (req, res) => {
-    const { id } = req.params;
-    const { target, attemptDescription, result, reasonOrConfirmation, affectedFiles } = req.body;
-    if (!target || !attemptDescription || !result) {
-      return res.status(400).json({ error: 'target, attemptDescription e result são obrigatórios' });
-    }
-    const updated = recordOperationalAttempt(id, {
-      target,
-      attemptDescription,
-      result,
-      reasonOrConfirmation,
-      affectedFiles,
-    });
-    if (!updated) {
-      return res.status(400).json({ error: 'Não foi possível registrar tentativa' });
-    }
-    res.json(updated);
   });
 
   // --- Vite middleware / static files ---

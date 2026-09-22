@@ -81,6 +81,25 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
     }
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isCreating) {
+          setIsCreating(false);
+          return;
+        }
+        if (editingId) {
+          setEditingId(null);
+          return;
+        }
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, isCreating, editingId, onClose]);
+
   if (!isOpen) return null;
 
   const loadSelectorEntries = async (path: string) => {
@@ -210,7 +229,12 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+    >
       <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl w-full max-w-3xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         
         {/* Header */}

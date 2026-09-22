@@ -181,7 +181,6 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
             className="w-full px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-900 dark:text-zinc-100"
           >
             <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (Padrão do Sistema)</option>
-            <option value="gemini-3.1-flash-tts-preview">Gemini 3.1 Flash TTS Preview (Alta Fidelidade)</option>
             <option value="gemini-3.1-flash-tts">Gemini 3.1 Flash TTS</option>
             <option value="gemini-2.5-flash-tts">Gemini 2.5 Flash TTS</option>
             <option value="browser-native">SpeechSynthesis Nativo (Instantâneo - Resposta imediata sem rede)</option>

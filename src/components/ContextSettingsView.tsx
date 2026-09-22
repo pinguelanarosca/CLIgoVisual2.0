@@ -24,6 +24,7 @@ import {
   AuthorizedDir,
   SkillConfig,
   McpConfig,
+  SessionItem,
 } from '../types.js';
 import {
   ContextSettings,
@@ -36,6 +37,9 @@ import {
 interface ContextSettingsViewProps {
   messages: ChatMessage[];
   onUpdateMessages: (newMessages: ChatMessage[]) => void;
+  sessions?: SessionItem[];
+  currentSessionId?: string;
+  onUpdateSessionMessages?: (sessionId: string, newMessages: ChatMessage[]) => void;
   agent?: AgentConfig | null;
   activeProject?: ProjectItem | null;
   projects?: ProjectItem[];
@@ -49,6 +53,9 @@ interface ContextSettingsViewProps {
 export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
   messages,
   onUpdateMessages,
+  sessions = [],
+  currentSessionId,
+  onUpdateSessionMessages,
   agent,
   activeProject,
   projects = [],
@@ -64,10 +71,21 @@ export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
     tokensSaved?: number;
   } | null>(null);
 
+  const [selectedSessionId, setSelectedSessionId] = useState<string>(
+    currentSessionId || (sessions.length > 0 ? sessions[0].id : '')
+  );
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(
+    activeProject?.id || ''
+  );
+
+  const targetSession = sessions.find((s) => s.id === selectedSessionId);
+  const targetMessages = targetSession?.messages || messages;
+  const targetProject = projects.find((p) => p.id === selectedProjectId) || activeProject;
+
   const breakdown = calculateContextBreakdown(
-    messages,
+    targetMessages,
     agent,
-    activeProject,
+    targetProject,
     authorizedDirs,
     skills,
     mcpServers,
@@ -75,28 +93,33 @@ export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
   );
 
   const handleManualCompress = () => {
-    if (messages.length === 0) {
+    if (!targetMessages || targetMessages.length === 0) {
       setCompressionResult({
         success: false,
-        message: 'A conversa atual está vazia. Nenhuma compressão necessária.',
+        message: 'A conversa selecionada está vazia. Nenhuma compressão necessária.',
       });
       return;
     }
 
     const { compressedMessages, tokensSaved, originalTokens, newTokens } = compressContextMessages(
-      messages,
+      targetMessages,
       contextSettings
     );
 
     if (tokensSaved <= 0) {
       setCompressionResult({
         success: true,
-        message: 'O contexto atual já está otimizado e dentro do limite configurado.',
+        message: 'O contexto selecionado já está otimizado e dentro do limite configurado.',
       });
       return;
     }
 
-    onUpdateMessages(compressedMessages);
+    if (targetSession && onUpdateSessionMessages) {
+      onUpdateSessionMessages(targetSession.id, compressedMessages);
+    } else {
+      onUpdateMessages(compressedMessages);
+    }
+
     const savingsPercent = Math.round((tokensSaved / originalTokens) * 100);
 
     setCompressionResult({
@@ -121,19 +144,74 @@ export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
   return (
     <div className="space-y-6 max-w-3xl">
       {/* Title & Intro */}
-      <div className="border-b border-zinc-200 dark:border-zinc-800 pb-4">
+      <div className="border-b border-zinc-200 dark:border-zinc-800 pb-3 space-y-2">
         <div className="flex items-center gap-2">
-          <div className="p-2 rounded-xl bg-amber-500/10 text-amber-500">
-            <Sparkles className="w-5 h-5" />
+          <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-500 shrink-0">
+            <Sparkles className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
+            <h3 className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
               Gerenciamento & Compressão de Contexto
             </h3>
-            <p className="text-xs text-zinc-500 mt-0.5">
-              Estruture o contexto enviado ao agente Gemini e configure a compressão inteligente para evitar estouro de limite de tokens.
+            <p className="text-[11px] text-zinc-500">
+              Métricas reais de tokens por chat e configurações globais de compressão.
             </p>
           </div>
+        </div>
+
+        {/* Target Scope Information Card */}
+        <div className="p-3 rounded-xl bg-zinc-900/90 border border-amber-500/30 text-[11px] space-y-2 font-sans">
+          <div className="flex items-center gap-1.5 text-amber-400 font-semibold">
+            <Info className="w-3.5 h-3.5 shrink-0" />
+            <span>Origem do Contexto e Alvo de Compressão:</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-zinc-300 text-[11px]">
+            {/* Chat / Sessão Selection Dropdown */}
+            <div className="space-y-1">
+              <label className="text-zinc-400 font-medium block text-[10px] uppercase font-mono">
+                Sessão / Chat Alvo:
+              </label>
+              <select
+                value={selectedSessionId}
+                onChange={(e) => setSelectedSessionId(e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700/80 rounded-lg px-2 py-1 text-[11px] text-amber-300 font-semibold outline-none focus:border-amber-500 cursor-pointer truncate"
+              >
+                {sessions.length > 0 ? (
+                  sessions.map((sess) => (
+                    <option key={sess.id} value={sess.id}>
+                      {sess.title || 'Nova Conversa'} ({sess.messages?.length || 0} msgs)
+                    </option>
+                  ))
+                ) : (
+                  <option value="">Chat Atual</option>
+                )}
+              </select>
+            </div>
+
+            {/* Projeto Selection Dropdown */}
+            <div className="space-y-1">
+              <label className="text-zinc-400 font-medium block text-[10px] uppercase font-mono">
+                Projeto Vinculado:
+              </label>
+              <select
+                value={selectedProjectId}
+                onChange={(e) => setSelectedProjectId(e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700/80 rounded-lg px-2 py-1 text-[11px] text-emerald-400 font-semibold outline-none focus:border-emerald-500 cursor-pointer truncate"
+              >
+                <option value="">Nenhum (Chat Livre)</option>
+                {projects.map((proj) => (
+                  <option key={proj.id} value={proj.id}>
+                    📁 {proj.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <p className="text-[10px] text-zinc-400 pt-1 border-t border-zinc-800 leading-tight">
+            * Selecione o chat e o projeto para inspecionar os tokens em tempo real e aplicar a compressão manual.
+          </p>
         </div>
       </div>
 
@@ -292,22 +370,22 @@ export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
       </div>
 
       {/* Manual Compression Action */}
-      <div className="bg-amber-500/10 border border-amber-500/30 p-4 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+      <div className="bg-amber-500/10 border border-amber-500/30 p-3 rounded-xl flex flex-col gap-2.5">
         <div>
           <h4 className="text-xs font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
-            <Minimize2 className="w-4 h-4" />
-            Ação Manual: Comprimir Contexto da Conversa
+            <Minimize2 className="w-3.5 h-3.5 shrink-0" />
+            <span>Ação Manual: Comprimir Contexto da Sessão Ativa</span>
           </h4>
-          <p className="text-xs text-zinc-600 dark:text-zinc-300 mt-0.5">
-            Compacta o histórico do chat atual com base na estratégia selecionada mantendo pontos cruciais do contexto.
+          <p className="text-[11px] text-zinc-600 dark:text-zinc-300 mt-0.5 leading-tight">
+            Resume e otimiza as mensagens da conversa atual para liberar janela de tokens no Gemini.
           </p>
         </div>
         <button
           onClick={handleManualCompress}
-          className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs transition shadow-sm shrink-0 cursor-pointer flex items-center gap-1.5"
+          className="w-full py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs transition shadow-sm cursor-pointer flex items-center justify-center gap-1.5"
         >
           <Sparkles className="w-3.5 h-3.5" />
-          <span>Comprimir Contexto Agora</span>
+          <span>Comprimir Contexto da Sessão Ativa</span>
         </button>
       </div>
 

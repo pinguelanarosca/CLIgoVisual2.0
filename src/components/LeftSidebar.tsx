@@ -21,6 +21,8 @@ import {
   FileCheck2,
   Folder,
   FolderOpen,
+  Files,
+  Activity,
 } from 'lucide-react';
 import { SessionItem, ProjectItem } from '../types.js';
 import { calculateSessionTokens, formatTokenCount } from '../utils/tokenUtils.js';
@@ -39,10 +41,15 @@ interface LeftSidebarProps {
   onOpenProjectsModal: () => void;
   onOpenSettings: (tab?: string) => void;
 
-  // New features
+  // Docked panels
+  onOpenFiles?: () => void;
   onOpenDirsModal: () => void;
   onOpenHistory: () => void;
   onOpenArchivedChats: () => void;
+  onOpenContext?: () => void;
+  onOpenChatContext?: (session: SessionItem) => void;
+  onOpenLogs?: () => void;
+  activeRightPanelMode?: string | null;
   onUpdateSession: (id: string, updates: Partial<SessionItem>) => void;
   onDeriveSession: (sess: SessionItem) => void;
   selectedSessionIds: string[];
@@ -65,9 +72,14 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   onOpenProjectsModal,
   onOpenSettings,
 
+  onOpenFiles,
   onOpenDirsModal,
   onOpenHistory,
   onOpenArchivedChats,
+  onOpenContext,
+  onOpenChatContext,
+  onOpenLogs,
+  activeRightPanelMode,
   onUpdateSession,
   onDeriveSession,
   selectedSessionIds,
@@ -79,7 +91,38 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [activeMenuSessionId, setActiveMenuSessionId] = useState<string | null>(null);
   const [showProjMenuId, setShowProjMenuId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; left: number } | null>(null);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+
+  const handleOpenMenu = (sessId: string, e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    if (activeMenuSessionId === sessId) {
+      setActiveMenuSessionId(null);
+      setMenuPos(null);
+      setConfirmDeleteId(null);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const openUp = spaceBelow < 220;
+
+    setActiveMenuSessionId(sessId);
+    setShowProjMenuId(null);
+    setConfirmDeleteId(null);
+
+    if (openUp) {
+      setMenuPos({
+        bottom: window.innerHeight - rect.top + 4,
+        left: Math.max(10, Math.min(window.innerWidth - 188, rect.right - 176)),
+      });
+    } else {
+      setMenuPos({
+        top: rect.bottom + 4,
+        left: Math.max(10, Math.min(window.innerWidth - 188, rect.right - 176)),
+      });
+    }
+  };
 
   const toggleProjectExpand = (projId: string) => {
     setExpandedProjects((prev) => ({
@@ -144,17 +187,17 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
             }
           }}
           title={`${sess.title || 'Conversa'} (${formatTokenCount(totalTokens)} tokens)`}
-          className={`w-10 h-10 mx-auto rounded-xl flex items-center justify-center relative transition cursor-pointer ${
+          className={`w-8 h-8 mx-auto rounded-md flex items-center justify-center relative transition cursor-pointer ${
             isSelected
-              ? 'bg-blue-600 text-white shadow-md'
+              ? 'bg-blue-600 text-white shadow-2xs'
               : isActive
-              ? 'bg-blue-900/40 text-white border border-blue-500/30'
-              : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+              ? 'bg-blue-900/50 text-white border border-blue-500/40'
+              : 'text-zinc-400 hover:bg-zinc-800/80 hover:text-zinc-200'
           }`}
         >
-          <MessageSquare className="w-4 h-4" />
+          <MessageSquare className="w-3.5 h-3.5" />
           {isSelected && (
-            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-blue-500 rounded-full border border-zinc-900" />
+            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-blue-500 rounded-full border border-zinc-900" />
           )}
         </button>
       );
@@ -163,10 +206,10 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
     return (
       <div
         key={sess.id}
-        className={`group relative flex items-center justify-between px-2 py-1.5 rounded-lg transition cursor-pointer border ${
+        className={`group relative flex items-center justify-between px-1.5 py-1 rounded-md transition cursor-pointer border ${
           isActive
-            ? 'bg-blue-900/30 border-blue-500/50 text-white'
-            : 'bg-zinc-900/50 border-transparent hover:bg-zinc-800/70 text-zinc-300'
+            ? 'bg-blue-900/30 border-blue-500/40 text-white'
+            : 'bg-transparent border-transparent hover:bg-zinc-800/60 text-zinc-300'
         }`}
         onClick={() => {
           if (isSelectionMode) {
@@ -176,7 +219,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
           }
         }}
       >
-        <div className="flex items-center gap-2 min-w-0 flex-1 pr-1">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1 pr-1">
           {/* Selection Checkbox */}
           {isSelectionMode ? (
             <button
@@ -201,11 +244,11 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
           )}
 
           <div className="min-w-0 flex-1">
-            <div className="text-xs font-medium truncate">
+            <div className="text-[11.5px] font-medium truncate leading-tight">
               {sess.title || 'Nova Conversa'}
             </div>
 
-            <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 font-mono">
+            <div className="flex items-center gap-1 text-[9.5px] text-zinc-500 font-mono leading-tight">
               <span>{sess.messages?.length || 0} msgs</span>
               <span>•</span>
               <span className="flex items-center text-amber-400 font-semibold">
@@ -218,22 +261,42 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
 
         {/* Individual Chat Options Trigger Button */}
         {!isSelectionMode && (
-          <div className="relative shrink-0">
+          <div className="shrink-0">
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setActiveMenuSessionId(activeMenuSessionId === sess.id ? null : sess.id);
-                setShowProjMenuId(null);
-              }}
+              onClick={(e) => handleOpenMenu(sess.id, e)}
               title="Opções"
               className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition cursor-pointer"
             >
-              <MoreVertical className="w-3.5 h-3.5" />
+              <MoreVertical className="w-3 h-3" />
             </button>
 
-            {/* Options Dropdown Menu */}
-            {activeMenuSessionId === sess.id && (
-              <div className="absolute right-0 mt-1 w-44 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl p-1 shadow-lg z-35 text-xs animate-in fade-in duration-100">
+            {/* Options Dropdown Menu (Fixed Positioning to prevent overflow clipping) */}
+            {activeMenuSessionId === sess.id && menuPos && (
+              <div
+                className="fixed w-44 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl p-1 shadow-2xl z-50 text-xs animate-in fade-in duration-100"
+                style={{
+                  top: menuPos.top !== undefined ? `${menuPos.top}px` : undefined,
+                  bottom: menuPos.bottom !== undefined ? `${menuPos.bottom}px` : undefined,
+                  left: `${menuPos.left}px`,
+                }}
+              >
+                {/* Option: Contexto & Tokens */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onOpenChatContext) {
+                      onOpenChatContext(sess);
+                    } else if (onOpenContext) {
+                      onOpenContext();
+                    }
+                    setActiveMenuSessionId(null);
+                  }}
+                  className="w-full text-left px-2 py-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-zinc-700 dark:text-zinc-200 hover:text-zinc-900 dark:hover:text-white flex items-center gap-1.5 transition cursor-pointer text-xs"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Contexto & Tokens</span>
+                </button>
+
                 {/* Option: Derivar Chat */}
                 <button
                   onClick={(e) => {
@@ -241,7 +304,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
                     onDeriveSession(sess);
                     setActiveMenuSessionId(null);
                   }}
-                  className="w-full text-left px-2 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-md text-zinc-700 dark:text-zinc-200 hover:text-zinc-900 dark:hover:text-white flex items-center gap-1.5 transition cursor-pointer"
+                  className="w-full text-left px-2 py-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-zinc-700 dark:text-zinc-200 hover:text-zinc-900 dark:hover:text-white flex items-center gap-1.5 transition cursor-pointer text-xs"
                 >
                   <FileCheck2 className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
                   <span>Derivar Chat</span>
@@ -254,7 +317,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
                       e.stopPropagation();
                       setShowProjMenuId(showProjMenuId === sess.id ? null : sess.id);
                     }}
-                    className="w-full text-left px-2 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-md text-zinc-700 dark:text-zinc-200 hover:text-zinc-900 dark:hover:text-white flex items-center justify-between gap-1.5 transition cursor-pointer"
+                    className="w-full text-left px-2 py-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-zinc-700 dark:text-zinc-200 hover:text-zinc-900 dark:hover:text-white flex items-center justify-between gap-1.5 transition cursor-pointer text-xs"
                   >
                     <span className="flex items-center gap-1.5">
                       <FolderGit2 className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
@@ -265,7 +328,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
 
                   {/* Submenu Projects */}
                   {showProjMenuId === sess.id && (
-                    <div className="absolute left-[-150px] top-0 w-36 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl p-1 shadow-lg z-40 text-[11px]">
+                    <div className="absolute left-full ml-1 top-0 w-36 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl p-1 shadow-2xl z-50 text-[11px]">
                       {isProjectChat && (
                         <button
                           onClick={(ev) => {
@@ -294,7 +357,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
                         </button>
                       ))}
                       {projects.length === 0 && (
-                        <div className="p-1.5 text-zinc-500 text-center text-[10px]">Sem projetos</div>
+                        <div className="p-1 text-zinc-500 text-center text-[10px]">Sem projetos</div>
                       )}
                     </div>
                   )}
@@ -307,7 +370,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
                     onUpdateSession(sess.id, { isArchived: true });
                     setActiveMenuSessionId(null);
                   }}
-                  className="w-full text-left px-2 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-md text-zinc-700 dark:text-zinc-200 hover:text-zinc-900 dark:hover:text-white flex items-center gap-1.5 transition cursor-pointer"
+                  className="w-full text-left px-2 py-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-zinc-700 dark:text-zinc-200 hover:text-zinc-900 dark:hover:text-white flex items-center gap-1.5 transition cursor-pointer text-xs"
                 >
                   <Archive className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                   <span>Arquivar</span>
@@ -315,20 +378,45 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
 
                 <div className="h-px bg-zinc-200 dark:bg-zinc-700 my-0.5" />
 
-                {/* Option: Remover */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (confirm('Deseja realmente excluir esta conversa?')) {
-                      onDeleteSession(sess.id);
-                      setActiveMenuSessionId(null);
-                    }
-                  }}
-                  className="w-full text-left px-2 py-1.5 hover:bg-rose-50 dark:hover:bg-rose-900/40 rounded-md text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 flex items-center gap-1.5 transition cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
-                  <span>Remover</span>
-                </button>
+                {/* Option: Remover / Confirmar Exclusão */}
+                {confirmDeleteId === sess.id ? (
+                  <div className="p-1.5 bg-rose-500/10 dark:bg-rose-950/40 rounded border border-rose-500/30 text-xs space-y-1 my-0.5">
+                    <p className="text-[10px] font-medium text-rose-600 dark:text-rose-300">Excluir conversa?</p>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteSession(sess.id);
+                          setActiveMenuSessionId(null);
+                          setConfirmDeleteId(null);
+                        }}
+                        className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white text-[10px] font-bold transition cursor-pointer"
+                      >
+                        Excluir
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteId(null);
+                        }}
+                        className="px-2 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 text-[10px] transition cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmDeleteId(sess.id);
+                    }}
+                    className="w-full text-left px-2 py-1 hover:bg-rose-50 dark:hover:bg-rose-900/40 rounded text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 flex items-center gap-1.5 transition cursor-pointer text-xs"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                    <span>Remover</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -340,15 +428,15 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   return (
     <aside
       className={`h-full bg-zinc-900 border-r border-zinc-800 flex flex-col transition-all duration-300 z-20 shrink-0 text-zinc-300 select-none ${
-        isExpanded ? 'w-60' : 'w-14'
+        isExpanded ? 'w-56' : 'w-12'
       }`}
     >
       {/* Sidebar Header & Brand */}
-      <div className="p-2.5 border-b border-zinc-800/80 flex items-center justify-between shrink-0">
+      <div className="p-1.5 border-b border-zinc-800/80 flex items-center justify-between shrink-0">
         {isExpanded ? (
-          <div className="flex items-center gap-2 overflow-hidden">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-2xs shrink-0">
-              <Terminal className="w-3.5 h-3.5" />
+          <div className="flex items-center gap-1.5 overflow-hidden">
+            <div className="w-6 h-6 rounded bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-2xs shrink-0">
+              <Terminal className="w-3 h-3" />
             </div>
             <div className="flex flex-col min-w-0">
               <span className="font-bold text-zinc-100 text-xs tracking-tight truncate">
@@ -357,8 +445,8 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
             </div>
           </div>
         ) : (
-          <div className="w-7 h-7 mx-auto rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-2xs shrink-0">
-            <Terminal className="w-3.5 h-3.5" />
+          <div className="w-6 h-6 mx-auto rounded bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-2xs shrink-0">
+            <Terminal className="w-3 h-3" />
           </div>
         )}
 
@@ -367,16 +455,16 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
           title={isExpanded ? 'Recolher Barra Lateral' : 'Expandir Barra Lateral'}
           className="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 transition cursor-pointer"
         >
-          {isExpanded ? <ChevronLeft className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+          {isExpanded ? <ChevronLeft className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </button>
       </div>
 
       {/* Primary Action: Novo Chat Livre */}
-      <div className="p-2 shrink-0">
+      <div className="p-1.5 shrink-0">
         <button
           onClick={() => onNewSession(null)}
           title="Novo Chat Livre"
-          className={`w-full flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-2xs transition active:scale-98 cursor-pointer ${
+          className={`w-full flex items-center justify-center gap-1 py-1.5 px-2 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-2xs transition active:scale-98 cursor-pointer ${
             !isExpanded ? 'px-0' : ''
           }`}
         >
@@ -387,8 +475,8 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
 
       {/* Controls Bar: Search & Multi-select */}
       {isExpanded && (
-        <div className="px-2 pb-2 space-y-1.5 border-b border-zinc-800/60 shrink-0">
-          <div className="flex items-center justify-between text-[10px] uppercase font-mono text-zinc-400 font-semibold tracking-wider">
+        <div className="px-1.5 pb-1.5 space-y-1 border-b border-zinc-800/60 shrink-0">
+          <div className="flex items-center justify-between text-[9.5px] uppercase font-mono text-zinc-400 font-semibold tracking-wider">
             <span>Chats</span>
             <div className="flex items-center gap-1">
               <button
@@ -411,8 +499,8 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
 
           {/* Batch actions bar in selection mode */}
           {isSelectionMode && selectedSessionIds.length > 0 && (
-            <div className="flex items-center justify-between p-1.5 rounded-md bg-zinc-800/80 border border-zinc-700/60 text-xs gap-1">
-              <span className="font-medium text-[11px] text-zinc-300">
+            <div className="flex items-center justify-between p-1 rounded bg-zinc-800/80 border border-zinc-700/60 text-xs gap-1">
+              <span className="font-medium text-[10.5px] text-zinc-300">
                 {selectedSessionIds.length} sel.
               </span>
               <div className="flex items-center gap-0.5">
@@ -446,24 +534,24 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
 
           {/* Search Input */}
           <div className="relative">
-            <Search className="w-3 h-3 absolute left-2 top-2 text-zinc-500" />
+            <Search className="w-3 h-3 absolute left-2 top-1.5 text-zinc-500" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Buscar..."
-              className="w-full bg-zinc-800/80 text-xs text-zinc-200 pl-7 pr-2 py-1 rounded-md border border-zinc-700/60 placeholder-zinc-500 outline-none focus:border-blue-500 transition"
+              className="w-full bg-zinc-800/80 text-xs text-zinc-200 pl-6 pr-2 py-0.5 rounded border border-zinc-700/60 placeholder-zinc-500 outline-none focus:border-blue-500 transition"
             />
           </div>
         </div>
       )}
 
       {/* Main Categories Container */}
-      <div className="flex-1 overflow-y-auto px-1.5 py-1.5 space-y-3">
+      <div className="flex-1 overflow-y-auto px-1 py-1 space-y-2">
         {/* Category: CHATS DO PROJETO */}
         {isExpanded && (
-          <div className="space-y-1">
-            <div className="flex items-center justify-between px-1 text-[10px] uppercase font-mono text-zinc-400 font-semibold tracking-wider">
+          <div className="space-y-0.5">
+            <div className="flex items-center justify-between px-1 text-[9.5px] uppercase font-mono text-zinc-400 font-semibold tracking-wider">
               <span className="flex items-center gap-1">
                 <FolderGit2 className="w-3 h-3 text-blue-400" />
                 Projetos
@@ -471,18 +559,18 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
               <button
                 onClick={onOpenProjectsModal}
                 title="Gerenciar Projetos"
-                className="text-blue-400 hover:text-blue-300 hover:underline cursor-pointer text-[10px] font-sans font-medium"
+                className="text-blue-400 hover:text-blue-300 hover:underline cursor-pointer text-[9.5px] font-sans font-medium"
               >
                 + Gerenciar
               </button>
             </div>
 
             {projects.length === 0 ? (
-              <div className="p-2 bg-zinc-800/30 border border-dashed border-zinc-800 rounded-lg text-center">
-                <p className="text-[10px] text-zinc-500 mb-1">Sem projetos.</p>
+              <div className="p-1.5 bg-zinc-800/30 border border-dashed border-zinc-800 rounded text-center">
+                <p className="text-[9.5px] text-zinc-500 mb-0.5">Sem projetos.</p>
                 <button
                   onClick={onOpenProjectsModal}
-                  className="text-[10px] text-blue-400 hover:text-blue-300 font-medium hover:underline cursor-pointer"
+                  className="text-[9.5px] text-blue-400 hover:text-blue-300 font-medium hover:underline cursor-pointer"
                 >
                   + Criar Projeto
                 </button>
@@ -496,10 +584,10 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
                 return (
                   <div
                     key={proj.id}
-                    className={`rounded-lg border transition overflow-hidden ${
+                    className={`rounded border transition overflow-hidden ${
                       isSelectedProj
                         ? 'bg-zinc-800/90 border-blue-500/40'
-                        : 'bg-zinc-900/60 border-zinc-800/80 hover:border-zinc-700/80 shadow-2xs'
+                        : 'bg-zinc-900/60 border-zinc-800/80 hover:border-zinc-700/80'
                     }`}
                   >
                     {/* Project Header Row */}
@@ -508,9 +596,9 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
                         onSelectProject(proj);
                         toggleProjectExpand(proj.id);
                       }}
-                      className="p-1.5 flex items-center justify-between gap-1 cursor-pointer hover:bg-zinc-800/50 transition"
+                      className="p-1 flex items-center justify-between gap-1 cursor-pointer hover:bg-zinc-800/50 transition"
                     >
-                      <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                      <div className="flex items-center gap-1 min-w-0 flex-1">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -555,14 +643,14 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
 
                     {/* Project Chats Nested List */}
                     {isExpandedProj && (
-                      <div className="pl-2 pr-1 pb-1 space-y-0.5 border-t border-zinc-800/40 pt-1">
+                      <div className="pl-1.5 pr-0.5 pb-0.5 space-y-0.5 border-t border-zinc-800/40 pt-0.5">
                         {projChats.length === 0 ? (
                           <button
                             onClick={() => {
                               onSelectProject(proj);
                               onNewSession(proj.id);
                             }}
-                            className="w-full text-left p-1.5 rounded bg-zinc-800/20 hover:bg-zinc-800/50 text-[10px] text-zinc-400 hover:text-blue-300 transition flex items-center gap-1 cursor-pointer border border-dashed border-zinc-800"
+                            className="w-full text-left p-1 rounded bg-zinc-800/20 hover:bg-zinc-800/50 text-[9.5px] text-zinc-400 hover:text-blue-300 transition flex items-center gap-1 cursor-pointer border border-dashed border-zinc-800"
                           >
                             <Plus className="w-2.5 h-2.5 text-blue-400" />
                             <span>Iniciar conversa</span>
@@ -580,9 +668,9 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
         )}
 
         {/* Category: CONVERSAS LIVRES (Chat Livre) */}
-        <div className="space-y-1">
+        <div className="space-y-0.5">
           {isExpanded && (
-            <div className="flex items-center justify-between px-1 text-[10px] uppercase font-mono text-zinc-400 font-semibold tracking-wider">
+            <div className="flex items-center justify-between px-1 text-[9.5px] uppercase font-mono text-zinc-400 font-semibold tracking-wider">
               <span className="flex items-center gap-1">
                 <MessageSquare className="w-3 h-3 text-emerald-400" />
                 Conversas
@@ -595,8 +683,8 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
 
           {freeSessions.length === 0 ? (
             isExpanded ? (
-              <div className="text-center py-3 text-zinc-500 text-xs bg-zinc-900/40 rounded-lg border border-zinc-800/60 p-2">
-                <p className="text-[10px]">Nenhuma conversa.</p>
+              <div className="text-center py-2 text-zinc-500 text-xs bg-zinc-900/40 rounded border border-zinc-800/60 p-1">
+                <p className="text-[9.5px]">Nenhuma conversa.</p>
               </div>
             ) : null
           ) : (
@@ -606,60 +694,82 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
       </div>
 
       {/* Sidebar Footer */}
-      <div className="p-1.5 border-t border-zinc-800 shrink-0 space-y-0.5">
-        {/* Category: Arquivos */}
+      <div className="p-1 border-t border-zinc-800 shrink-0 space-y-0.5">
+        {/* Arquivos & Diffs */}
         <button
-          onClick={onOpenArchivedChats}
-          title="Chats Arquivados"
-          className={`w-full flex items-center justify-between py-1.5 px-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition cursor-pointer ${
-            !isExpanded ? 'justify-center px-0' : ''
-          }`}
+          onClick={onOpenFiles}
+          title="Arquivos & Diffs do Projeto"
+          className={`w-full flex items-center justify-start gap-1.5 py-1 px-1.5 rounded-md text-xs font-medium transition cursor-pointer ${
+            activeRightPanelMode === 'files'
+              ? 'bg-amber-500/20 text-amber-300 font-semibold border border-amber-500/30'
+              : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+          } ${!isExpanded ? 'justify-center px-0' : ''}`}
         >
-          <div className="flex items-center gap-1.5">
-            <Archive className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-            {isExpanded && <span>Arquivos</span>}
-          </div>
-          {isExpanded && archivedSessionsCount > 0 && (
-            <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-              {archivedSessionsCount}
-            </span>
-          )}
+          <Files className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          {isExpanded && <span>Arquivos & Diffs</span>}
         </button>
 
-        {/* Diretórios */}
+        {/* Diretórios Autorizados */}
         <button
           onClick={onOpenDirsModal}
           title="Diretórios Autorizados"
-          className={`w-full flex items-center justify-start gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition cursor-pointer ${
-            !isExpanded ? 'justify-center px-0' : ''
-          }`}
+          className={`w-full flex items-center justify-start gap-1.5 py-1 px-1.5 rounded-md text-xs font-medium transition cursor-pointer ${
+            activeRightPanelMode === 'dirs'
+              ? 'bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/30'
+              : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+          } ${!isExpanded ? 'justify-center px-0' : ''}`}
         >
-          <FolderCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+          <FolderCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
           {isExpanded && <span>Diretórios</span>}
         </button>
 
         {/* Histórico */}
         <button
           onClick={onOpenHistory}
-          title="Histórico de Sessões"
-          className={`w-full flex items-center justify-start gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition cursor-pointer ${
-            !isExpanded ? 'justify-center px-0' : ''
-          }`}
+          title="Histórico de Conversas"
+          className={`w-full flex items-center justify-start gap-1.5 py-1 px-1.5 rounded-md text-xs font-medium transition cursor-pointer ${
+            activeRightPanelMode === 'history'
+              ? 'bg-blue-500/20 text-blue-300 font-semibold border border-blue-500/30'
+              : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+          } ${!isExpanded ? 'justify-center px-0' : ''}`}
         >
           <History className="w-3.5 h-3.5 text-blue-400 shrink-0" />
           {isExpanded && <span>Histórico</span>}
         </button>
 
-        {/* Contexto & Tokens */}
+        {/* Logs em Tempo Real */}
         <button
-          onClick={() => onOpenSettings('context')}
-          title="Contexto & Tokens"
-          className={`w-full flex items-center justify-start gap-1.5 py-1.5 px-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition cursor-pointer ${
-            !isExpanded ? 'justify-center px-0' : ''
-          }`}
+          onClick={onOpenLogs || (() => onOpenSettings('logs'))}
+          title="Logs em Tempo Real"
+          className={`w-full flex items-center justify-start gap-1.5 py-1 px-1.5 rounded-md text-xs font-medium transition cursor-pointer ${
+            activeRightPanelMode === 'logs'
+              ? 'bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/30'
+              : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+          } ${!isExpanded ? 'justify-center px-0' : ''}`}
         >
-          <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          {isExpanded && <span>Contexto & Tokens</span>}
+          <Activity className="w-3.5 h-3.5 text-emerald-400 animate-pulse shrink-0" />
+          {isExpanded && <span>Logs</span>}
+        </button>
+
+        {/* Chats Arquivados */}
+        <button
+          onClick={onOpenArchivedChats}
+          title="Chats Arquivados"
+          className={`w-full flex items-center justify-between py-1 px-1.5 rounded-md text-xs font-medium transition cursor-pointer ${
+            activeRightPanelMode === 'archived'
+              ? 'bg-amber-500/20 text-amber-300 font-semibold border border-amber-500/30'
+              : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+          } ${!isExpanded ? 'justify-center px-0' : ''}`}
+        >
+          <div className="flex items-center gap-1.5">
+            <Archive className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            {isExpanded && <span>Chats Arquivados</span>}
+          </div>
+          {isExpanded && archivedSessionsCount > 0 && (
+            <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+              {archivedSessionsCount}
+            </span>
+          )}
         </button>
       </div>
     </aside>

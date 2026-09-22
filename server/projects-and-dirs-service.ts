@@ -11,6 +11,7 @@ import {
   getSessionByIdSqlite,
   saveSessionSqlite,
   deleteSessionSqlite,
+  clearAllSessionsSqlite,
 } from './session-sqlite-service.js';
 
 function getStorageFilePath(): string {
@@ -663,6 +664,12 @@ export function resetProjectsAndSessions(): void {
     activeProjectId: initialProject.id,
     sessions: [],
   };
+
+  try {
+    clearAllSessionsSqlite();
+  } catch (err) {
+    sysLog.warn('SYSTEM', 'Aviso ao limpar SQLite de sessões durante reset:', err);
+  }
 
   saveStore(store);
   sysLog.warn('SYSTEM', 'Projetos e histórico de sessões redefinidos para os padrões de fábrica.');

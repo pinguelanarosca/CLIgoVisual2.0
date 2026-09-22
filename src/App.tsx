@@ -8,9 +8,16 @@ import { HistoryDrawer } from './components/HistoryDrawer.js';
 import { SettingsModal } from './components/SettingsModal.js';
 import { LeftSidebar } from './components/LeftSidebar.js';
 import { ArchivedChatsModal } from './components/ArchivedChatsModal.js';
+import { RightSidebar } from './components/RightSidebar.js';
+import { VersionsSidebar } from './components/VersionsSidebar.js';
 import { VersionsModal } from './components/VersionsModal.js';
-import { MemoryModal } from './components/MemoryModal.js';
-import { RightPayloadDrawer } from './components/RightPayloadDrawer.js';
+import { SharedMemorySidebar } from './components/SharedMemorySidebar.js';
+import { LogsSidebar } from './components/LogsSidebar.js';
+import { HistorySidebar } from './components/HistorySidebar.js';
+import { AuthorizedDirsSidebar } from './components/AuthorizedDirsSidebar.js';
+import { ContextSidebar } from './components/ContextSidebar.js';
+import { ArchivedChatsSidebar } from './components/ArchivedChatsSidebar.js';
+import { FilesAndDiffsSidebar } from './components/FilesAndDiffsSidebar.js';
 import {
   ContextSettings,
   DEFAULT_CONTEXT_SETTINGS,
@@ -30,6 +37,7 @@ import {
   ChatMessage,
   AudioSettings,
   ThinkingLevel,
+  SharedMemoryItem,
 } from './types.js';
 import { DEFAULT_AGENTS } from './constants/defaultAgents.js';
 import { buildEffectiveSystemPrompt } from './utils/systemPromptUtils.js';
@@ -49,20 +57,59 @@ export function App() {
   // Context & Token Compression Settings
   const [contextSettings, setContextSettings] = useState<ContextSettings>(DEFAULT_CONTEXT_SETTINGS);
 
-  // Live Metrics Logs: RPM, TPM, RPD
-  const [requestLog, setRequestLog] = useState<Array<{ timestamp: number; tokenCount: number }>>([
-    { timestamp: Date.now() - 5000, tokenCount: 18500 },
-  ]);
+  // Live Metrics Logs: RPM, TPM, RPD (persisted in localStorage)
+  const [requestLog, setRequestLog] = useState<Array<{ timestamp: number; tokenCount: number }>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('gemini_cli_request_log');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) return parsed;
+        }
+      } catch {
+        // fallback
+      }
+    }
+    return [];
+  });
 
-  // Calculate live rate metrics
-  const now = Date.now();
+  const [now, setNow] = useState<number>(Date.now());
+
+  // Dynamic 1-second ticker to decay TPM/RPM and detect Pacific Midnight RPD reset in real time
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Save requestLog to localStorage (clean entries older than 48h)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const cutoff = Date.now() - 48 * 3600 * 1000;
+        const cleanLogs = requestLog.filter((r) => r.timestamp > cutoff);
+        localStorage.setItem('gemini_cli_request_log', JSON.stringify(cleanLogs));
+      } catch {
+        // ignore
+      }
+    }
+  }, [requestLog]);
+
+  // Helper for Pacific Date String ("M/D/YYYY" in America/Los_Angeles timezone)
+  const getPacificDateStr = (tsMs: number) => {
+    return new Date(tsMs).toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles' });
+  };
+
+  // Calculate live rate metrics (100% factual, sliding 60s window for TPM/RPM, Pacific Midnight reset for RPD)
   const lastMinuteLog = requestLog.filter((r) => now - r.timestamp <= 60000);
-  const rpm = Math.max(1, lastMinuteLog.length);
+  const rpm = lastMinuteLog.length;
   const tpm = lastMinuteLog.reduce((acc, r) => acc + r.tokenCount, 0);
-  const rpd = Math.max(
-    1,
-    requestLog.filter((r) => new Date(r.timestamp).toDateString() === new Date(now).toDateString()).length
-  );
+
+  const currentPacificDate = getPacificDateStr(now);
+  const todayPacificLogs = requestLog.filter((r) => getPacificDateStr(r.timestamp) === currentPacificDate);
+  const rpd = todayPacificLogs.length;
+
   const liveMetrics = { rpm, tpm, rpd };
 
   // Navigation views
@@ -126,40 +173,80 @@ export function App() {
   const [isArchivedChatsOpen, setIsArchivedChatsOpen] = useState(false);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
 
-  // App Versions, Shared Memory & 3rd Column Drawer States
-  const [isVersionsModalOpen, setIsVersionsModalOpen] = useState(false);
-  const [isMemoryModalOpen, setIsMemoryModalOpen] = useState(false);
-  const [isRightDrawerOpen, setIsRightDrawerOpen] = useState(false);
-  const [selectedMessageForInspection, setSelectedMessageForInspection] = useState<ChatMessage | null>(null);
+  // Right Panel System (Area 3: Docked Sidebars - Payload, Versions, Memory, Logs, History, Dirs, Context, Archived, Files)
+  const [rightPanelMode, setRightPanelMode] = useState<
+    'payload' | 'versions' | 'memory' | 'logs' | 'history' | 'dirs' | 'context' | 'archived' | 'files' | null
+  >(null);
+  const [rightPanelWidth, setRightPanelWidth] = useState<number>(() =>
+    Math.max(280, Math.min(320, typeof window !== 'undefined' ? Math.round(window.innerWidth * 0.20) : 300))
+  );
+  const [isResizingRightPanel, setIsResizingRightPanel] = useState<boolean>(false);
+  const [inspectionMessage, setInspectionMessage] = useState<ChatMessage | null>(null);
+  const [contextTargetSession, setContextTargetSession] = useState<SessionItem | null>(null);
 
-  const handleDeriveChat = (msg: ChatMessage, msgIndex: number) => {
-    const subMessages = messages.slice(0, msgIndex + 1);
-    const newId = generateSessionId();
-    const newSession: SessionItem = {
-      id: newId,
-      title: `Ramificação: ${msg.content.slice(0, 24)}...`,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      messageCount: subMessages.length,
-      messages: subMessages,
-      projectId: activeProject?.id,
-      statusGrade: 'CONFIGURED',
+  // Versions Snapshot Modal (legacy fallback if needed)
+  const [isVersionsModalOpen, setIsVersionsModalOpen] = useState(false);
+
+  // Shared Memory State (Project-wide or session-isolated)
+  const [activeMemory, setActiveMemory] = useState<SharedMemoryItem | null>(null);
+  const [activeMemoryVersion, setActiveMemoryVersion] = useState(1);
+
+  // Drag-to-resize listener for the right panel
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizingRightPanel) return;
+      const newWidth = window.innerWidth - e.clientX;
+      if (newWidth >= 260 && newWidth <= Math.min(950, window.innerWidth - 280)) {
+        setRightPanelWidth(newWidth);
+      }
     };
 
-    setSessions((prev) => [newSession, ...prev]);
-    setCurrentSessionId(newId);
-    setMessages(subMessages);
-    fetch('/api/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newSession),
-    }).catch(console.error);
+    const handleMouseUp = () => {
+      setIsResizingRightPanel(false);
+    };
+
+    if (isResizingRightPanel) {
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    } else {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizingRightPanel]);
+
+  // Load effective memory for current project / session scope
+  const fetchEffectiveMemory = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (activeProject?.id) {
+        params.append('projectId', activeProject.id);
+        params.append('projectName', activeProject.name);
+      } else if (currentSessionId) {
+        params.append('sessionId', currentSessionId);
+        const currentSession = sessions.find((s) => s.id === currentSessionId);
+        params.append('sessionTitle', currentSession?.title || 'Conversa Isolada');
+      }
+      const res = await fetch(`/api/memories/effective?${params.toString()}`);
+      if (res.ok) {
+        const mem: SharedMemoryItem = await res.json();
+        setActiveMemory(mem);
+        setActiveMemoryVersion(mem.versions?.length || 1);
+      }
+    } catch (err) {
+      console.error('Failed to fetch effective memory:', err);
+    }
   };
 
-  const handleSelectMessageForInspection = (msg: ChatMessage) => {
-    setSelectedMessageForInspection(msg);
-    setIsRightDrawerOpen(true);
-  };
+  useEffect(() => {
+    fetchEffectiveMemory();
+  }, [activeProject?.id, currentSessionId]);
 
   // Audio Settings & Narration State
   const [audioSettings, setAudioSettings] = useState<AudioSettings>({
@@ -313,6 +400,12 @@ export function App() {
       currentAgent?.systemInstructions,
       currentAgent?.overrideBasePrompt
     );
+
+    const memoryContent = activeMemory?.content || '';
+    const memoryScopeDesc = activeProject
+      ? `Projeto: ${activeProject.name} (Compartilhado entre todos os chats deste projeto)`
+      : `Conversa Isolada (${currentSessionId})`;
+
     const rawPayloadSent = {
       cliExecutable: cliStatus?.cliPath || 'gemini',
       model: currentAgent?.model || 'gemini-3.5-flash-lite',
@@ -321,9 +414,12 @@ export function App() {
       workDir,
       authorizedDirs: authorizedDirs.map((d) => d.path),
       systemInstructions: effectiveSysInst,
+      sharedMemory: memoryContent,
+      sharedMemoryScope: memoryScopeDesc,
+      sharedMemoryVersion: activeMemory?.versions?.length || 1,
       projectContext: activeProject ? `Projeto: ${activeProject.name}` : workDir,
       promptText,
-      fullInjectedPrompt: `[SISTEMA - INSTRUÇÕES DO AGENTE]\n${effectiveSysInst}\n\n[CONTEXTO DE TRABALHO]\nWorkDir: ${workDir}\nModo Aprovação: ${approvalMode}\n\n[PROMPT ENVIADO]\n${promptText}`,
+      fullInjectedPrompt: `[SISTEMA - INSTRUÇÕES DO AGENTE]\n${effectiveSysInst}\n\n[MEMÓRIA PERSISTENTE COMPARTILHADA]\nEscopo: ${memoryScopeDesc}\n${memoryContent}\n\n[CONTEXTO DE TRABALHO]\nWorkDir: ${workDir}\nModo Aprovação: ${approvalMode}\n\n[PROMPT ENVIADO]\n${promptText}`,
       skills: skills.filter((s) => s.enabled).map((s) => s.name),
       mcpServers: mcpServers.filter((m) => m.enabled).map((m) => m.name),
       timestamp: new Date().toISOString(),
@@ -389,6 +485,7 @@ export function App() {
           systemInstructions: currentAgent?.systemInstructions,
           overrideBasePrompt: currentAgent?.overrideBasePrompt,
           baseInstructions: currentAgent?.baseInstructions,
+          sharedMemory: memoryContent,
         }),
       });
 
@@ -550,6 +647,11 @@ export function App() {
       const durationMs = Date.now() - startTime;
       const inputTokens = Math.ceil((promptText.length + (currentAgent?.systemInstructions?.length || 0)) / 4);
       const outputTokens = Math.ceil(finalContent.length / 4);
+
+      // Record output tokens in live rate metrics
+      if (outputTokens > 0) {
+        setRequestLog((prev) => [...prev, { timestamp: Date.now(), tokenCount: outputTokens }]);
+      }
 
       const rawPayloadReceived = {
         rawEvents: rawEventsList,
@@ -877,14 +979,30 @@ export function App() {
   };
 
   // Sessions handlers
-  const handleSelectSession = (sess: SessionItem) => {
+  const handleSelectSession = async (sess: SessionItem) => {
     setCurrentSessionId(sess.id);
-    setMessages(sess.messages || []);
     if (sess.projectId) {
       const p = projects.find((x) => x.id === sess.projectId);
       if (p) setActiveProject(p);
     } else {
       setActiveProject(null);
+    }
+
+    if (sess.messages && sess.messages.length > 0) {
+      setMessages(sess.messages);
+    } else {
+      try {
+        const res = await fetch(`/api/sessions/${sess.id}`);
+        if (res.ok) {
+          const fullSess = await res.json();
+          setMessages(fullSess.messages || []);
+        } else {
+          setMessages([]);
+        }
+      } catch (err) {
+        console.error('Erro ao carregar mensagens da sessão:', err);
+        setMessages([]);
+      }
     }
   };
 
@@ -936,17 +1054,25 @@ export function App() {
     }
   };
 
+  const handleUpdateSessionMessages = async (sessionId: string, newMessages: ChatMessage[]) => {
+    await handleUpdateSession(sessionId, { messages: newMessages });
+  };
+
   const handleDeriveSession = async (originalSess: SessionItem) => {
     const { compressedMessages } = compressContextMessages(originalSess.messages || [], contextSettings);
     const newSessionId = generateSessionId();
+    const freshMessages = compressedMessages.map((m, idx) => ({
+      ...m,
+      id: `msg-${newSessionId}-${idx}-${Date.now()}`,
+    }));
     const derivedSession: SessionItem = {
       id: newSessionId,
       title: `${originalSess.title} (Derivado)`,
       projectId: originalSess.projectId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      messageCount: compressedMessages.length,
-      messages: compressedMessages,
+      messageCount: freshMessages.length,
+      messages: freshMessages,
       statusGrade: 'CONFIGURED',
     };
 
@@ -962,7 +1088,82 @@ export function App() {
         const data = await sessRes.json();
         setSessions(data);
         setCurrentSessionId(newSessionId);
-        setMessages(compressedMessages);
+        setMessages(freshMessages);
+      }
+    }
+  };
+
+  const handleDeriveMessage = async (msg: ChatMessage) => {
+    const newSessionId = generateSessionId();
+    const newTitle = `Derivado: ${msg.content.slice(0, 30)}...`;
+    const singleMsg: ChatMessage = {
+      id: `msg-${newSessionId}-0-${Date.now()}`,
+      role: msg.role,
+      content: msg.content,
+      timestamp: new Date().toISOString(),
+      agentName: msg.agentName,
+      model: msg.model,
+    };
+    const derivedSession: SessionItem = {
+      id: newSessionId,
+      title: newTitle,
+      projectId: activeProject?.id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messageCount: 1,
+      messages: [singleMsg],
+      statusGrade: 'CONFIGURED',
+    };
+
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(derivedSession),
+    });
+
+    if (res.ok) {
+      const sessRes = await fetch('/api/sessions');
+      if (sessRes.ok) {
+        const data = await sessRes.json();
+        setSessions(data);
+        setCurrentSessionId(newSessionId);
+        setMessages([singleMsg]);
+      }
+    }
+  };
+
+  const handleDeriveChat = async (messageIndex: number) => {
+    const newSessionId = generateSessionId();
+    const targetMsg = messages[messageIndex];
+    const newTitle = `Ramo: ${targetMsg?.content.slice(0, 25) || 'Histórico'}...`;
+    const sliced = messages.slice(0, messageIndex + 1).map((m, idx) => ({
+      ...m,
+      id: `msg-${newSessionId}-${idx}-${Date.now()}`,
+    }));
+    const derivedSession: SessionItem = {
+      id: newSessionId,
+      title: newTitle,
+      projectId: activeProject?.id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messageCount: sliced.length,
+      messages: sliced,
+      statusGrade: 'CONFIGURED',
+    };
+
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(derivedSession),
+    });
+
+    if (res.ok) {
+      const sessRes = await fetch('/api/sessions');
+      if (sessRes.ok) {
+        const data = await sessRes.json();
+        setSessions(data);
+        setCurrentSessionId(newSessionId);
+        setMessages(sliced);
       }
     }
   };
@@ -1092,6 +1293,23 @@ export function App() {
     return await res.json();
   };
 
+  const handleUnarchiveSession = async (id: string) => {
+    const sess = sessions.find((s) => s.id === id);
+    if (!sess) return;
+    const updated = { ...sess, isArchived: false };
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updated),
+    });
+    if (res.ok) {
+      const sessRes = await fetch('/api/sessions');
+      if (sessRes.ok) {
+        setSessions(await sessRes.json());
+      }
+    }
+  };
+
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 antialiased font-sans">
       {/* App Header */}
@@ -1106,16 +1324,30 @@ export function App() {
         onSelectAgent={setSelectedAgentId}
         activeView={activeView}
         onSelectView={setActiveView}
-        onOpenDirsModal={() => setIsDirsModalOpen(true)}
-        onOpenHistory={() => setIsHistoryOpen(true)}
+        onOpenDirsModal={() => setRightPanelMode((prev) => (prev === 'dirs' ? null : 'dirs'))}
+        onOpenHistory={() => setRightPanelMode((prev) => (prev === 'history' ? null : 'history'))}
+        onOpenLogs={() => setRightPanelMode((prev) => (prev === 'logs' ? null : 'logs'))}
+        activeRightPanelMode={rightPanelMode}
         onOpenSettings={(tab) => {
-          if (tab) setSettingsTab(tab);
-          setIsSettingsOpen(true);
+          if (tab === 'context') {
+            setRightPanelMode((prev) => (prev === 'context' ? null : 'context'));
+          } else if (tab === 'logs') {
+            setRightPanelMode((prev) => (prev === 'logs' ? null : 'logs'));
+          } else {
+            if (tab) setSettingsTab(tab);
+            setIsSettingsOpen(true);
+          }
         }}
-        onOpenVersions={() => setIsVersionsModalOpen(true)}
-        onOpenMemory={() => setIsMemoryModalOpen(true)}
-        isRightDrawerOpen={isRightDrawerOpen}
-        onToggleRightDrawer={() => setIsRightDrawerOpen(!isRightDrawerOpen)}
+        onOpenVersions={() =>
+          setRightPanelMode((prev) => (prev === 'versions' ? null : 'versions'))
+        }
+        onOpenSharedMemory={() =>
+          setRightPanelMode((prev) => (prev === 'memory' ? null : 'memory'))
+        }
+        onToggleRightSidebar={() =>
+          setRightPanelMode((prev) => (prev === 'payload' ? null : 'payload'))
+        }
+        isRightSidebarOpen={rightPanelMode === 'payload'}
         autoPlayTts={audioSettings.autoPlayTts}
         onToggleAutoPlayTts={() =>
           setAudioSettings((prev) => ({ ...prev, autoPlayTts: !prev.autoPlayTts }))
@@ -1133,9 +1365,8 @@ export function App() {
         metrics={liveMetrics}
       />
 
-      {/* Main Content Area with 3-Column Glow-up Architecture */}
+      {/* Main Content Area: 3-Area System (Left Sidebar | Center Workspace | Resizable Right Panel) */}
       <main className="flex-1 flex overflow-hidden relative">
-        {/* Column 1: Left Navigation / Session History Sidebar */}
         <LeftSidebar
           isExpanded={isSidebarExpanded}
           onToggleExpand={() => setIsSidebarExpanded(!isSidebarExpanded)}
@@ -1154,9 +1385,20 @@ export function App() {
           }}
           onOpenProjectsModal={() => setIsProjectsModalOpen(true)}
           onOpenSettings={handleOpenSettings}
-          onOpenDirsModal={() => setIsDirsModalOpen(true)}
-          onOpenHistory={() => setIsHistoryOpen(true)}
-          onOpenArchivedChats={() => setIsArchivedChatsOpen(true)}
+          onOpenFiles={() => setRightPanelMode((prev) => (prev === 'files' ? null : 'files'))}
+          onOpenDirsModal={() => setRightPanelMode((prev) => (prev === 'dirs' ? null : 'dirs'))}
+          onOpenHistory={() => setRightPanelMode((prev) => (prev === 'history' ? null : 'history'))}
+          onOpenArchivedChats={() => setRightPanelMode((prev) => (prev === 'archived' ? null : 'archived'))}
+          onOpenContext={() => {
+            setContextTargetSession(null);
+            setRightPanelMode((prev) => (prev === 'context' ? null : 'context'));
+          }}
+          onOpenChatContext={(sess) => {
+            setContextTargetSession(sess);
+            setRightPanelMode('context');
+          }}
+          onOpenLogs={() => setRightPanelMode((prev) => (prev === 'logs' ? null : 'logs'))}
+          activeRightPanelMode={rightPanelMode}
           onUpdateSession={handleUpdateSession}
           onDeriveSession={handleDeriveSession}
           selectedSessionIds={selectedSessionIds}
@@ -1165,7 +1407,6 @@ export function App() {
           onArchiveMultipleSessions={handleArchiveMultipleSessions}
         />
 
-        {/* Column 2: Center Main Workspace (Chat or Files & Diffs) */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           {activeView === 'chat' ? (
             <ChatView
@@ -1192,10 +1433,14 @@ export function App() {
               authorizedDirs={authorizedDirs}
               skills={skills}
               mcpServers={mcpServers}
+              onOpenSources={(msg) => {
+                setInspectionMessage(msg);
+                setRightPanelMode('payload');
+              }}
+              onDeriveMessage={handleDeriveMessage}
               onDeriveChat={handleDeriveChat}
-              onSelectMessageForInspection={handleSelectMessageForInspection}
-              onOpenMemoryModal={() => setIsMemoryModalOpen(true)}
-              onOpenVersionsModal={() => setIsVersionsModalOpen(true)}
+              onOpenSharedMemory={() => setRightPanelMode((prev) => (prev === 'memory' ? null : 'memory'))}
+              activeMemoryVersion={activeMemoryVersion}
             />
           ) : (
             <FilesAndDiffsView
@@ -1208,21 +1453,162 @@ export function App() {
           )}
         </div>
 
-        {/* Column 3: Right Payloads, Context & MCP Inspector Drawer */}
-        <RightPayloadDrawer
-          isOpen={isRightDrawerOpen}
-          onClose={() => setIsRightDrawerOpen(false)}
-          latestMessage={messages[messages.length - 1] || null}
-          selectedMessage={selectedMessageForInspection}
-          activeAgent={agents.find((a) => a.id === selectedAgentId) || null}
-          mcpServers={mcpServers}
-          skills={skills}
-          cliStatus={cliStatus}
-          activeProject={activeProject}
-          onOpenMemoryModal={() => setIsMemoryModalOpen(true)}
-          onOpenVersionsModal={() => setIsVersionsModalOpen(true)}
-        />
+        {/* Resizable Divider between Workspace and Right Panel */}
+        {rightPanelMode && (
+          <div
+            onMouseDown={() => setIsResizingRightPanel(true)}
+            onDoubleClick={() => setRightPanelWidth(560)}
+            className="w-1.5 hover:w-2 bg-zinc-800/80 hover:bg-amber-500/50 active:bg-amber-500 cursor-col-resize shrink-0 z-30 transition-colors flex items-center justify-center select-none group"
+            title="Arraste para redimensionar o painel lateral (Duplo clique para 560px)"
+          >
+            <div className="w-0.5 h-6 rounded bg-zinc-600 group-hover:bg-amber-300" />
+          </div>
+        )}
+
+        {/* Right Docked Panel */}
+        {rightPanelMode && (
+          <div
+            style={{ width: `${rightPanelWidth}px` }}
+            className="shrink-0 h-full border-l border-zinc-800 bg-[#0c0c0e] flex flex-col overflow-hidden relative shadow-2xl"
+          >
+            {rightPanelMode === 'payload' && (
+              <RightSidebar
+                isOpen={true}
+                onClose={() => setRightPanelMode(null)}
+                message={inspectionMessage || (messages.length > 0 ? messages[messages.length - 1] : null)}
+                agent={agents.find((a) => a.id === selectedAgentId) || agents[0] || DEFAULT_AGENTS[0]}
+                project={activeProject}
+                authorizedDirs={authorizedDirs}
+                skills={skills}
+                mcpServers={mcpServers}
+                approvalMode={approvalMode}
+                onOpenSettings={handleOpenSettings}
+              />
+            )}
+
+            {rightPanelMode === 'versions' && (
+              <VersionsSidebar
+                isOpen={true}
+                onClose={() => setRightPanelMode(null)}
+                activeProject={activeProject}
+                authorizedDirs={authorizedDirs}
+                onVersionRestored={() => loadAllData()}
+              />
+            )}
+
+            {rightPanelMode === 'memory' && (
+              <SharedMemorySidebar
+                isOpen={true}
+                onClose={() => setRightPanelMode(null)}
+                activeProject={activeProject}
+                currentSessionId={currentSessionId}
+                agents={agents}
+                onMemoryChanged={(mem) => {
+                  setActiveMemory(mem);
+                  setActiveMemoryVersion(mem.versions?.length || 1);
+                }}
+              />
+            )}
+
+            {rightPanelMode === 'files' && (
+              <FilesAndDiffsSidebar
+                isOpen={true}
+                onClose={() => setRightPanelMode(null)}
+                currentDir={filesViewDir || activeProject?.associatedDirs[0] || authorizedDirs[0]?.path || ''}
+                projects={projects}
+                activeProject={activeProject}
+                authorizedDirs={authorizedDirs}
+                onDirectoryChange={(newDir) => setFilesViewDir(newDir)}
+              />
+            )}
+
+            {rightPanelMode === 'dirs' && (
+              <AuthorizedDirsSidebar
+                isOpen={true}
+                onClose={() => setRightPanelMode(null)}
+                authorizedDirs={authorizedDirs}
+                onAddDir={handleAddDir}
+                onRemoveDir={handleRemoveDir}
+              />
+            )}
+
+            {rightPanelMode === 'history' && (
+              <HistorySidebar
+                isOpen={true}
+                onClose={() => setRightPanelMode(null)}
+                sessions={sessions}
+                activeSessionId={currentSessionId}
+                onSelectSession={(sess) => {
+                  handleSelectSession(sess);
+                  setRightPanelMode(null);
+                }}
+                onNewSession={(projId) => {
+                  handleNewSession(projId);
+                  setRightPanelMode(null);
+                }}
+                onDeleteSession={handleDeleteSession}
+                projects={projects}
+              />
+            )}
+
+            {rightPanelMode === 'context' && (
+              <ContextSidebar
+                isOpen={true}
+                onClose={() => {
+                  setRightPanelMode(null);
+                  setContextTargetSession(null);
+                }}
+                targetSession={contextTargetSession}
+                sessions={sessions}
+                currentSessionId={currentSessionId}
+                onUpdateSessionMessages={handleUpdateSessionMessages}
+                messages={messages}
+                onUpdateMessages={(newMsgs) => setMessages(newMsgs)}
+                agent={agents.find((a) => a.id === selectedAgentId) || agents[0]}
+                activeProject={activeProject}
+                projects={projects}
+                authorizedDirs={authorizedDirs}
+                skills={skills}
+                mcpServers={mcpServers}
+                contextSettings={contextSettings}
+                onUpdateContextSettings={(updates) => setContextSettings((prev) => ({ ...prev, ...updates }))}
+              />
+            )}
+
+            {rightPanelMode === 'logs' && (
+              <LogsSidebar
+                isOpen={true}
+                onClose={() => setRightPanelMode(null)}
+              />
+            )}
+
+            {rightPanelMode === 'archived' && (
+              <ArchivedChatsSidebar
+                isOpen={true}
+                onClose={() => setRightPanelMode(null)}
+                sessions={sessions}
+                onSelectSession={(sess) => {
+                  handleSelectSession(sess);
+                  setRightPanelMode(null);
+                }}
+                onUnarchiveSession={handleUnarchiveSession}
+                onDeleteSession={handleDeleteSession}
+              />
+            )}
+          </div>
+        )}
       </main>
+
+      {/* Snapshots & Versions Modal */}
+      <VersionsModal
+        isOpen={isVersionsModalOpen}
+        onClose={() => setIsVersionsModalOpen(false)}
+        activeProject={activeProject}
+        authorizedDirs={authorizedDirs}
+        onRollbackComplete={() => {
+          loadAllData();
+        }}
+      />
 
       {/* Authorized Directories Modal */}
       <AuthorizedDirsModal
@@ -1305,6 +1691,9 @@ export function App() {
         onResetDefaultAgentsConfig={handleResetDefaultAgents}
         messages={messages}
         onUpdateMessages={(newMsgs) => setMessages(newMsgs)}
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        onUpdateSessionMessages={handleUpdateSessionMessages}
         activeProject={activeProject}
         authorizedDirs={authorizedDirs}
         contextSettings={contextSettings}
@@ -1316,21 +1705,6 @@ export function App() {
         onChangeTheme={setTheme}
         selectedAgentId={selectedAgentId}
         onSelectAgent={setSelectedAgentId}
-      />
-
-      {/* App Versions (Snapshots) Modal */}
-      <VersionsModal
-        isOpen={isVersionsModalOpen}
-        onClose={() => setIsVersionsModalOpen(false)}
-        activeProject={activeProject}
-        authorizedDirs={authorizedDirs}
-      />
-
-      {/* Shared Persistent Memory Modal */}
-      <MemoryModal
-        isOpen={isMemoryModalOpen}
-        onClose={() => setIsMemoryModalOpen(false)}
-        activeProjectId={activeProject?.id}
       />
     </div>
   );

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { ChatMessage, AgentConfig, ProjectItem, AuthorizedDir, SkillConfig, McpConfig } from '../types.js';
 import { calculateSessionTokens, calculateContextBreakdown, formatTokenCount } from '../utils/tokenUtils.js';
+import { MODELS_CATALOG } from '../constants/modelsCatalog.js';
 
 interface TokenMonitorBarProps {
   messages: ChatMessage[];
@@ -63,6 +64,50 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
     return calculateSessionTokens(messages);
   }, [messages.length, totalContentLength]);
 
+  const selectedModelId = agent?.model || 'gemini-3.5-flash';
+  const selectedModel = useMemo(() => {
+    return MODELS_CATALOG.find((m) => m.id === selectedModelId) || MODELS_CATALOG[0];
+  }, [selectedModelId]);
+
+  const maxTpm = useMemo(() => {
+    const tpmStr = selectedModel?.tpm || '1M';
+    if (tpmStr.endsWith('M')) {
+      return parseFloat(tpmStr) * 1000000;
+    }
+    if (tpmStr.endsWith('K')) {
+      return parseFloat(tpmStr) * 1000;
+    }
+    return parseInt(tpmStr, 10) || 1000000;
+  }, [selectedModel?.tpm]);
+
+  const maxRpm = useMemo(() => {
+    const rpmStr = selectedModel?.rpm || '0 / 1000';
+    const parts = rpmStr.split('/');
+    const limitPart = parts[parts.length - 1]?.trim() || '1000';
+    if (limitPart.toLowerCase() === 'inf') {
+      return Infinity;
+    }
+    return parseInt(limitPart, 10) || 1000;
+  }, [selectedModel?.rpm]);
+
+  const maxRpd = useMemo(() => {
+    const rpdStr = selectedModel?.rpd || '0 / 10000';
+    const parts = rpdStr.split('/');
+    const limitPart = parts[parts.length - 1]?.trim() || '10000';
+    if (limitPart.toLowerCase() === 'inf') {
+      return Infinity;
+    }
+    return parseInt(limitPart, 10) || 10000;
+  }, [selectedModel?.rpd]);
+
+  const maxContextWindow = useMemo(() => {
+    const id = selectedModel?.id || 'gemini-3.5-flash';
+    if (id.includes('pro')) return 2000000;
+    if (id.includes('gemma')) return 131072;
+    if (id.includes('flash') || id.includes('lite')) return 1000000;
+    return 1000000; // Fallback to 1M
+  }, [selectedModel?.id]);
+
   const contextBreakdown = useMemo(() => {
     return calculateContextBreakdown(
       messages,
@@ -70,7 +115,8 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
       activeProject,
       authorizedDirs,
       skills,
-      mcpServers
+      mcpServers,
+      maxContextWindow
     );
   }, [
     messages.length,
@@ -81,6 +127,7 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
     authorizedDirs?.length,
     skills?.length,
     mcpServers?.length,
+    maxContextWindow,
   ]);
 
   return (
@@ -91,11 +138,11 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
         title="Monitor de Tokens em Tempo Real"
         className="flex items-center gap-2 bg-amber-500/10 dark:bg-amber-500/15 hover:bg-amber-500/20 border border-amber-500/30 dark:border-amber-500/40 px-2.5 py-1 rounded-lg cursor-pointer transition shadow-2xs group"
       >
-        {/* Active Chat Token Counter */}
-        <div className="flex items-center gap-1">
+        {/* Active Chat Token Counter (System + Project + Tools + Messages) */}
+        <div className="flex items-center gap-1" title={`Tokens Totais no Contexto Ativo: ${contextBreakdown.totalActiveTokens.toLocaleString('pt-BR')}`}>
           <Zap className={`w-3.5 h-3.5 text-amber-500 ${isStreaming ? 'animate-bounce' : ''}`} />
           <span className="text-xs font-bold font-mono text-zinc-900 dark:text-zinc-100 tracking-tight">
-            {formatTokenCount(sessionTokens.totalTokens)}
+            {formatTokenCount(contextBreakdown.totalActiveTokens)}
           </span>
           <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium hidden sm:inline">
             tokens
@@ -111,7 +158,7 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
             className="flex items-center text-blue-600 dark:text-blue-400 font-semibold"
           >
             <TrendingUp className="w-2.5 h-2.5 mr-0.5" />
-            {formatTokenCount(metrics.tpm)}/m
+            {formatTokenCount(metrics.tpm)}/TPM
           </span>
 
           <span
@@ -119,7 +166,7 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
             className="flex items-center text-emerald-600 dark:text-emerald-400 font-semibold"
           >
             <Activity className="w-2.5 h-2.5 mr-0.5" />
-            {metrics.rpm} RPM
+            {metrics.rpm}/RPM
           </span>
 
           <span
@@ -127,7 +174,7 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
             className="hidden md:flex items-center text-purple-600 dark:text-purple-400 font-semibold"
           >
             <Flame className="w-2.5 h-2.5 mr-0.5" />
-            {metrics.rpd} RPD
+            {metrics.rpd}/RPD
           </span>
         </div>
 
@@ -146,11 +193,16 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
           <div className="absolute top-full mt-1.5 left-0 sm:left-auto sm:right-0 z-50 w-76 sm:w-88 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-xl p-3 text-zinc-800 dark:text-zinc-100 animate-in fade-in zoom-in-95 duration-100">
             {/* Popover Header */}
             <div className="flex items-center justify-between pb-2 border-b border-zinc-200 dark:border-zinc-800 mb-2.5">
-              <div className="flex items-center gap-1.5">
-                <BarChart3 className="w-3.5 h-3.5 text-amber-500" />
-                <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
-                  Monitor de Tokens & Cotas
-                </h4>
+              <div className="flex items-start gap-1.5">
+                <BarChart3 className="w-3.5 h-3.5 text-amber-500 mt-0.5" />
+                <div>
+                  <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                    Monitor de Tokens & Cotas
+                  </h4>
+                  <div className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                    Modelo: <span className="text-amber-600 dark:text-amber-400 font-semibold">{selectedModel?.name}</span>
+                  </div>
+                </div>
               </div>
               <button
                 onClick={() => setIsPopoverOpen(false)}
@@ -231,7 +283,7 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
                   Tokens / Minuto (TPM):
                 </span>
                 <span className="font-mono font-bold text-zinc-800 dark:text-zinc-200">
-                  {metrics.tpm.toLocaleString('pt-BR')} / 1M TPM
+                  {metrics.tpm.toLocaleString('pt-BR')} / {maxTpm === Infinity ? 'Infinito' : formatTokenCount(maxTpm)} TPM
                 </span>
               </div>
 
@@ -241,7 +293,7 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
                   Requisições / Minuto (RPM):
                 </span>
                 <span className="font-mono font-bold text-zinc-800 dark:text-zinc-200">
-                  {metrics.rpm} / 1.000 RPM
+                  {metrics.rpm} / {maxRpm === Infinity ? 'Infinito' : maxRpm.toLocaleString('pt-BR')} RPM
                 </span>
               </div>
 
@@ -251,7 +303,7 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
                   Requisições / Dia (RPD):
                 </span>
                 <span className="font-mono font-bold text-zinc-800 dark:text-zinc-200">
-                  {metrics.rpd} / 10.000 RPD
+                  {metrics.rpd} / {maxRpd === Infinity ? 'Infinito' : maxRpd.toLocaleString('pt-BR')} RPD
                 </span>
               </div>
             </div>

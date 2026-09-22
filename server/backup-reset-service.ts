@@ -16,7 +16,7 @@ import {
   resetProjectsAndSessions,
 } from './projects-and-dirs-service.js';
 import { clearLogs, sysLog } from './logger-service.js';
-import { getGuiDataDir } from './paths-service.js';
+import { getGuiDataDir, getGuiGeminiDir } from './paths-service.js';
 import { AgentConfig, SkillConfig, CommandConfig, McpConfig, PolicyConfig, ProjectItem, SessionItem } from '../src/types.js';
 
 export interface BackupExportData {
@@ -251,6 +251,37 @@ export function restoreSystemBackup(
 
 export function resetSystemToFactoryDefaults(): { success: boolean; message: string } {
   try {
+    const geminiDir = getGuiGeminiDir();
+
+    // 0. Deletar arquivos extras e históricos (.gemini/versions.json, memories.json, snapshots/, settings.json, etc.)
+    const versionsFile = path.join(geminiDir, 'versions.json');
+    if (fs.existsSync(versionsFile)) {
+      try {
+        fs.unlinkSync(versionsFile);
+      } catch {}
+    }
+
+    const memoriesFile = path.join(geminiDir, 'memories.json');
+    if (fs.existsSync(memoriesFile)) {
+      try {
+        fs.unlinkSync(memoriesFile);
+      } catch {}
+    }
+
+    const snapshotsDir = path.join(geminiDir, 'snapshots');
+    if (fs.existsSync(snapshotsDir)) {
+      try {
+        fs.rmSync(snapshotsDir, { recursive: true, force: true });
+      } catch {}
+    }
+
+    const settingsFile = path.join(geminiDir, 'settings.json');
+    if (fs.existsSync(settingsFile)) {
+      try {
+        fs.unlinkSync(settingsFile);
+      } catch {}
+    }
+
     // 1. Resetar Agentes
     resetAllAgentsToDefault();
 

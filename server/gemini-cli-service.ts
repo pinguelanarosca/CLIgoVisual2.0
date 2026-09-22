@@ -13,8 +13,6 @@ import { syncPoliciesToSettings } from './policies-service.js';
 import { getGuiDataDir } from './paths-service.js';
 import { loadMcpSettings } from './mcp-service.js';
 import { acpManager } from './acp-client.js';
-import { loadAllMemories } from './memory-service.js';
-import { detectChangedFiles, createAppVersion } from './app-versions-service.js';
 
 const persistentProcesses = new Map<string, ChildProcess>();
 
@@ -528,6 +526,8 @@ export interface CliExecutionParams {
   systemInstructions?: string;
   overrideBasePrompt?: boolean;
   baseInstructions?: string;
+  sharedMemory?: string;
+  tools?: string[];
   onEvent: (event: { type: string; data: any }) => void;
   onDone: (exitCode: number | null, signal: string | null) => void;
   onError: (error: Error) => void;
@@ -1162,8 +1162,11 @@ export function executeGeminiCli(
       }
 
       if (effectiveSessionId) {
-        if (shouldResume) {
+        const sessionExists = isExistingSession(effectiveSessionId, cwd);
+        if (shouldResume || sessionExists) {
           args.push('-r', effectiveSessionId);
+          knownSessions.add(effectiveSessionId);
+          if (params.sessionId) knownSessions.add(params.sessionId);
         } else {
           args.push('--session-id', effectiveSessionId);
           knownSessions.add(effectiveSessionId);
@@ -1182,23 +1185,11 @@ export function executeGeminiCli(
         params.overrideBasePrompt
       );
 
-      // Injetar contexto da Memória Compartilhada persistente para evitar repetição de soluções falhas
-      try {
-        const primaryMem = loadAllMemories()[0];
-        if (primaryMem && primaryMem.content && primaryMem.content.trim()) {
-          effectiveSystemPrompt = `${effectiveSystemPrompt ? effectiveSystemPrompt + '\n\n' : ''}--- MEMÓRIA COMPARTILHADA PERSISTENTE (ESTADO DO TRABALHO & PIPELINE) ---
-O conteúdo a seguir é a memória viva compartilhada entre usuário e agentes.
-DIRETRIZES RÍGIDAS:
-1. Respeite as etapas e tentativas já documentadas.
-2. NUNCA repita abordagens documentadas como FALHOU ou comprovadamente falhas.
-3. Se uma etapa de fluxo de trabalho estiver concluída (✓), considere-a resolvida e avance para a próxima.
-4. Utilize a memória para manter o contexto operacional reutilizável entre sessões.
-
-[CONTEÚDO DA MEMÓRIA ATUAL]:
-${primaryMem.content.trim()}
-------------------------------------------------------------------------`;
-        }
-      } catch {}
+      // Injetar Memória Persistente Compartilhada no contexto do modelo se fornecida
+      if (params.sharedMemory && params.sharedMemory.trim()) {
+        const memBlock = `\n\n[MEMÓRIA PERSISTENTE COMPARTILHADA]\n${params.sharedMemory.trim()}\n---\n(Esta memória é compartilhada persistentemente. Consulte e mantenha o alinhamento com os pipelines, tarefas e histórico de resoluções contidos neste documento.)\n`;
+        effectiveSystemPrompt = (effectiveSystemPrompt ? effectiveSystemPrompt + memBlock : memBlock);
+      }
 
       if (effectiveSystemPrompt && effectiveSystemPrompt.trim()) {
         try {
@@ -1281,18 +1272,7 @@ ${primaryMem.content.trim()}
               : undefined
           } : {})
         },
-        tools: [
-          {
-            functionDeclarations: [
-              { name: 'read_file', description: 'Reads content from a local file within authorized directory' },
-              { name: 'write_file', description: 'Writes or overwrites content in a file within authorized directory' },
-              { name: 'edit_file', description: 'Performs precise replacement of text in file' },
-              { name: 'list_directory', description: 'Lists directory contents' },
-              { name: 'run_command', description: 'Executes shell command in authorized workspace' },
-              { name: 'search_files', description: 'Searches for regex/text patterns in project codebase' },
-            ],
-          },
-        ],
+        tools: [] as Array<{ functionDeclarations: Array<{ name: string; description: string; parameters?: any }> }>,
         safetySettings: [
           { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
           { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
@@ -1301,14 +1281,42 @@ ${primaryMem.content.trim()}
         ],
       };
 
-      // Mapear ferramentas MCP e incluir na auditoria
+      // Mapear ferramentas reais (MCPs como Exa AI e ferramentas do agente)
+      const realFunctionDeclarations: Array<{ name: string; description: string; parameters?: any }> = [];
       if (mcpTools && mcpTools.length > 0) {
         const mappedTools = mcpTools.map((t: any) => ({
           name: t.name,
           description: t.description || '',
           parameters: t.inputSchema || { type: 'OBJECT', properties: {} }
         }));
-        finalApiRequest.tools[0].functionDeclarations.push(...mappedTools);
+        realFunctionDeclarations.push(...mappedTools);
+      }
+
+      if (params.tools && Array.isArray(params.tools) && params.tools.length > 0) {
+        const knownToolDescriptions: Record<string, string> = {
+          read_file: 'Lê o conteúdo de arquivos locais no diretório de trabalho autorizado.',
+          write_file: 'Cria ou sobrescreve arquivos no diretório de trabalho autorizado.',
+          edit_file: 'Aplica alterações cirúrgicas e substituições de texto em arquivos existentes.',
+          list_directory: 'Lista arquivos e diretórios da árvore de trabalho.',
+          run_command: 'Executa comandos shell controlados no workspace Ubuntu Linux.',
+          search_files: 'Pesquisa padrões de texto ou expressões regulares no projeto.',
+        };
+        params.tools.forEach((toolName: string) => {
+          if (!realFunctionDeclarations.some((f) => f.name === toolName)) {
+            realFunctionDeclarations.push({
+              name: toolName,
+              description: knownToolDescriptions[toolName] || `Ferramenta customizada do agente: ${toolName}`,
+            });
+          }
+        });
+      }
+
+      if (realFunctionDeclarations.length > 0) {
+        finalApiRequest.tools = [
+          {
+            functionDeclarations: realFunctionDeclarations,
+          },
+        ];
       }
 
       const parameterOrigins = {
@@ -1478,7 +1486,18 @@ ${primaryMem.content.trim()}
               // Fall through to raw chunk if not valid JSON
             }
           }
-          params.onEvent({ type: 'stdout_raw', data: { text: trimmed } });
+          const isResumeErrorLine = 
+            trimmed.includes('Error resuming session') ||
+            trimmed.includes('Invalid session identifier') ||
+            trimmed.includes('Searched for sessions in') ||
+            trimmed.includes('Use --list-sessions') ||
+            trimmed.includes('--resume') ||
+            trimmed.includes('no previous session') ||
+            trimmed.includes('Erro ao retomar a sessão');
+
+          if (!isResumeErrorLine) {
+            params.onEvent({ type: 'stdout_raw', data: { text: trimmed } });
+          }
         }
       });
 
@@ -1854,28 +1873,6 @@ Você atingiu o limite de requisições.
           } catch {
             // Ignorar se já removido
           }
-        }
-
-        // Snapshot de versão assíncrono e não-bloqueante se arquivos foram modificados
-        if (!execState.cancelled) {
-          const targetWorkDir = params.workDir || process.cwd();
-          setTimeout(() => {
-            try {
-              const changed = detectChangedFiles(targetWorkDir);
-              if (changed && changed.length > 0) {
-                createAppVersion({
-                  prompt: params.prompt,
-                  workspaceDir: targetWorkDir,
-                  agentName: params.agentId,
-                  model: chosenModel,
-                  executionId,
-                  changedFiles: changed,
-                });
-              }
-            } catch (verErr: any) {
-              sysLog.warn('SYSTEM', `Aviso ao detectar alterações para App Version: ${verErr?.message}`);
-            }
-          }, 200);
         }
 
         executions.delete(executionId);

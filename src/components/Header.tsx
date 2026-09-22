@@ -4,10 +4,10 @@ import {
   Settings,
   Volume2,
   VolumeX,
+  History,
   RefreshCw,
   Activity,
   Square,
-  History,
   Brain,
   PanelRight,
 } from 'lucide-react';
@@ -29,9 +29,11 @@ interface HeaderProps {
   onOpenHistory: () => void;
   onOpenSettings: (tab?: string) => void;
   onOpenVersions?: () => void;
-  onOpenMemory?: () => void;
-  isRightDrawerOpen?: boolean;
-  onToggleRightDrawer?: () => void;
+  onOpenSharedMemory?: () => void;
+  onToggleRightSidebar?: () => void;
+  onOpenLogs?: () => void;
+  activeRightPanelMode?: string | null;
+  isRightSidebarOpen?: boolean;
   autoPlayTts: boolean;
   onToggleAutoPlayTts: () => void;
   theme?: 'dark' | 'light';
@@ -62,9 +64,11 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenHistory,
   onOpenSettings,
   onOpenVersions,
-  onOpenMemory,
-  isRightDrawerOpen = false,
-  onToggleRightDrawer,
+  onOpenSharedMemory,
+  onToggleRightSidebar,
+  onOpenLogs,
+  activeRightPanelMode = null,
+  isRightSidebarOpen = false,
   autoPlayTts,
   onToggleAutoPlayTts,
   onRefreshStatus,
@@ -78,14 +82,14 @@ export const Header: React.FC<HeaderProps> = ({
   metrics = { rpm: 1, tpm: 0, rpd: 1 },
 }) => {
   return (
-    <header className="h-13 border-b border-zinc-200/90 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md px-3 sm:px-4 flex items-center justify-between relative z-20 shrink-0 select-none">
+    <header className="h-9 border-b border-zinc-200/90 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md px-2 sm:px-3 flex items-center justify-between relative z-20 shrink-0 select-none">
       {/* Brand & CLI Status */}
-      <div className="flex items-center gap-2.5">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-2xs shrink-0">
-          <Terminal className="w-4 h-4" />
+      <div className="flex items-center gap-1.5">
+        <div className="w-6 h-6 rounded bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-2xs shrink-0">
+          <Terminal className="w-3.5 h-3.5" />
         </div>
         <div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1">
             <span className="font-semibold text-zinc-900 dark:text-zinc-100 text-xs tracking-tight">
               GeminiCLI
             </span>
@@ -93,7 +97,7 @@ export const Header: React.FC<HeaderProps> = ({
               {cliStatus?.version ? `v${cliStatus.version}` : '...'}
             </span>
           </div>
-          <div className="flex items-center gap-1 mt-0.5">
+          <div className="flex items-center gap-1 leading-tight">
             <span
               className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
                 isCheckingStatus
@@ -106,7 +110,7 @@ export const Header: React.FC<HeaderProps> = ({
               }`}
             />
             <div
-              className="text-[11px] text-zinc-600 dark:text-zinc-300 flex items-center gap-1 cursor-pointer hover:underline"
+              className="text-[10px] text-zinc-600 dark:text-zinc-300 flex items-center gap-1 cursor-pointer hover:underline"
               onClick={() => onOpenSettings('cli')}
               title={
                 cliStatus?.apiError
@@ -145,115 +149,54 @@ export const Header: React.FC<HeaderProps> = ({
               title="Revalidar conexão"
               className="text-zinc-400 hover:text-blue-600 dark:hover:text-blue-400 ml-0.5 transition cursor-pointer p-0.5 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800"
             >
-              <RefreshCw className={`w-3 h-3 ${isCheckingStatus ? 'animate-spin text-blue-500' : ''}`} />
+              <RefreshCw className={`w-2.5 h-2.5 ${isCheckingStatus ? 'animate-spin text-blue-500' : ''}`} />
             </button>
           </div>
         </div>
       </div>
 
-      {/* Center Nav Views */}
+      {/* Center Nav Title / Branding (Clean) */}
       <div className="hidden sm:flex items-center">
-        <div className="flex items-center gap-0.5 bg-zinc-100/90 dark:bg-zinc-800/60 p-0.5 rounded-lg border border-zinc-200/80 dark:border-zinc-800">
-          <button
-            onClick={() => onSelectView('chat')}
-            className={`px-3 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
-              activeView === 'chat'
-                ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-white shadow-2xs'
-                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-            }`}
-          >
-            Terminal & Chat
-          </button>
-          <button
-            onClick={() => onSelectView('diffs')}
-            className={`px-3 py-1 text-xs font-semibold rounded-md transition cursor-pointer ${
-              activeView === 'diffs'
-                ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-white shadow-2xs'
-                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-            }`}
-          >
-            Arquivos & Diffs
-          </button>
-        </div>
       </div>
 
       {/* Right Controls */}
-      <div className="flex items-center gap-1 sm:gap-1.5">
+      <div className="flex items-center gap-1">
         <button
-          onClick={() => onOpenSettings('logs')}
+          onClick={onOpenLogs || (() => onOpenSettings('logs'))}
           title="Logs em Tempo Real"
-          className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md text-emerald-700 dark:text-emerald-400 bg-emerald-50/70 dark:bg-emerald-950/30 hover:bg-emerald-100/70 dark:hover:bg-emerald-900/40 transition border border-emerald-200/70 dark:border-emerald-800/60 cursor-pointer"
+          className={`flex items-center gap-1 px-1.5 py-0.5 text-xs font-medium rounded transition border cursor-pointer ${
+            activeRightPanelMode === 'logs'
+              ? 'text-white bg-emerald-600 border-emerald-500 shadow-2xs'
+              : 'text-emerald-700 dark:text-emerald-400 bg-emerald-50/70 dark:bg-emerald-950/30 hover:bg-emerald-100/70 dark:hover:bg-emerald-900/40 border-emerald-200/70 dark:border-emerald-800/60'
+          }`}
         >
-          <Activity className="w-3 h-3 text-emerald-600 dark:text-emerald-400 animate-pulse" />
+          <Activity className="w-3 h-3 animate-pulse" />
           <span>Logs</span>
         </button>
 
-        {isStreaming && (
+        {onOpenVersions && (
           <button
-            onClick={onCancelExecution}
-            title="Interromper execução"
-            className="flex items-center gap-1 px-2.5 py-1 text-xs font-bold rounded-md text-white bg-rose-600 hover:bg-rose-700 transition shadow-2xs animate-pulse cursor-pointer"
+            onClick={onOpenVersions}
+            title="Snapshots de Versões do Projeto"
+            className={`flex items-center gap-1 px-1.5 py-0.5 text-xs font-medium rounded transition border cursor-pointer ${
+              activeRightPanelMode === 'versions'
+                ? 'text-white bg-blue-600 border-blue-500 shadow-2xs'
+                : 'text-blue-400 bg-blue-950/40 hover:bg-blue-900/50 border-blue-800/60'
+            }`}
           >
-            <Square className="w-2.5 h-2.5 fill-current" />
-            <span>PARAR</span>
+            <History className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Versões</span>
           </button>
         )}
-
-        {/* Versões (App Versions) Button */}
-        <button
-          onClick={onOpenVersions}
-          title="App Versions (Snapshots de Código)"
-          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md text-indigo-300 bg-indigo-950/40 hover:bg-indigo-900/50 transition border border-indigo-500/30 cursor-pointer shadow-2xs"
-        >
-          <History className="w-3.5 h-3.5 text-indigo-400" />
-          <span className="hidden sm:inline">Versões</span>
-        </button>
-
-        {/* Memória Compartilhada Button */}
-        <button
-          onClick={onOpenMemory}
-          title="Memória Compartilhada Persistente"
-          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md text-teal-300 bg-teal-950/40 hover:bg-teal-900/50 transition border border-teal-500/30 cursor-pointer shadow-2xs"
-        >
-          <Brain className="w-3.5 h-3.5 text-teal-400" />
-          <span className="hidden sm:inline">Memória</span>
-        </button>
-
-        <button
-          onClick={onToggleAutoPlayTts}
-          title={autoPlayTts ? 'TTS Ativo' : 'TTS Desativado'}
-          className={`p-1.5 rounded-md transition border border-zinc-200/60 dark:border-zinc-800 cursor-pointer ${
-            autoPlayTts
-              ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400'
-              : 'text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-          }`}
-        >
-          {autoPlayTts ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-        </button>
 
         <button
           onClick={() => onOpenSettings()}
           title="Configurações"
-          className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 hover:opacity-90 transition shadow-2xs cursor-pointer"
+          className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 hover:opacity-90 transition shadow-2xs cursor-pointer"
         >
           <Settings className="w-3 h-3" />
           <span className="hidden sm:inline">Ajustes</span>
         </button>
-
-        {/* 3rd Column Drawer Toggle Button */}
-        {onToggleRightDrawer && (
-          <button
-            onClick={onToggleRightDrawer}
-            title={isRightDrawerOpen ? 'Ocultar Painel Lateral (3ª Coluna)' : 'Exibir Painel de Payloads & Contexto (3ª Coluna)'}
-            className={`p-1.5 rounded-md transition border cursor-pointer ${
-              isRightDrawerOpen
-                ? 'bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-2xs'
-                : 'text-zinc-400 hover:text-white border-zinc-200/60 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-            }`}
-          >
-            <PanelRight className="w-3.5 h-3.5" />
-          </button>
-        )}
       </div>
     </header>
   );

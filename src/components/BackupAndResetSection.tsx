@@ -221,9 +221,19 @@ export const BackupAndResetSection: React.FC<BackupAndResetSectionProps> = ({
       if (data.success) {
         setIsFactoryResetModalOpen(false);
         setFactoryResetConfirmInput('');
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.clear();
+          } catch {
+            // ignore
+          }
+        }
         if (onRefreshGlobalStatus) {
           onRefreshGlobalStatus();
         }
+        setTimeout(() => {
+          window.location.reload();
+        }, 800);
       }
     } catch (err: any) {
       setFactoryResetResult({

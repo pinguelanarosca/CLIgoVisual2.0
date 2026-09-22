@@ -3,37 +3,51 @@ import {
   Send,
   Square,
   Mic,
-  MicOff,
   Volume2,
   VolumeX,
-  Play,
   Pause,
-  RotateCcw,
   Copy,
   Check,
-  ChevronDown,
-  ChevronRight,
-  Terminal,
-  FileCode,
-  Sparkles,
-  Bot,
   Brain,
-  Cpu,
-  AlertTriangle,
-  Loader2,
   Sliders,
   Eye,
-  EyeOff,
-  Plus,
-  GitBranch,
+  Code2,
   GitFork,
+  MessageSquareShare,
+  Sparkles,
+  Plus,
+  Loader2,
+  AlertTriangle,
+  Bot,
   Paperclip,
+  GitBranch,
+  FileEdit,
+  FolderOpen,
+  Terminal,
+  Cpu,
+  ScrollText,
+  FileText,
+  FileJson,
+  File,
+  X,
 } from 'lucide-react';
-import { ChatMessage, ToolCallStep, CommandConfig, AgentConfig, ProjectItem, AuthorizedDir, SkillConfig, McpConfig, ThinkingLevel } from '../types.js';
+import { LiveAudioWaveform } from './LiveAudioWaveform.js';
+import {
+  ChatMessage,
+  CommandConfig,
+  AgentConfig,
+  ProjectItem,
+  AuthorizedDir,
+  SkillConfig,
+  McpConfig,
+  ThinkingLevel,
+  CliStatus,
+} from '../types.js';
 import { DEFAULT_AGENTS } from '../constants/defaultAgents.js';
-import { RawPayloadViewer } from './RawPayloadViewer.js';
-import { getRawInspectionData } from '../utils/rawPayloadUtils.js';
 import { TokenMonitorBar } from './TokenMonitorBar.js';
+import { MessageRenderer } from './MessageRenderer.js';
+import { AgentProcessAccordion } from './AgentProcessAccordion.js';
+import { ContentViewerSidebar, ContentViewerItem } from './ContentViewerSidebar.js';
 
 export const isThinkingSupported = (model?: string): boolean => {
   if (!model) return true;
@@ -68,17 +82,25 @@ interface ChatViewProps {
   approvalMode: 'default' | 'auto_edit' | 'yolo' | 'plan';
   onChangeApprovalMode?: (mode: 'default' | 'auto_edit' | 'yolo' | 'plan') => void;
   metrics?: { rpm: number; tpm: number; rpd: number };
-  cliStatus?: import('../types.js').CliStatus | null;
+  cliStatus?: CliStatus | null;
   onOpenSettings?: (tab?: string) => void;
   activeProject?: ProjectItem | null;
   authorizedDirs?: AuthorizedDir[];
   skills?: SkillConfig[];
   mcpServers?: McpConfig[];
-  onDeriveMessage?: (msg: ChatMessage) => void;
-  onDeriveChat?: (msg: ChatMessage, index: number) => void;
-  onSelectMessageForInspection?: (msg: ChatMessage) => void;
-  onOpenMemoryModal?: () => void;
-  onOpenVersionsModal?: () => void;
+  onOpenSources?: (message: ChatMessage) => void;
+  onDeriveMessage?: (message: ChatMessage) => void;
+  onDeriveChat?: (messageIndex: number) => void;
+  onOpenSharedMemory?: () => void;
+  activeMemoryVersion?: number;
+}
+
+export interface AttachedFileItem {
+  id: string;
+  name: string;
+  size: number;
+  extension: string;
+  content: string;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -105,105 +127,94 @@ export const ChatView: React.FC<ChatViewProps> = ({
   authorizedDirs = [],
   skills = [],
   mcpServers = [],
+  onOpenSources,
   onDeriveMessage,
   onDeriveChat,
-  onSelectMessageForInspection,
-  onOpenMemoryModal,
-  onOpenVersionsModal,
+  onOpenSharedMemory,
+  activeMemoryVersion = 1,
 }) => {
   const [inputText, setInputText] = useState('');
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFileItem[]>([]);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({});
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
+  const [showThinkingMenu, setShowThinkingMenu] = useState(false);
+
+  // Content Viewer Side-Panel State
+  const [viewerItem, setViewerItem] = useState<ContentViewerItem | null>(null);
+  const [isViewerOpen, setIsViewerOpen] = useState(false);
+
+  // Audio Recording State
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [recordingStream, setRecordingStream] = useState<MediaStream | null>(null);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+
+  // Autocomplete popup for "/"
   const [showCommandsPopup, setShowCommandsPopup] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
-  const [showPlusMenu, setShowPlusMenu] = useState(false);
-
-  const handleDeriveMsg = (msg: ChatMessage) => {
-    if (onDeriveMessage) {
-      onDeriveMessage(msg);
-    } else {
-      const snippet = msg.content.length > 160 ? msg.content.slice(0, 160) + '...' : msg.content;
-      setInputText((prev) => `> ${snippet.replace(/\n/g, '\n> ')}\n\n${prev}`);
-      textareaRef.current?.focus();
-    }
-  };
-
-  // Raw Payload Inspection State ("Mostrar Oculto / Olho")
-  const [showRawPayloadGlobal, setShowRawPayloadGlobal] = useState<boolean>(false);
-  const [expandedRawMessageIds, setExpandedRawMessageIds] = useState<Record<string, boolean>>({});
-
-  // Audio Recording State for STT
-  const [isRecording, setIsRecording] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [commandFilter, setCommandFilter] = useState('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const userIsScrolledUpRef = useRef<boolean>(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const lastScrollTimeRef = useRef<number>(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+  const autoScrollRef = useRef(true);
+
+  const scrollToBottom = () => {
+    if (autoScrollRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, isStreaming]);
 
   const handleScroll = () => {
     if (!scrollContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
-    const isNearBottom = scrollHeight - scrollTop - clientHeight < 60;
-    userIsScrolledUpRef.current = !isNearBottom;
+    autoScrollRef.current = scrollHeight - scrollTop - clientHeight < 50;
   };
 
-  // Optimized Auto-scroll to bottom on new messages without jarring when user scrolled up
-  useEffect(() => {
-    if (!messagesEndRef.current) return;
-    if (isStreaming) {
-      if (!userIsScrolledUpRef.current) {
-        const now = Date.now();
-        if (now - lastScrollTimeRef.current > 120) {
-          lastScrollTimeRef.current = now;
-          messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
-        }
-      }
-    } else {
-      if (!userIsScrolledUpRef.current) {
-        messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-      }
-    }
-  }, [messages, isStreaming]);
+  const handleCopy = (text: string, id: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedMessageId(id);
+      setTimeout(() => setCopiedMessageId(null), 1800);
+    });
+  };
 
-  // Adjust textarea height
-  useEffect(() => {
+  const handleSend = () => {
+    const text = inputText.trim();
+    if ((!text && attachedFiles.length === 0) || isStreaming) return;
+
+    let fullPrompt = text;
+    if (attachedFiles.length > 0) {
+      const attachmentsPayload = attachedFiles
+        .map(
+          (f) =>
+            `--- INÍCIO DO ARQUIVO ANEXADO: ${f.name} ---\n${f.content}\n--- FIM DO ARQUIVO ANEXADO: ${f.name} ---`
+        )
+        .join('\n\n');
+
+      fullPrompt = text
+        ? `${text}\n\n[ARQUIVOS ANEXADOS]:\n${attachmentsPayload}`
+        : `[ARQUIVOS ANEXADOS]:\n${attachmentsPayload}`;
+    }
+
+    onSendMessage(fullPrompt);
+    setInputText('');
+    setAttachedFiles([]);
+    setShowCommandsPopup(false);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
     }
-  }, [inputText]);
-
-  // Handle command autocomplete filtering
-  const matchingCommands = commands.filter((c) =>
-    inputText.startsWith('/') && c.name.toLowerCase().startsWith(inputText.split(' ')[0].toLowerCase())
-  );
-
-  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const val = e.target.value;
-    setInputText(val);
-
-    if (val.startsWith('/') && !val.includes(' ')) {
-      setShowCommandsPopup(true);
-      setSelectedCommandIndex(0);
-    } else {
-      setShowCommandsPopup(false);
-    }
-  };
-
-  const selectCommand = (cmd: CommandConfig) => {
-    setInputText(cmd.name + ' ');
-    setShowCommandsPopup(false);
-    textareaRef.current?.focus();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (showCommandsPopup && matchingCommands.length > 0) {
+    if (showCommandsPopup) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         setSelectedCommandIndex((prev) => (prev + 1) % matchingCommands.length);
@@ -216,7 +227,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
-        selectCommand(matchingCommands[selectedCommandIndex]);
+        if (matchingCommands[selectedCommandIndex]) {
+          selectCommand(matchingCommands[selectedCommandIndex]);
+        }
         return;
       }
       if (e.key === 'Escape') {
@@ -231,53 +244,58 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  const handleSend = () => {
-    if (!inputText.trim() || isStreaming) return;
-    onSendMessage(inputText.trim());
-    setInputText('');
-    setShowCommandsPopup(false);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setInputText(val);
+
+    if (val.startsWith('/')) {
+      setShowCommandsPopup(true);
+      setCommandFilter(val.slice(1).toLowerCase());
+      setSelectedCommandIndex(0);
+    } else {
+      setShowCommandsPopup(false);
     }
+
+    e.target.style.height = 'auto';
+    e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
   };
 
-  const handleCopy = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedMessageId(id);
-    setTimeout(() => setCopiedMessageId(null), 2000);
+  const matchingCommands = commands.filter((c) =>
+    c.name.toLowerCase().includes(commandFilter) || c.description.toLowerCase().includes(commandFilter)
+  );
+
+  const selectCommand = (cmd: CommandConfig) => {
+    setInputText(`/${cmd.name} `);
+    setShowCommandsPopup(false);
+    textareaRef.current?.focus();
   };
 
-  const toggleToolCall = (id: string) => {
-    setExpandedToolCalls((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
-
-  // Microphone recording functions
+  // Audio Recording (STT)
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setRecordingStream(stream);
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
       };
 
       mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        // Stop all tracks
         stream.getTracks().forEach((track) => track.stop());
-
+        setRecordingStream(null);
         setIsTranscribing(true);
+
         try {
           const transcribedText = await onTranscribeAudio(audioBlob);
           if (transcribedText) {
             setInputText((prev) => (prev ? `${prev} ${transcribedText}` : transcribedText));
           }
         } catch (err) {
-          console.error('Transcription error:', err);
+          console.error('Falha na transcrição:', err);
         } finally {
           setIsTranscribing(false);
         }
@@ -290,13 +308,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
         setRecordingSeconds((s) => s + 1);
       }, 1000);
     } catch (err: any) {
-      alert(`Permissão de microfone não concedida ou dispositivo inacessível: ${err.message}`);
+      alert(`Microfone inacessível: ${err.message}`);
     }
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
+    }
+    if (recordingStream) {
+      recordingStream.getTracks().forEach((track) => track.stop());
+      setRecordingStream(null);
     }
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current);
@@ -305,14 +327,47 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setIsRecording(false);
   };
 
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      Array.from(files).forEach((file: File) => {
+        const reader = new FileReader();
+        const extension = file.name.includes('.')
+          ? file.name.slice(file.name.lastIndexOf('.')).toLowerCase()
+          : '';
+
+        reader.onload = (event) => {
+          const content = (event.target?.result as string) || '';
+          setAttachedFiles((prev) => [
+            ...prev,
+            {
+              id: `file_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+              name: file.name,
+              size: file.size,
+              extension,
+              content,
+            },
+          ]);
+        };
+        reader.readAsText(file);
+      });
+    }
+    if (e.target) e.target.value = '';
+    setShowPlusMenu(false);
+  };
+
+  const handleRemoveAttachment = (id: string) => {
+    setAttachedFiles((prev) => prev.filter((f) => f.id !== id));
+  };
+
   const currentAgent =
     (agents && agents.length > 0 ? (agents.find((a) => a.id === selectedAgentId) || agents[0]) : null) ||
     DEFAULT_AGENTS[0];
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden bg-zinc-50/50 dark:bg-zinc-950/40 relative">
-      {/* Top Controls Bar with Centered Token Monitor */}
-      <div className="px-3 py-1.5 bg-white/90 dark:bg-zinc-900/90 border-b border-zinc-200/80 dark:border-zinc-800 flex items-center justify-center text-xs shrink-0 shadow-2xs z-10">
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#09090b] text-zinc-200 relative select-text">
+      {/* Top Token Bar */}
+      <div className="px-2 py-0.5 bg-zinc-950/80 border-b border-zinc-900 flex items-center justify-center text-xs shrink-0 z-10 backdrop-blur-md">
         <TokenMonitorBar
           messages={messages}
           isStreaming={isStreaming}
@@ -326,64 +381,58 @@ export const ChatView: React.FC<ChatViewProps> = ({
         />
       </div>
 
-      {/* Missing or Invalid API Key Alert Banner */}
+      {/* Missing API Key Warning */}
       {cliStatus && (!cliStatus.authConfigured || cliStatus.apiValid === false) && (
-        <div className="mx-3 md:mx-6 mt-2 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-2 text-xs text-amber-800 dark:text-amber-200 shadow-2xs shrink-0">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-            <span className="text-[11px]">
-              {!cliStatus.authConfigured ? (
-                <>
-                  <strong>GEMINI_API_KEY ausente:</strong> Configure a chave no ambiente para requisições.
-                </>
-              ) : (
-                <>
-                  <strong>Alerta de API:</strong> {cliStatus.apiError || 'Erro na validação da chave.'}
-                </>
-              )}
+        <div className="mx-2 mt-1 p-1.5 rounded bg-amber-500/10 border border-amber-500/20 flex items-center justify-between text-xs text-amber-200 shrink-0">
+          <div className="flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="text-[10.5px]">
+              {!cliStatus.authConfigured
+                ? 'GEMINI_API_KEY ausente: defina a chave para habilitar requisições.'
+                : cliStatus.apiError || 'Erro na validação da chave API.'}
             </span>
           </div>
           {onOpenSettings && (
             <button
               onClick={() => onOpenSettings('cli')}
-              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-medium rounded-md transition whitespace-nowrap cursor-pointer shadow-2xs"
+              className="px-1.5 py-0.5 bg-amber-600 hover:bg-amber-500 text-white text-[10.5px] font-medium rounded transition cursor-pointer"
             >
-              Configurar
+              Ajustes
             </button>
           )}
         </div>
       )}
 
-      {/* Messages Scroll Area */}
+      {/* Messages Scroll Area — ZERO CAIXAS & MARGENS MÍNIMAS */}
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-3 md:px-6 py-4 space-y-4"
+        className="flex-1 overflow-y-auto px-1 sm:px-2 py-0.5 space-y-1 font-sans"
       >
         {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto py-8">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600/15 to-indigo-500/15 border border-blue-500/20 flex items-center justify-center text-blue-600 dark:text-blue-400 mb-3 shadow-2xs">
-              <Bot className="w-5 h-5" />
+          <div className="h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto py-4">
+            <div className="w-7 h-7 rounded bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 mb-1.5">
+              <Bot className="w-4 h-4" />
             </div>
-            <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100 tracking-tight">
-              Gemini CLI Workspace
+            <h2 className="text-xs font-semibold text-zinc-200 tracking-tight">
+              CLIgoVisual 2.0
             </h2>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 max-w-sm">
-              Envie instruções, utilize comandos rápidos com '/' ou ative o microfone para ditado por voz.
+            <p className="text-[10.5px] text-zinc-400 mt-0.5 max-w-sm leading-tight">
+              Terminal visual e ambiente de desenvolvimento Gemini CLI. Envie instruções ou use '/' para comandos.
             </p>
 
-            {/* Quick Operational Shortcuts */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 mt-5 w-full">
+            {/* Quick shortcuts */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 mt-3 w-full">
               {commands.slice(0, 6).map((cmd) => (
                 <button
                   key={cmd.name}
                   onClick={() => selectCommand(cmd)}
-                  className="flex flex-col items-start p-2 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:border-blue-500/50 dark:hover:border-blue-500/50 transition text-left group shadow-2xs cursor-pointer"
+                  className="flex flex-col items-start p-1 rounded bg-zinc-900/40 border border-zinc-800/60 hover:border-zinc-700 transition text-left cursor-pointer group"
                 >
-                  <span className="font-mono text-xs font-semibold text-blue-600 dark:text-blue-400 group-hover:underline">
+                  <span className="font-mono text-[11px] font-semibold text-blue-400 group-hover:underline">
                     {cmd.name}
                   </span>
-                  <span className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate w-full mt-0.5">
+                  <span className="text-[9.5px] text-zinc-500 truncate w-full mt-0.5">
                     {cmd.description}
                   </span>
                 </button>
@@ -391,245 +440,235 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
           </div>
         ) : (
-          messages.map((msg) => {
+          messages.map((msg, index) => {
             const isUser = msg.role === 'user';
             const isNarrating = currentlyNarratingId === msg.id;
-            const isRawExpanded = showRawPayloadGlobal || expandedRawMessageIds[msg.id];
-            const inspectionData = isRawExpanded
-              ? getRawInspectionData(
-                  msg,
-                  currentAgent,
-                  activeProject,
-                  authorizedDirs,
-                  skills,
-                  mcpServers,
-                  approvalMode
-                )
-              : null;
+
+            // Interactive activity state indicator for Gemini assistant
+            const getActivityState = () => {
+              if (msg.isStreaming) {
+                const runningTool = msg.toolCalls?.find((t) => t.status === 'running');
+                if (runningTool) {
+                  const name = runningTool.toolName.toLowerCase();
+                  if (name.includes('edit') || name.includes('write')) {
+                    return {
+                      icon: <FileEdit className="w-3 h-3 text-blue-400 animate-pulse" />,
+                      label: `Editando arquivo (${runningTool.toolName})...`,
+                      color: 'text-blue-400',
+                    };
+                  }
+                  if (name.includes('read') || name.includes('dir') || name.includes('list') || name.includes('search') || name.includes('view') || name.includes('grep')) {
+                    return {
+                      icon: <FolderOpen className="w-3 h-3 text-amber-400 animate-pulse" />,
+                      label: `Lendo workspace (${runningTool.toolName})...`,
+                      color: 'text-amber-400',
+                    };
+                  }
+                  if (name.includes('command') || name.includes('bash') || name.includes('exec') || name.includes('run')) {
+                    return {
+                      icon: <Terminal className="w-3 h-3 text-emerald-400 animate-pulse" />,
+                      label: `Executando comando no terminal...`,
+                      color: 'text-emerald-400',
+                    };
+                  }
+                  return {
+                    icon: <Cpu className="w-3 h-3 text-purple-400 animate-pulse" />,
+                    label: `Executando ${runningTool.toolName}...`,
+                    color: 'text-purple-400',
+                  };
+                }
+                return {
+                  icon: <Sparkles className="w-3 h-3 text-amber-400 animate-spin" />,
+                  label: 'Pensando e gerando resposta...',
+                  color: 'text-amber-400',
+                };
+              }
+
+              // Finished state
+              if (msg.toolCalls && msg.toolCalls.length > 0) {
+                const hasEdits = msg.toolCalls.some((t) => t.toolName.toLowerCase().includes('edit') || t.toolName.toLowerCase().includes('write'));
+                const hasCmds = msg.toolCalls.some((t) => t.toolName.toLowerCase().includes('command') || t.toolName.toLowerCase().includes('exec') || t.toolName.toLowerCase().includes('run'));
+                if (hasEdits) {
+                  return {
+                    icon: <FileEdit className="w-3 h-3 text-blue-400" />,
+                    label: 'Concluído: Arquivos e código modificados',
+                    color: 'text-blue-400',
+                  };
+                }
+                if (hasCmds) {
+                  return {
+                    icon: <Terminal className="w-3 h-3 text-emerald-400" />,
+                    label: 'Concluído: Comandos de terminal executados',
+                    color: 'text-emerald-400',
+                  };
+                }
+              }
+
+              return {
+                icon: <Sparkles className="w-3 h-3 text-indigo-400" />,
+                label: 'Google Gemini AI',
+                color: 'text-indigo-400',
+              };
+            };
+
+            const activity = getActivityState();
 
             return (
               <div
                 key={msg.id}
-                className={`flex gap-2 max-w-4xl mx-auto ${isUser ? 'justify-end' : 'justify-start'}`}
+                className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}
               >
-                {!isUser && (
-                  <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shrink-0 shadow-2xs mt-0.5">
-                    <Bot className="w-3.5 h-3.5" />
-                  </div>
-                )}
-
                 <div
-                  className={`flex-1 rounded-xl p-3 transition ${
+                  className={`group relative py-0.5 select-text ${
                     isUser
-                      ? 'bg-blue-600 text-white max-w-xl ml-auto rounded-tr-none shadow-2xs'
-                      : 'bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-tl-none shadow-2xs text-zinc-800 dark:text-zinc-200'
+                      ? 'ml-auto w-fit max-w-[88%] sm:max-w-[78%] md:max-w-2xl flex flex-col items-end'
+                      : 'mr-auto w-full max-w-4xl flex flex-col items-start'
                   }`}
                 >
-                  {/* Message Header Info */}
-                  <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800/80 pb-1.5 mb-2 text-xs">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`font-semibold text-xs ${isUser ? 'text-blue-100' : 'text-zinc-900 dark:text-zinc-100'}`}>
-                        {isUser ? 'Você' : msg.agentName || currentAgent?.displayName || 'Agente'}
-                      </span>
-                      {!isUser && (
-                        <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 border border-zinc-200/60 dark:border-zinc-700/60">
-                          {msg.model || currentAgent?.model || 'gemini-3.5-flash-lite'}
-                        </span>
-                      )}
-                    </div>
+                  {/* Header da Mensagem: Autor + Data + Interactive Gemini Icon + Model Badge */}
+                  <div className={`flex items-center gap-1.5 mb-0.5 text-xs w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
+                    <span
+                      className={`font-semibold text-xs tracking-tight ${
+                        isUser ? 'text-zinc-200 font-mono' : 'text-blue-400'
+                      }`}
+                    >
+                      {isUser ? 'Você' : msg.agentName || currentAgent?.displayName || 'Agente'}
+                    </span>
 
-                    <div className="flex items-center gap-1">
-                      {/* Derive Message Button */}
-                      <button
-                        onClick={() => handleDeriveMsg(msg)}
-                        title="Derivar Mensagem (Continuar instrução a partir deste ponto)"
-                        className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded transition cursor-pointer ${
-                          isUser
-                            ? 'text-blue-200 hover:text-white hover:bg-blue-500/50'
-                            : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
-                        }`}
-                      >
-                        <GitFork className="w-3 h-3 text-indigo-400" />
-                        <span className="hidden md:inline">Derivar Msg</span>
-                      </button>
-
-                      {/* Derive Chat Button */}
-                      {onDeriveChat && (
-                        <button
-                          onClick={() => onDeriveChat(msg, messages.indexOf(msg))}
-                          title="Derivar Chat (Criar ramificação independente com o histórico até aqui)"
-                          className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded transition cursor-pointer ${
-                            isUser
-                              ? 'text-blue-200 hover:text-white hover:bg-blue-500/50'
-                              : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
-                          }`}
-                        >
-                          <GitBranch className="w-3 h-3 text-emerald-400" />
-                          <span className="hidden md:inline">Derivar Chat</span>
-                        </button>
-                      )}
-
-                      {/* Inspecionar Payload no Painel Lateral */}
-                      {onSelectMessageForInspection && (
-                        <button
-                          onClick={() => onSelectMessageForInspection(msg)}
-                          title="Inspecionar no Painel de Payloads (3ª Coluna)"
-                          className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded transition cursor-pointer ${
-                            isUser
-                              ? 'text-blue-200 hover:text-white hover:bg-blue-500/50'
-                              : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
-                          }`}
-                        >
-                          <Cpu className="w-3 h-3 text-amber-400" />
-                          <span className="hidden md:inline">Payload</span>
-                        </button>
-                      )}
-
-                      {/* Individual Message Eye Button (Mostrar Oculto) */}
-                      <button
-                        onClick={() =>
-                          setExpandedRawMessageIds((prev) => ({
-                            ...prev,
-                            [msg.id]: !prev[msg.id],
-                          }))
-                        }
-                        title={
-                          isRawExpanded
-                            ? 'Ocultar payload inline'
-                            : 'Inspecionar payload inline (Eye)'
-                        }
-                        className={`p-1 rounded transition cursor-pointer ${
-                          isRawExpanded
-                            ? 'bg-amber-500/20 text-amber-500 dark:text-amber-300 font-bold'
-                            : isUser
-                            ? 'text-blue-200 hover:text-white hover:bg-blue-500/50'
-                            : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                        }`}
-                      >
-                        {isRawExpanded ? <Eye className="w-3 h-3 text-amber-500" /> : <EyeOff className="w-3 h-3" />}
-                      </button>
-
-                      {/* TTS Audio Narration Action */}
-                      {!isUser && (
-                        <button
-                          onClick={() => {
-                            if (isNarrating) {
-                              onStopTts();
-                            } else {
-                              onPlayTts(msg.content, msg.id);
-                            }
-                          }}
-                          title={isNarrating ? 'Pausar narração' : 'Ouvir resposta (TTS)'}
-                          className={`flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded transition cursor-pointer ${
-                            isNarrating
-                              ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300'
-                              : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                          }`}
-                        >
-                          {isNarrating ? <Pause className="w-3 h-3 animate-pulse" /> : <Volume2 className="w-3 h-3" />}
-                          <span>{isNarrating ? 'Pausa' : 'Ouvir'}</span>
-                        </button>
-                      )}
-
-                      {/* Copy text */}
-                      <button
-                        onClick={() => handleCopy(msg.content, msg.id)}
-                        title="Copiar texto"
-                        className={`p-1 rounded transition cursor-pointer ${
-                          isUser ? 'text-blue-200 hover:text-white' : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200'
-                        }`}
-                      >
-                        {copiedMessageId === msg.id ? (
-                          <Check className="w-3 h-3 text-emerald-400" />
-                        ) : (
-                          <Copy className="w-3 h-3" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Tool Invocations Accordion */}
-                  {!isUser && msg.toolCalls && msg.toolCalls.length > 0 && (
-                    <div className="mb-2 space-y-1.5">
-                      {msg.toolCalls.map((tc) => {
-                        const isExpanded = expandedToolCalls[tc.id];
-                        return (
-                          <div
-                            key={tc.id}
-                            className="rounded-lg border border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 overflow-hidden text-xs"
-                          >
-                              <button
-                                onClick={() => toggleToolCall(tc.id)}
-                                className="w-full px-2.5 py-1.5 flex items-center justify-between text-left hover:bg-zinc-100/60 dark:hover:bg-zinc-800/40 transition cursor-pointer"
-                              >
-                                <div className="flex items-center gap-1.5">
-                                  <div className="group relative flex items-center gap-1.5">
-                                    <Terminal className="w-3 h-3 text-blue-500" />
-                                    <span className="font-mono font-medium text-xs text-zinc-800 dark:text-zinc-200 underline decoration-dotted decoration-zinc-300 dark:decoration-zinc-700 underline-offset-2">
-                                      {tc.toolName}
-                                    </span>
-                                    
-                                    <span
-                                      className={`text-[9px] px-1 py-0.2 rounded uppercase font-semibold ${
-                                        tc.status === 'completed'
-                                          ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400'
-                                          : tc.status === 'running'
-                                          ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 animate-pulse'
-                                          : 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400'
-                                      }`}
-                                    >
-                                      {tc.status}
-                                    </span>
-                                  </div>
-                                </div>
-                                {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                              </button>
-
-                            {isExpanded && (
-                              <div className="p-2.5 border-t border-zinc-200/80 dark:border-zinc-800 font-mono text-[10px] bg-zinc-900 text-zinc-100 space-y-1.5 overflow-x-auto">
-                                <div>
-                                  <span className="text-zinc-400 block mb-0.5">Parâmetros:</span>
-                                  <pre className="p-1.5 rounded bg-black/40 text-emerald-400 whitespace-pre-wrap break-all">
-                                    {JSON.stringify(tc.parameters, null, 2)}
-                                  </pre>
-                                </div>
-                                {tc.result && (
-                                  <div>
-                                    <span className="text-zinc-400 block mb-0.5">Resultado:</span>
-                                    <pre className="p-1.5 rounded bg-black/40 text-zinc-300 max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
-                                      {tc.result}
-                                    </pre>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
+                    <span className="text-[10px] text-zinc-500 font-mono">
+                      {new Date(msg.timestamp).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
                       })}
-                    </div>
-                  )}
+                    </span>
 
-                  {/* Main Message Content */}
-                  <div className="text-xs sm:text-sm leading-relaxed whitespace-pre-wrap font-sans">
-                    {msg.content}
-                    {msg.isStreaming && (
-                      <span className="inline-block w-1.5 h-3.5 ml-1 bg-blue-500 animate-pulse align-middle" />
+                    {!isUser && (
+                      <div
+                        className="flex items-center gap-1 font-mono text-[9px] px-1.5 py-0.2 rounded bg-zinc-900/90 text-zinc-400 border border-zinc-800/90 hover:border-zinc-700 transition cursor-help select-none"
+                        title={activity.label}
+                      >
+                        {activity.icon}
+                        <span className="text-zinc-300 font-medium">
+                          {msg.model || 'gemini'}
+                        </span>
+                      </div>
                     )}
                   </div>
 
-                  {/* Timestamp */}
-                  <div
-                    className={`text-[9px] mt-1.5 font-mono ${
-                      isUser ? 'text-blue-100 text-right' : 'text-zinc-400 text-left'
-                    }`}
-                  >
-                    {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {/* Tool Invocations Accordion Simples */}
+                  {!isUser && msg.toolCalls && msg.toolCalls.length > 0 && (
+                    <div className="w-full">
+                      <AgentProcessAccordion toolCalls={msg.toolCalls} />
+                    </div>
+                  )}
+
+                  {/* Conteúdo da Mensagem — Flutua Livremente sem caixas ou contornos */}
+                  <div className={`w-fit max-w-full ${isUser ? 'text-zinc-100 font-medium text-left' : 'text-zinc-300 font-normal text-left'} leading-tight`}>
+                    <MessageRenderer
+                      content={msg.content}
+                      isStreaming={msg.isStreaming}
+                      onOpenViewer={(item) => {
+                        setViewerItem(item);
+                        setIsViewerOpen(true);
+                      }}
+                    />
                   </div>
 
-                  {/* Raw Payload Inspection Viewer ("Mostrar Oculto / Olho") */}
-                  {isRawExpanded && inspectionData && (
-                    <RawPayloadViewer data={inspectionData} isUserMessage={isUser} />
-                  )}
+                  {/* Barra de Ações Compacta: Alinhada e ajustada sem excesso de separação */}
+                  <div className="flex items-center justify-start gap-0.5 mt-0.5 pt-0.5 text-[9.5px] text-zinc-500 opacity-60 group-hover:opacity-100 transition-opacity w-full flex-wrap">
+                    {/* Copiar */}
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(msg.content, msg.id)}
+                      title="Copiar mensagem"
+                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/80 transition cursor-pointer leading-none"
+                    >
+                      {copiedMessageId === msg.id ? (
+                        <>
+                          <Check className="w-2.5 h-2.5 text-emerald-400" />
+                          <span className="text-emerald-400 font-medium">Copiado</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-2.5 h-2.5" />
+                          <span>Copiar</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Narrar (Ler em voz alta) */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isNarrating) {
+                          onStopTts();
+                        } else {
+                          onPlayTts(msg.content, msg.id);
+                        }
+                      }}
+                      title={isNarrating ? 'Pausar narração' : 'Ler em voz alta (TTS)'}
+                      className={`inline-flex items-center gap-0.5 px-1 py-0.2 rounded transition cursor-pointer leading-none ${
+                        isNarrating
+                          ? 'text-blue-400 bg-blue-500/10'
+                          : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/80'
+                      }`}
+                    >
+                      {isNarrating ? (
+                        <>
+                          <div className="flex items-end gap-0.5 h-2">
+                            <span className="w-0.5 bg-blue-400 rounded-full animate-equalizer-1 h-2" />
+                            <span className="w-0.5 bg-blue-400 rounded-full animate-equalizer-2 h-2" />
+                            <span className="w-0.5 bg-blue-400 rounded-full animate-equalizer-3 h-2" />
+                          </div>
+                          <span>Narrando</span>
+                        </>
+                      ) : (
+                        <>
+                          <Volume2 className="w-2.5 h-2.5" />
+                          <span>Narrar</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Payload / Fontes */}
+                    {onOpenSources && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenSources(msg)}
+                        title="Auditoria e Payload da API"
+                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-zinc-400 hover:text-amber-400 hover:bg-zinc-800/80 transition cursor-pointer leading-none"
+                      >
+                        <Code2 className="w-2.5 h-2.5 text-amber-400" />
+                        <span>Payload</span>
+                      </button>
+                    )}
+
+                    {/* Bifurcar Chat (Histórico até esta mensagem) */}
+                    {onDeriveChat && (
+                      <button
+                        type="button"
+                        onClick={() => onDeriveChat(index)}
+                        title="Bifurcar Chat: Criar nova conversa preservando o histórico acumulado até esta mensagem"
+                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 transition cursor-pointer leading-none"
+                      >
+                        <GitFork className="w-2.5 h-2.5 text-emerald-400" />
+                        <span>Bifurcar Chat</span>
+                      </button>
+                    )}
+
+                    {/* Bifurcar Mensagem (Somente esta mensagem) */}
+                    {onDeriveMessage && (
+                      <button
+                        type="button"
+                        onClick={() => onDeriveMessage(msg)}
+                        title="Bifurcar Mensagem: Criar nova conversa transportando apenas esta mensagem"
+                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-zinc-400 hover:text-purple-400 hover:bg-zinc-800/80 transition cursor-pointer leading-none"
+                      >
+                        <MessageSquareShare className="w-2.5 h-2.5 text-purple-400" />
+                        <span>Bifurcar Mensagem</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             );
@@ -638,130 +677,152 @@ export const ChatView: React.FC<ChatViewProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Floating Cancel Button when running */}
-      {isStreaming && (
-        <div className="absolute top-3 right-4 z-10">
-          <button
-            onClick={onCancelExecution}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-md transition animate-pulse cursor-pointer"
-          >
-            <Square className="w-3 h-3 fill-current" />
-            <span>Parar</span>
-          </button>
-        </div>
-      )}
-
-      {/* Input Bar Area */}
-      <div className="border-t border-zinc-200/80 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md p-2.5 sm:p-3 shrink-0 relative">
+      {/* Consolidated Input Bar (Google AI Studio / Codex Style) */}
+      <div className="p-1.5 sm:p-2 bg-[#09090b]/95 border-t border-zinc-900 shrink-0 relative">
         {/* Commands Autocomplete Popup */}
         {showCommandsPopup && matchingCommands.length > 0 && (
-          <div className="absolute bottom-full left-3 right-3 md:left-6 md:right-6 mb-1.5 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-xl border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-lg overflow-hidden max-h-52 overflow-y-auto z-30">
-            <div className="px-2.5 py-1.5 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-100 dark:border-zinc-800">
+          <div className="absolute bottom-full left-2 right-2 md:left-4 md:right-4 mb-1.5 bg-zinc-950 border border-zinc-800 rounded-lg shadow-2xl overflow-hidden max-h-52 overflow-y-auto z-30">
+            <div className="px-2.5 py-1 text-[9.5px] font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-900">
               Comandos Rápidos
             </div>
             {matchingCommands.map((cmd, idx) => (
               <button
                 key={cmd.name}
                 onClick={() => selectCommand(cmd)}
-                className={`w-full px-2.5 py-1.5 text-left flex items-center justify-between text-xs transition cursor-pointer ${
+                className={`w-full px-2.5 py-1 text-left flex items-center justify-between text-xs transition cursor-pointer ${
                   idx === selectedCommandIndex
-                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300'
-                    : 'text-zinc-800 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    ? 'bg-blue-600/20 text-blue-300'
+                    : 'text-zinc-300 hover:bg-zinc-900'
                 }`}
               >
-                <div className="flex items-center gap-1.5">
-                  <span className="font-mono font-bold">{cmd.name}</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-bold text-blue-400">/{cmd.name}</span>
                   <span className="text-zinc-500 text-[10px] truncate">{cmd.description}</span>
                 </div>
-                <span className="text-[9px] text-zinc-400 font-mono">Tab/Enter</span>
+                <span className="text-[9px] text-zinc-500 font-mono">Tab/Enter</span>
               </button>
             ))}
           </div>
         )}
 
-        <div className="max-w-4xl mx-auto flex flex-col gap-1.5">
-          {/* Input Box with Integrated +, Thinker, Mic, and Send */}
-          <div className="flex items-end gap-1.5 bg-zinc-100 dark:bg-zinc-800/90 rounded-xl p-1.5 border border-zinc-200 dark:border-zinc-700/60 focus-within:border-blue-500/80 focus-within:ring-1 focus-within:ring-blue-500/20 transition relative">
-            {/* '+' Button for attachments & quick connections */}
-            <div className="relative shrink-0">
+        <div className="max-w-4xl mx-auto flex flex-col gap-1 pr-1.5">
+          {/* Attached Files Chips Grid */}
+          {attachedFiles.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 p-1.5 bg-zinc-950/90 rounded-lg border border-zinc-800/80 mb-0.5">
+              {attachedFiles.map((file) => {
+                const ext = file.extension || '.txt';
+                const isJson = ext === '.json' || ext === '.yaml' || ext === '.yml';
+                const isMd = ext === '.md' || ext === '.markdown' || ext === '.txt';
+                const isCode = ['.ts', '.tsx', '.js', '.jsx', '.py', '.html', '.css', '.rs', '.go', '.cpp', '.c', '.java', '.sh'].includes(ext);
+
+                return (
+                  <div
+                    key={file.id}
+                    className="flex items-center gap-2 px-2.5 py-1.5 bg-zinc-900 border border-zinc-700/80 rounded-lg text-xs shadow-xs hover:border-zinc-600 transition"
+                  >
+                    {/* File Extension Icon */}
+                    <div
+                      className={`p-1 rounded flex items-center justify-center shrink-0 ${
+                        isJson
+                          ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                          : isMd
+                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                          : isCode
+                          ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
+                          : 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
+                      }`}
+                    >
+                      {isJson ? (
+                        <FileJson className="w-3.5 h-3.5" />
+                      ) : isMd ? (
+                        <FileText className="w-3.5 h-3.5" />
+                      ) : isCode ? (
+                        <Code2 className="w-3.5 h-3.5" />
+                      ) : (
+                        <File className="w-3.5 h-3.5" />
+                      )}
+                    </div>
+
+                    {/* File Name & Details */}
+                    <div className="flex flex-col min-w-0 pr-1">
+                      <span className="text-xs font-semibold text-zinc-200 truncate max-w-[150px]" title={file.name}>
+                        {file.name}
+                      </span>
+                      <span className="text-[9.5px] font-mono text-zinc-400 flex items-center gap-1">
+                        <span className="uppercase font-bold text-[8.5px] px-1 py-0.2 rounded bg-zinc-800 text-zinc-300">
+                          {ext.replace('.', '') || 'FILE'}
+                        </span>
+                        <span>•</span>
+                        <span>{(file.size / 1024).toFixed(1)} KB</span>
+                      </span>
+                    </div>
+
+                    {/* Close / Remove Attachment Button */}
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveAttachment(file.id)}
+                      title="Cancelar envio do anexo"
+                      className="p-1 rounded-full text-zinc-400 hover:text-rose-400 hover:bg-rose-950/50 transition cursor-pointer shrink-0 ml-0.5"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Main Integrated Input Container */}
+          <div className="relative flex items-end gap-1 bg-zinc-900/90 rounded-lg p-1 border border-zinc-800 focus-within:border-zinc-700 transition">
+            {/* Botão + (Anexar arquivo / fontes externas) */}
+            <div className="relative">
               <button
                 type="button"
                 onClick={() => setShowPlusMenu(!showPlusMenu)}
-                title="Adicionar / Conexões / Ações Rápidas (+)"
-                className="p-2 rounded-lg text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition cursor-pointer flex items-center justify-center"
+                title="Adicionar arquivos e conexões"
+                className="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition cursor-pointer"
               >
-                <Plus className={`w-3.5 h-3.5 transition-transform ${showPlusMenu ? 'rotate-45 text-rose-400' : ''}`} />
+                <Plus className="w-3.5 h-3.5" />
               </button>
 
               {showPlusMenu && (
-                <div className="absolute bottom-full left-0 mb-2 w-56 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl p-1.5 z-40 flex flex-col gap-1 text-xs animate-in fade-in slide-in-from-bottom-2">
-                  <button
-                    onClick={() => {
-                      setInputText('/');
-                      setShowPlusMenu(false);
-                      setShowCommandsPopup(true);
-                      textareaRef.current?.focus();
-                    }}
-                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-left cursor-pointer"
-                  >
-                    <Terminal className="w-3.5 h-3.5 text-blue-400" />
-                    <span>Inserir Comando (/)</span>
-                  </button>
+                <div className="absolute bottom-full left-0 mb-1.5 w-48 rounded-lg bg-zinc-950 border border-zinc-800 shadow-2xl p-1 text-xs z-30 space-y-0.5">
+                  <label className="flex items-center gap-2 px-2 py-1 rounded hover:bg-zinc-900 text-zinc-300 cursor-pointer text-xs">
+                    <Paperclip className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Anexar Arquivo</span>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      onChange={handleFileUpload}
+                      className="hidden"
+                    />
+                  </label>
 
-                  {onOpenMemoryModal && (
+                  {onOpenSharedMemory && (
                     <button
+                      type="button"
                       onClick={() => {
-                        onOpenMemoryModal();
                         setShowPlusMenu(false);
+                        onOpenSharedMemory();
                       }}
-                      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-left cursor-pointer"
+                      className="w-full flex items-center gap-2 px-2 py-1 rounded hover:bg-zinc-900 text-zinc-300 cursor-pointer text-left text-xs"
                     >
-                      <Brain className="w-3.5 h-3.5 text-teal-400" />
+                      <ScrollText className="w-3.5 h-3.5 text-purple-400" />
                       <span>Memória Compartilhada</span>
                     </button>
                   )}
-
-                  {onOpenVersionsModal && (
-                    <button
-                      onClick={() => {
-                        onOpenVersionsModal();
-                        setShowPlusMenu(false);
-                      }}
-                      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-left cursor-pointer"
-                    >
-                      <GitBranch className="w-3.5 h-3.5 text-indigo-400" />
-                      <span>App Versions (Snapshots)</span>
-                    </button>
-                  )}
-
-                  <button
-                    onClick={() => {
-                      setInputText((prev) => `${prev} @`);
-                      setShowPlusMenu(false);
-                      textareaRef.current?.focus();
-                    }}
-                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-left cursor-pointer"
-                  >
-                    <Paperclip className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Referenciar Arquivo (@)</span>
-                  </button>
                 </div>
               )}
             </div>
 
-            {/* Recording Feedback Banner */}
+            {/* Live Recording Waveform replaces Textarea when active */}
             {isRecording ? (
-              <div className="flex-1 flex items-center justify-between px-2 py-1 text-xs font-medium text-rose-600 dark:text-rose-400">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping" />
-                  <span>Gravando ({recordingSeconds}s)...</span>
-                </div>
-                <span className="text-[10px] text-zinc-500">Clique no microfone para parar e transcrever</span>
-              </div>
+              <LiveAudioWaveform stream={recordingStream} isRecording={isRecording} />
             ) : isTranscribing ? (
-              <div className="flex-1 flex items-center gap-1.5 px-2 py-1 text-xs text-amber-600 dark:text-amber-400 font-medium">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span>Transcrevendo áudio com Gemini...</span>
+              <div className="flex-1 flex items-center gap-2 px-2 py-1 text-xs text-amber-400 font-mono">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Transcrevendo fala com IA...</span>
               </div>
             ) : (
               <textarea
@@ -769,154 +830,210 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 value={inputText}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder="Digite sua instrução... ('+' para anexos/memória, '/' para comandos)"
+                placeholder="Instrução para o Gemini CLI... (digite '/' para comandos)"
                 rows={1}
-                className="flex-1 bg-transparent border-0 outline-none resize-none text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 px-1.5 py-1 max-h-36"
+                className="flex-1 bg-transparent border-0 outline-hidden resize-none text-xs sm:text-sm text-zinc-100 placeholder-zinc-500 px-1.5 py-0.5 max-h-36 font-sans leading-tight"
               />
             )}
 
-            {/* Thinker Level Integrated into Input Bar */}
-            {(() => {
-              const supportsThinking = isThinkingSupported(currentAgent?.model);
-              const currentLevel: ThinkingLevel = (thinkingLevel === 'low' || thinkingLevel === 'high' || thinkingLevel === 'medium') ? thinkingLevel : 'medium';
-              const nextLevels: Record<ThinkingLevel, ThinkingLevel> = {
-                low: 'medium',
-                medium: 'high',
-                high: 'low',
-              };
-
-              return (
+            {/* Right-hand Action Group (From Left to Right: 1. Mic, 2. Memory, 3. Brain/Thinking, 4. Send) */}
+            <div className="flex items-center gap-1 shrink-0">
+              {/* 1. Microfone / Esfera Gemini Live (Senta-se imediatamente ao lado do waveform) */}
+              {isRecording ? (
                 <button
                   type="button"
-                  disabled={!supportsThinking}
-                  onClick={() => {
-                    if (onSelectThinkingLevel && supportsThinking) {
-                      onSelectThinkingLevel(nextLevels[currentLevel]);
-                    }
-                  }}
-                  title={
-                    !supportsThinking
-                      ? `Modelo (${currentAgent?.model || 'atual'}) não suporta thinker`
-                      : `Thinker: ${currentLevel.toUpperCase()} (Clique para alternar Rápido/Médio/Profundo)`
-                  }
-                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold transition shrink-0 cursor-pointer border ${
-                    !supportsThinking
-                      ? 'bg-zinc-800/40 text-zinc-600 border-zinc-800 opacity-50 cursor-not-allowed'
-                      : currentLevel === 'high'
-                      ? 'bg-purple-950/50 text-purple-300 border-purple-800/60 shadow-2xs hover:bg-purple-900/60'
-                      : currentLevel === 'low'
-                      ? 'bg-blue-950/50 text-blue-300 border-blue-800/60 shadow-2xs hover:bg-blue-900/60'
-                      : 'bg-indigo-950/50 text-indigo-300 border-indigo-800/60 shadow-2xs hover:bg-indigo-900/60'
-                  }`}
+                  onClick={stopRecording}
+                  title="Concluir gravação"
+                  className="relative p-1 rounded-full flex items-center justify-center transition shrink-0 cursor-pointer group -ml-3.5 z-10"
                 >
-                  <Brain className="w-3 h-3 shrink-0" />
-                  <span className="hidden sm:inline capitalize">{currentLevel}</span>
+                  {/* Concentric Aura Ripples */}
+                  <span className="absolute inset-0 rounded-full bg-gradient-to-r from-blue-500 via-purple-500 to-cyan-400 opacity-60 animate-ping" />
+                  <span className="absolute -inset-1 rounded-full bg-gradient-to-r from-cyan-400 via-indigo-500 to-purple-500 opacity-40 blur-xs animate-pulse" />
+                  {/* Glowing 3D Glassy Sphere */}
+                  <div className="relative w-6 h-6 rounded-full bg-gradient-to-tr from-indigo-600 via-purple-500 to-cyan-300 shadow-[0_0_12px_rgba(129,140,248,0.8)] border border-white/40 flex items-center justify-center overflow-hidden transition-transform group-hover:scale-105">
+                    <div className="absolute top-0.5 left-1 w-2 h-1.5 rounded-full bg-white/70 blur-[0.5px]" />
+                    <div className="w-1.5 h-1.5 rounded-full bg-white/90 shadow-sm animate-pulse" />
+                  </div>
                 </button>
-              );
-            })()}
-
-            {/* Microphone Button (STT) Integrated into Input Bar */}
-            <button
-              type="button"
-              onClick={isRecording ? stopRecording : startRecording}
-              disabled={isTranscribing}
-              title={isRecording ? 'Parar gravação' : 'Ditado por voz'}
-              className={`p-2 rounded-lg transition shrink-0 cursor-pointer ${
-                isRecording
-                  ? 'bg-rose-600 text-white animate-pulse shadow-2xs'
-                  : isTranscribing
-                  ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-600'
-                  : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700'
-              }`}
-            >
-              {isRecording ? (
-                <Square className="w-3.5 h-3.5 fill-current" />
               ) : isTranscribing ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <button
+                  type="button"
+                  disabled
+                  className="p-1.5 rounded bg-amber-950/60 text-amber-400 transition shrink-0 cursor-not-allowed"
+                >
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                </button>
               ) : (
-                <Mic className="w-3.5 h-3.5" />
+                <button
+                  type="button"
+                  onClick={startRecording}
+                  title="Ditado por voz"
+                  className="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition shrink-0 cursor-pointer"
+                >
+                  <Mic className="w-3.5 h-3.5" />
+                </button>
               )}
-            </button>
 
-            {/* Send / Stop Button */}
-            {isStreaming ? (
-              <button
-                type="button"
-                onClick={onCancelExecution}
-                title="Interromper execução"
-                className="p-2 rounded-lg bg-rose-600 text-white hover:bg-rose-700 transition shrink-0 shadow-2xs cursor-pointer"
-              >
-                <Square className="w-3.5 h-3.5 fill-current" />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSend}
-                disabled={!inputText.trim() || isRecording || isTranscribing}
-                title="Enviar (Enter)"
-                className="p-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:hover:bg-blue-600 transition shrink-0 shadow-2xs cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5" />
-              </button>
-            )}
+              {/* 2. Memória persistente compartilhada (Ícone ScrollText com badge de versão) */}
+              {onOpenSharedMemory && (
+                <button
+                  type="button"
+                  onClick={onOpenSharedMemory}
+                  title="Abrir Memória Persistente Compartilhada"
+                  className="p-1.5 rounded text-purple-400 hover:text-purple-300 hover:bg-purple-950/50 transition cursor-pointer flex items-center gap-0.5"
+                >
+                  <ScrollText className="w-3.5 h-3.5" />
+                  {activeMemoryVersion > 0 && (
+                    <span className="text-[9px] font-mono px-1 rounded bg-purple-950 text-purple-300 border border-purple-800/50">
+                      v{activeMemoryVersion}
+                    </span>
+                  )}
+                </button>
+              )}
+
+              {/* 3. Nível de pensamento (Cérebro) */}
+              <div className="relative">
+                {(() => {
+                  const supportsThinking = isThinkingSupported(currentAgent?.model);
+                  const currentLevel: ThinkingLevel =
+                    thinkingLevel === 'low' || thinkingLevel === 'high' || thinkingLevel === 'medium'
+                      ? thinkingLevel
+                      : 'medium';
+
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        disabled={!supportsThinking}
+                        onClick={() => setShowThinkingMenu(!showThinkingMenu)}
+                        title={
+                          !supportsThinking
+                            ? 'Este modelo não suporta nível de pensamento ajustável'
+                            : `Nível de Pensamento: ${currentLevel.toUpperCase()} (Clique para alterar)`
+                        }
+                        className={`p-1.5 rounded transition cursor-pointer flex items-center gap-0.5 ${
+                          !supportsThinking
+                            ? 'text-zinc-600 cursor-not-allowed'
+                            : currentLevel === 'high'
+                            ? 'text-purple-300 bg-purple-950/50'
+                            : currentLevel === 'low'
+                            ? 'text-blue-300 bg-blue-950/50'
+                            : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800'
+                        }`}
+                      >
+                        <Brain className="w-3.5 h-3.5" />
+                        <span className="text-[9px] font-mono font-bold uppercase opacity-80">
+                          {currentLevel[0]}
+                        </span>
+                      </button>
+
+                      {showThinkingMenu && supportsThinking && (
+                        <div className="absolute bottom-full right-0 mb-1.5 w-28 rounded-lg bg-zinc-950 border border-zinc-800 shadow-2xl p-1 text-xs z-30 space-y-0.5">
+                          {(['low', 'medium', 'high'] as ThinkingLevel[]).map((lvl) => (
+                            <button
+                              key={lvl}
+                              type="button"
+                              onClick={() => {
+                                if (onSelectThinkingLevel) onSelectThinkingLevel(lvl);
+                                setShowThinkingMenu(false);
+                              }}
+                              className={`w-full px-2 py-1 rounded text-left text-xs flex items-center justify-between cursor-pointer transition ${
+                                currentLevel === lvl
+                                  ? 'bg-purple-950 text-purple-300 font-semibold'
+                                  : 'text-zinc-300 hover:bg-zinc-900'
+                              }`}
+                            >
+                              <span className="capitalize">{lvl}</span>
+                              {currentLevel === lvl && <Check className="w-3 h-3 text-purple-400" />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+
+              {/* 4. Enviar / Parar texto (Extrema direita) */}
+              {isStreaming ? (
+                <button
+                  type="button"
+                  onClick={onCancelExecution}
+                  title="Parar execução"
+                  className="p-1.5 rounded bg-rose-600 hover:bg-rose-500 text-white transition shrink-0 cursor-pointer"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  disabled={(!inputText.trim() && attachedFiles.length === 0) || isRecording || isTranscribing}
+                  title="Enviar mensagem (Enter)"
+                  className="p-1.5 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600 text-white transition shrink-0 cursor-pointer"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* Active Context & Settings Row (Below Input Box) */}
-          <div className="flex flex-wrap items-center justify-between text-xs text-zinc-500 px-0.5 gap-2">
-            {/* Left side: Agent select and Thinker Button */}
-            <div className="flex items-center flex-wrap gap-2">
-              {/* Agent selector */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-medium text-zinc-400">Agente:</span>
-                <div className="flex items-center gap-1 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800/80 dark:hover:bg-zinc-800 px-2 py-0.5 rounded-lg border border-zinc-200 dark:border-zinc-700 transition">
-                  <Bot className="w-3 h-3 text-blue-500 shrink-0" />
-                  <select
-                    value={selectedAgentId}
-                    onChange={(e) => onSelectAgent(e.target.value)}
-                    className="bg-transparent text-[10px] font-bold text-zinc-800 dark:text-zinc-200 outline-none pr-1 cursor-pointer"
-                  >
-                    {(agents && agents.length > 0 ? agents : DEFAULT_AGENTS).map((agent) => (
-                      <option key={agent.id} value={agent.id} className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
-                        {agent.displayName || agent.name} ({agent.model})
-                      </option>
-                    ))}
-                  </select>
-                </div>
+          {/* Bottom Bar: Clean Labels, No Tech Suffixes, Integrated Controls */}
+          <div className="flex flex-wrap items-center justify-between text-xs text-zinc-400 px-0.5 gap-1.5">
+            <div className="flex items-center flex-wrap gap-1.5">
+              {/* Agent Selector (Clean, no excessive suffixes) */}
+              <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded px-1.5 py-0.5">
+                <Bot className="w-3 h-3 text-blue-400 shrink-0" />
+                <select
+                  value={selectedAgentId}
+                  onChange={(e) => onSelectAgent(e.target.value)}
+                  className="bg-transparent text-[10.5px] font-medium text-zinc-200 outline-hidden cursor-pointer"
+                >
+                  {(agents && agents.length > 0 ? agents : DEFAULT_AGENTS).map((agent) => (
+                    <option key={agent.id} value={agent.id} className="bg-zinc-950 text-zinc-200">
+                      {agent.displayName || agent.name}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
-            {/* Right side: Clickable Approval Mode Selector */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-medium text-zinc-400">Aprovação:</span>
-              <div className="flex items-center gap-1 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800/80 dark:hover:bg-zinc-800 px-2 py-0.5 rounded-lg border border-zinc-200 dark:border-zinc-700 transition">
-                <Sliders className="w-3 h-3 text-amber-500 shrink-0" />
-                <select
-                  value={approvalMode}
-                  onChange={(e) => {
-                    if (onChangeApprovalMode) {
-                      onChangeApprovalMode(e.target.value as any);
-                    }
-                  }}
-                  className="bg-transparent text-[10px] font-bold text-zinc-800 dark:text-zinc-200 outline-none pr-1 cursor-pointer"
-                >
-                  <option value="default" className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
-                    Padrão (Confirmar)
-                  </option>
-                  <option value="auto_edit" className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
-                    Auto-Editar
-                  </option>
-                  <option value="yolo" className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
-                    YOLO (Direto)
-                  </option>
-                  <option value="plan" className="bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200">
-                    Planejar
-                  </option>
-                </select>
-              </div>
+            {/* Approval Mode (Clean Labels) */}
+            <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded px-1.5 py-0.5">
+              <Sliders className="w-3 h-3 text-amber-400 shrink-0" />
+              <select
+                value={approvalMode}
+                onChange={(e) => {
+                  if (onChangeApprovalMode) {
+                    onChangeApprovalMode(e.target.value as any);
+                  }
+                }}
+                className="bg-transparent text-[10.5px] font-medium text-zinc-200 outline-hidden cursor-pointer"
+              >
+                <option value="default" className="bg-zinc-950 text-zinc-200">
+                  Padrão
+                </option>
+                <option value="auto_edit" className="bg-zinc-950 text-zinc-200">
+                  Auto-Editar
+                </option>
+                <option value="yolo" className="bg-zinc-950 text-zinc-200">
+                  YOLO
+                </option>
+                <option value="plan" className="bg-zinc-950 text-zinc-200">
+                  Planejar
+                </option>
+              </select>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Side-Panel Drawer for Content Viewing (Attached Files & Long Outputs) */}
+      <ContentViewerSidebar
+        isOpen={isViewerOpen}
+        onClose={() => setIsViewerOpen(false)}
+        item={viewerItem}
+      />
     </div>
   );
 };
