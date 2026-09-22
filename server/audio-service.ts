@@ -28,13 +28,25 @@ function getGenAiClient(customApiKey?: string, customApiUrl?: string): GoogleGen
   return geminiClient;
 }
 
-// Fallback Model Chain Mapping: Gemini 3.5 Flash Lite -> Gemini 3.1 Flash Lite -> Gemini 3.5 Flash
+// Fallback Model Chain Mapping: Gemini 3.5 Flash Lite -> Gemini 3.1 Flash Lite -> Gemini 3.6 Flash
 const FALLBACK_CHAIN: Record<string, string> = {
-  'gemini-3.5-transcribe': 'gemini-3.1-flash-lite',
+  'gemini-3.5-transcribe': 'gemini-3.5-flash-lite',
   'gemini-3.5-flash-lite': 'gemini-3.1-flash-lite',
-  'gemini-3.1-flash-lite': 'gemini-3.5-flash',
-  'gemini-3.1-flash-tts-preview': 'gemini-3.1-flash-lite',
+  'gemini-3.1-flash-lite': 'gemini-3.6-flash',
+  'gemini-3.5-flash': 'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-tts-preview': 'gemini-3.5-flash-lite',
 };
+
+export function normalizeAudioModel(rawModel?: string): string {
+  if (!rawModel || rawModel === 'auto') return 'gemini-3.5-flash-lite';
+  const m = rawModel.trim().toLowerCase();
+  if (m.includes('transcribe') || m === 'gemini-3.5-flash' || m.includes('2.5') || m.includes('tts')) {
+    return 'gemini-3.5-flash-lite';
+  }
+  if (m.includes('3.1-flash-lite')) return 'gemini-3.1-flash-lite';
+  if (m.includes('3.6-flash')) return 'gemini-3.6-flash';
+  return 'gemini-3.5-flash-lite';
+}
 
 function isRetryableError(err: any): boolean {
   const status = err.status || err.statusCode || err.status_code || (err.response && err.response.status);
@@ -48,38 +60,67 @@ function isRetryableError(err: any): boolean {
 async function callWithRetryAndFallback<T>(
   ai: GoogleGenAI,
   initialModel: string,
-  executeFn: (model: string) => Promise<T>
+  executeFn: (model: string) => Promise<T>,
+  abortSignal?: AbortSignal
 ): Promise<T> {
-  let currentModel = initialModel;
+  let currentModel = normalizeAudioModel(initialModel);
   
   while (true) {
+    if (abortSignal?.aborted) {
+      throw new Error('Operação de áudio cancelada pelo usuário.');
+    }
+
     let attempts = 0;
-    const maxRetries = 3;
+    const maxRetries = 2;
     
     while (attempts <= maxRetries) {
+      if (abortSignal?.aborted) {
+        throw new Error('Operação de áudio cancelada pelo usuário.');
+      }
+
       try {
         if (attempts > 0) {
           sysLog.warn('AUDIO', `Tentativa de reexecução no modelo ${currentModel} (${attempts}/${maxRetries}) devido a erro de rede/quota transitório.`);
-          // Simple delay before retrying
-          await new Promise((resolve) => setTimeout(resolve, 600 * attempts));
+          await new Promise((resolve) => setTimeout(resolve, 500 * attempts));
         }
-        return await executeFn(currentModel);
+        
+        // Wrap execution with a 15-second timeout per attempt
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          const t = setTimeout(() => reject(new Error(`Timeout de 15s excedido na API Gemini (${currentModel})`)), 15000);
+          if (abortSignal) {
+            abortSignal.addEventListener('abort', () => {
+              clearTimeout(t);
+              reject(new Error('Operação de áudio cancelada pelo usuário.'));
+            }, { once: true });
+          }
+        });
+
+        return await Promise.race([executeFn(currentModel), timeoutPromise]);
       } catch (err: any) {
-        if (isRetryableError(err) && attempts < maxRetries) {
+        if (abortSignal?.aborted || err.message?.includes('cancelada pelo usuário')) {
+          throw new Error('Operação de áudio cancelada pelo usuário.');
+        }
+
+        const isQuota = String(err.message || err).includes('quota') || String(err.message || err).includes('429') || String(err.message || err).includes('RESOURCE_EXHAUSTED');
+
+        if (isRetryableError(err) && attempts < maxRetries && !isQuota) {
           attempts++;
           continue;
         }
         
-        // If we exhausted retries or the error is not retryable, look for fallback model
-        const fallbackModel = FALLBACK_CHAIN[currentModel];
-        if (fallbackModel) {
-          sysLog.warn('AUDIO', `Falha no modelo ${currentModel} após ${attempts} tentativas. Trocando para o modelo de fallback: ${fallbackModel}. Erro: ${err.message || err}`);
+        // Look for fallback model
+        const fallbackModel = FALLBACK_CHAIN[currentModel] || 'gemini-3.5-flash-lite';
+        if (fallbackModel && fallbackModel !== currentModel) {
+          if (isQuota) {
+            sysLog.warn('AUDIO', `⚠️ [Cota Excedida no Modelo ${currentModel}] A requisição excedeu os limites do Tier Gratuito. Ativando fallback instantâneo para: ${fallbackModel}.`);
+          } else {
+            sysLog.warn('AUDIO', `Falha no modelo ${currentModel} após ${attempts} tentativas. Trocando para o modelo de fallback: ${fallbackModel}. Erro: ${err.message || err}`);
+          }
           currentModel = fallbackModel;
-          break; // Break the inner retry loop to try the fallback model in the outer loop
+          break; // Try fallback model in outer loop
         } else {
-          // No fallback model or fallback failed too
-          sysLog.error('AUDIO', `FALHA CRÍTICA: O modelo ${currentModel} falhou. Não há mais fallbacks definidos para este agente. Interrompendo a tarefa dependente.`);
-          throw new Error(`Falha crítica de áudio: Modelo ${currentModel} falhou e não há fallbacks restantes. Detalhes: ${err.message || err}`);
+          sysLog.error('AUDIO', `FALHA CRÍTICA: O modelo ${currentModel} falhou. Não há mais fallbacks definidos para áudio. Erro: ${err.message || err}`);
+          throw new Error(`Falha crítica de áudio: Modelo ${currentModel} falhou. Detalhes: ${err.message || err}`);
         }
       }
     }
@@ -133,14 +174,15 @@ export async function transcribeAudio(
   modelName: string = 'gemini-3.5-flash-lite',
   customApiKey?: string,
   customApiUrl?: string,
-  customInstructions?: string
+  customInstructions?: string,
+  abortSignal?: AbortSignal
 ): Promise<{ text: string; error?: string }> {
   const ai = getGenAiClient(customApiKey, customApiUrl);
   if (!ai) {
     return { text: '', error: 'Autenticação da API Gemini não configurada para STT.' };
   }
 
-  const selectedModel = modelName || 'gemini-3.5-flash-lite';
+  const selectedModel = normalizeAudioModel(modelName);
 
   try {
     const result = await callWithRetryAndFallback(ai, selectedModel, async (modelToUse) => {
@@ -173,11 +215,15 @@ export async function transcribeAudio(
 
       const text = response.text?.trim() || '';
       return text;
-    });
+    }, abortSignal);
 
     sysLog.success('AUDIO', `Transcrição de áudio concluída (${result.length} caracteres).`, { length: result.length });
     return { text: result };
   } catch (err: any) {
+    if (abortSignal?.aborted || err.message?.includes('cancelada pelo usuário')) {
+      sysLog.info('AUDIO', 'Transcrição de áudio cancelada pelo usuário.');
+      return { text: '', error: 'Transcrição cancelada.' };
+    }
     sysLog.error('AUDIO', `Falha na transcrição de áudio após retries e fallbacks: ${err.message || String(err)}`);
     return {
       text: '',
@@ -192,14 +238,15 @@ export async function synthesizeSpeech(
   modelName: string = 'gemini-3.5-flash-lite',
   customApiKey?: string,
   customApiUrl?: string,
-  customInstructions?: string
+  customInstructions?: string,
+  abortSignal?: AbortSignal
 ): Promise<{ audioBase64: string; error?: string }> {
   const ai = getGenAiClient(customApiKey, customApiUrl);
   if (!ai) {
     return { audioBase64: '', error: 'Autenticação da API Gemini não configurada para TTS.' };
   }
 
-  const selectedModel = modelName || 'gemini-3.5-flash-lite';
+  const selectedModel = normalizeAudioModel(modelName);
 
   try {
     // Clean code fences or diff blocks if text is too long or purely code

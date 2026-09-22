@@ -18,7 +18,7 @@ function patchFile(fileName) {
 
   let content = fs.readFileSync(filePath, 'utf8');
 
-  // Look for the exact generateContentStream setLatestApiRequest pattern or already patched marker
+  // 1. Final API request capture in generateContentStream
   const alreadyPatchedMarker = /\/\/ __REAL_FINAL_API_REQUEST_CAPTURED__[\s\S]*?process\.stdout\.write\(JSON\.stringify\(_captureEvent\) \+ "\\n"\);\s*\}\s*catch \(_err\) \{\}/;
   const originalTargetPattern = /if\s*\(\/########\\d\+\$\/\.test\(userPromptId\)\)\s*\{\s*this\.config\.setLatestApiRequest\(req\);\s*\}/;
 
@@ -57,12 +57,9 @@ function patchFile(fileName) {
     content = content.replace(alreadyPatchedMarker, streamReplacement);
   } else if (originalTargetPattern.test(content)) {
     content = content.replace(originalTargetPattern, streamReplacement);
-  } else {
-    console.log(`[patch] Pattern not found in: ${fileName}`);
-    return;
   }
 
-  // Also patch generateContent (non-stream) if present
+  // 2. generateContent (non-stream)
   const generateContentPattern = /spanMetadata\.input = req\.contents;\s*const startTime = Date\.now\(\);\s*const contents = toContents\(req\.contents\);\s*const serverDetails = this\._getEndpointUrl\(req, "generateContent"\);\s*this\.logApiRequest\(contents, req\.model, userPromptId, role, req\.config, serverDetails\);/;
 
   if (generateContentPattern.test(content) && !content.includes('// __REAL_FINAL_API_REQUEST_GENERATE_CONTENT__')) {
@@ -91,6 +88,75 @@ function patchFile(fileName) {
         process.stdout.write(JSON.stringify(_captureEvent) + "\\n");
       } catch (_err) {}`;
     });
+  }
+
+  // 3. LocalAgentExecutor executeTurn - treat text response as completion when functionCalls.length === 0
+  const executeTurnNoCallsPattern = /if\s*\(functionCalls\.length\s*===\s*0\)\s*\{\s*this\.emitActivity\("ERROR",\s*\{\s*error:\s*`Agent stopped calling tools but did not call '\$\{COMPLETE_TASK_TOOL_NAME\}' to finalize the session\.`[\s\S]*?finalResult:\s*null\s*\};\s*\}/;
+
+  const executeTurnReplacement = `if (functionCalls.length === 0) {
+      if (textResponse && textResponse.trim()) {
+        return {
+          status: "stop",
+          terminateReason: AgentTerminateMode.GOAL,
+          finalResult: textResponse.trim()
+        };
+      }
+      this.emitActivity("ERROR", {
+        error: \`Agent stopped calling tools but did not call '\${COMPLETE_TASK_TOOL_NAME}' to finalize the session.\`,
+        context: "protocol_violation",
+        errorType: SubagentActivityErrorType.GENERIC
+      });
+      return {
+        status: "stop",
+        terminateReason: AgentTerminateMode.ERROR_NO_COMPLETE_TASK_CALL,
+        finalResult: null
+      };
+    }`;
+
+  if (executeTurnNoCallsPattern.test(content)) {
+    content = content.replace(executeTurnNoCallsPattern, executeTurnReplacement);
+  }
+
+  // 4. LocalAgentExecutor executeFinalWarningTurn - accept finalResult if provided
+  const recoveryTurnCheckPattern = /if\s*\(turnResult\.status\s*===\s*"stop"\s*&&\s*turnResult\.terminateReason\s*===\s*AgentTerminateMode\.GOAL\)\s*\{\s*this\.emitActivity\("THOUGHT_CHUNK",\s*\{\s*text:\s*"Graceful recovery succeeded\."\s*\}\);\s*success2\s*=\s*true;\s*return\s*turnResult\.finalResult\s*\?\?\s*""\s*;\s*\}/;
+
+  const recoveryTurnCheckReplacement = `if (turnResult.status === "stop" && (turnResult.terminateReason === AgentTerminateMode.GOAL || Boolean(turnResult.finalResult))) {
+        this.emitActivity("THOUGHT_CHUNK", {
+          text: "Graceful recovery succeeded."
+        });
+        success2 = true;
+        return turnResult.finalResult ?? "Task completed.";
+      }`;
+
+  if (recoveryTurnCheckPattern.test(content)) {
+    content = content.replace(recoveryTurnCheckPattern, recoveryTurnCheckReplacement);
+  }
+
+  // 5. LocalAgentExecutor runInternal fallback when ERROR_NO_COMPLETE_TASK_CALL occurs
+  const errorNoCompleteTaskBranchPattern = /else\s*if\s*\(terminateReason\s*===\s*AgentTerminateMode\.ERROR_NO_COMPLETE_TASK_CALL\)\s*\{\s*finalResult\s*=\s*finalResult\s*\|\|\s*`Agent stopped calling tools but did not call '\$\{COMPLETE_TASK_TOOL_NAME\}'\.`;\s*this\.emitActivity\("ERROR",\s*\{\s*error:\s*finalResult,\s*context:\s*"protocol_violation",\s*errorType:\s*SubagentActivityErrorType\.GENERIC\s*\}\);\s*\}/;
+
+  const errorNoCompleteTaskBranchReplacement = `else if (terminateReason === AgentTerminateMode.ERROR_NO_COMPLETE_TASK_CALL) {
+            try {
+              const _hist = chat.getHistory(true);
+              const _lastAssistant = _hist?.slice().reverse().find((h) => h.role === "model" || h.role === "assistant");
+              const _lastText = _lastAssistant?.parts?.filter((p) => !p.thought && p.text)?.map((p) => p.text)?.join("\\n");
+              if (_lastText && _lastText.trim()) {
+                terminateReason = AgentTerminateMode.GOAL;
+                finalResult = _lastText.trim();
+              }
+            } catch {}
+            if (terminateReason !== AgentTerminateMode.GOAL) {
+              finalResult = finalResult || \`Agent stopped calling tools but did not call '\${COMPLETE_TASK_TOOL_NAME}'.\`;
+              this.emitActivity("ERROR", {
+                error: finalResult,
+                context: "protocol_violation",
+                errorType: SubagentActivityErrorType.GENERIC
+              });
+            }
+          }`;
+
+  if (errorNoCompleteTaskBranchPattern.test(content)) {
+    content = content.replace(errorNoCompleteTaskBranchPattern, errorNoCompleteTaskBranchReplacement);
   }
 
   fs.writeFileSync(filePath, content, 'utf8');

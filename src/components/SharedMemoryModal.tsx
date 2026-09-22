@@ -18,6 +18,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { SharedMemoryItem, MemoryVersionEntry } from '../types.js';
+import { fetchJsonSafely } from '../utils/apiUtils.js';
 
 interface SharedMemoryModalProps {
   isOpen: boolean;
@@ -45,9 +46,8 @@ export const SharedMemoryModal: React.FC<SharedMemoryModalProps> = ({
   const fetchMemories = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/memories');
-      if (res.ok) {
-        const data = await res.json();
+      const data = await fetchJsonSafely<SharedMemoryItem[]>('/api/memories', undefined, []);
+      if (data && Array.isArray(data)) {
         setMemories(data);
         if (data.length > 0) {
           const current = activeMemoryId && data.find((m: any) => m.id === activeMemoryId) ? activeMemoryId : data[0].id;

@@ -695,7 +695,14 @@ export function App() {
           finalContent = `⚠️ **API Gemini Temporariamente Sobrecarregada (Erro 503 - High Demand)**\n\n${errorMessage || 'O modelo está enfrentando um pico de demanda temporário nos servidores do Google.'}\n\n💡 **Recomendações:**\n- Alterne para um modelo com maior taxa de disponibilidade como o **Gemini 3.5 Flash Lite** ou **Gemini 2.5 Flash**;\n- Aguarde alguns instantes e tente novamente.`;
         } else if (errLower.includes('429') || errLower.includes('quota') || errLower.includes('resource_exhausted')) {
           finalContent = `⚠️ **Limite de Cota Atingido na API (Erro 429 - Quota Exceeded)**\n\n${errorMessage || 'A cota de requisições por minuto ou limite diário foi atingida para este modelo.'}\n\n💡 **Recomendações:**\n- Aguarde a renovação da cota de requisições;\n- Alterne para outro modelo disponível com limites maiores (ex: Flash Lite).`;
-        } else if (errLower.includes('gemini_api_key') || errLower.includes('auth') || errLower.includes('unauthorized') || errLower.includes('401') || errLower.includes('403')) {
+        } else if (
+          (errLower.includes('gemini_api_key') && (errLower.includes('missing') || errLower.includes('not set') || errLower.includes('não foi encontrada') || errLower.includes('invalid') || errLower.includes('required'))) ||
+          errLower.includes('unauthorized') ||
+          errLower.includes('invalid api key') ||
+          errLower.includes('api_key_invalid') ||
+          errLower.includes('authentication failed') ||
+          errLower.includes('401')
+        ) {
           finalContent = `⚠️ **Falha de Autenticação da Chave API**\n\n${errorMessage || 'A chave de API do Gemini não foi encontrada ou não possui permissão.'}\n\n💡 **Verificação:**\n- Verifique se a variável \`GEMINI_API_KEY\` está definida no ambiente;\n- Teste a conectividade em tempo real em **Configurações ⚙️ > Testar Conexão com a API**.`;
         } else {
           finalContent = `⚠️ **Falha na Execução do Gemini CLI**\n\n${errorMessage || 'O processo do Gemini CLI foi encerrado com falha.'}`;
@@ -901,7 +908,7 @@ export function App() {
   };
 
   // Audio STT Handler (converts voice recording to text)
-  const handleTranscribeAudio = async (audioBlob: Blob): Promise<string> => {
+  const handleTranscribeAudio = async (audioBlob: Blob, signal?: AbortSignal): Promise<string> => {
     // If user prefers browser-native SpeechRecognition or backend is unavailable
     if (audioSettings.sttModel === 'browser-native') {
       return '';
@@ -916,6 +923,7 @@ export function App() {
       const res = await fetch('/api/audio/stt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal,
         body: JSON.stringify({
           audioBase64: base64Audio,
           mimeType: audioBlob.type || 'audio/webm',
@@ -930,7 +938,11 @@ export function App() {
         const data = await res.json();
         return data.text || '';
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        console.log('Transcrição de áudio cancelada pelo usuário.');
+        return '';
+      }
       console.error('Transcription request failed:', err);
     }
     return '';

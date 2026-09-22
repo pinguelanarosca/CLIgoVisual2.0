@@ -22,6 +22,7 @@ import {
   FileQuestion,
 } from 'lucide-react';
 import { FileDiffItem, FileEntryItem, FilesAndDiffsResult, ProjectItem, AuthorizedDir } from '../types.js';
+import { fetchJsonSafely } from '../utils/apiUtils.js';
 
 interface FilesAndDiffsViewProps {
   currentDir: string;
@@ -67,9 +68,8 @@ export const FilesAndDiffsView: React.FC<FilesAndDiffsViewProps> = ({
     setSelectedDiffPath(null); // Clear diff selection
     setSelectedFilePath(filePath);
     try {
-      const res = await fetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
-      if (res.ok) {
-        const data = await res.json();
+      const data = await fetchJsonSafely<{ content: string }>(`/api/files/read?path=${encodeURIComponent(filePath)}`);
+      if (data && typeof data.content === 'string') {
         setSelectedFileContent(data.content);
       } else {
         setSelectedFileContent('Falha ao ler o conteúdo do arquivo.');
@@ -86,9 +86,8 @@ export const FilesAndDiffsView: React.FC<FilesAndDiffsViewProps> = ({
     setIsLoading(true);
     try {
       const target = dirToFetch || selectedDir || '';
-      const res = await fetch(`/api/files?dir=${encodeURIComponent(target)}`);
-      if (res.ok) {
-        const data: FilesAndDiffsResult = await res.json();
+      const data = await fetchJsonSafely<FilesAndDiffsResult>(`/api/files?dir=${encodeURIComponent(target)}`);
+      if (data) {
         setResult(data);
         setSelectedDir(data.currentDir);
         setInputDir(data.currentDir);

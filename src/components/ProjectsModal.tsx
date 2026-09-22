@@ -23,6 +23,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { ProjectItem, AuthorizedDir } from '../types.js';
+import { fetchJsonSafely } from '../utils/apiUtils';
 
 interface ProjectsModalProps {
   isOpen: boolean;
@@ -105,11 +106,12 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
   const loadSelectorEntries = async (path: string) => {
     setIsLoadingSelector(true);
     try {
-      const res = await fetch(`/api/files?dir=${encodeURIComponent(path)}`);
-      const data = await res.json();
-      if (data.exists) {
+      const data = await fetchJsonSafely<{ exists?: boolean; entries?: any[]; currentDir?: string }>(
+        `/api/files?dir=${encodeURIComponent(path)}`
+      );
+      if (data && data.exists) {
         setSelectorEntries(data.entries || []);
-        setSelectorPath(data.currentDir);
+        if (data.currentDir) setSelectorPath(data.currentDir);
       }
     } catch (err) {
       console.error('Falha ao carregar diretórios:', err);

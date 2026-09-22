@@ -8,6 +8,7 @@ import os from 'node:os';
 import { GoogleGenAI } from '@google/genai';
 import { CliStatus } from '../src/types.js';
 import { sysLog } from './logger-service.js';
+import { logSubagentEvent, getSubagentLogs } from './subagent-logger.js';
 import { syncAgentsToSettings, loadAgents, buildEffectiveSystemPrompt } from './agents-service.js';
 import { syncPoliciesToSettings } from './policies-service.js';
 import { getGuiDataDir } from './paths-service.js';
@@ -153,11 +154,51 @@ export async function validateGeminiApiKey(
     return lastValidationCache.result;
   }
 
+  // Fast-path: Validação instantânea via REST endpoint do Google Generative Language API
+  try {
+    const startTimeFast = Date.now();
+    const resFast = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, {
+      method: 'GET',
+      headers: { 'User-Agent': 'GeminiGUI-Validator/1.0' },
+      signal: AbortSignal.timeout(4000),
+    });
+
+    if (resFast.ok) {
+      const latencyMs = Date.now() - startTimeFast;
+      const res = {
+        configured: true,
+        valid: true,
+        message: `Chave GEMINI_API_KEY ativa e autenticada com sucesso no Google Gemini API (${latencyMs}ms).`,
+        modelTested: targetModel || 'gemini-3.5-flash-lite',
+        latencyMs,
+      };
+      lastValidationCache = { timestamp: now, model: targetModel, apiKey, result: res };
+      sysLog.success('API', `Validação REST da GEMINI_API_KEY bem-sucedida (${latencyMs}ms)`);
+      return res;
+    } else if (resFast.status === 400 || resFast.status === 401 || resFast.status === 403) {
+      const errJson: any = await resFast.json().catch(() => ({}));
+      const errDetail = errJson.error?.message || `HTTP ${resFast.status}`;
+      const latencyMs = Date.now() - startTimeFast;
+      const res = {
+        configured: true,
+        valid: false,
+        message: `Chave presente no ambiente, mas rejeitada pelo Google Gemini API (${resFast.status}). Erro: ${errDetail}`,
+        modelTested: targetModel || 'gemini-3.5-flash-lite',
+        latencyMs,
+      };
+      lastValidationCache = { timestamp: now, model: targetModel, apiKey, result: res };
+      sysLog.warn('API', `Chave GEMINI_API_KEY rejeitada (${resFast.status}): ${errDetail}`);
+      return res;
+    }
+  } catch (fastErr: any) {
+    sysLog.warn('API', `Validação REST direta falhou ou sofreu timeout, tentando SDK: ${fastErr.message || fastErr}`);
+  }
+
   const startTime = Date.now();
   const validationModels = Array.from(new Set([
-    targetModel || 'gemini-3.1-flash-lite',
+    targetModel && targetModel !== 'gemini-3.1-flash-lite' ? targetModel : 'gemini-3.5-flash-lite',
+    'gemini-3.5-flash-lite',
     'gemini-3.6-flash',
-    'gemini-3.1-flash-lite'
   ]));
 
   let lastError: any = null;
@@ -169,7 +210,6 @@ export async function validateGeminiApiKey(
       const ai = new GoogleGenAI({ apiKey });
 
       const requestPromise = (async () => {
-        // Se for um agente gerenciado, precisa usar o Interactions API com parâmetro 'agent'
         if (model.includes('antigravity') || model.includes('deep-research')) {
           await ai.interactions.create({
             agent: model,
@@ -177,25 +217,25 @@ export async function validateGeminiApiKey(
             environment: 'remote',
           });
         } else {
-          // Para modelos padrão, tentamos primeiro o Interactions API que é o mais moderno e exigido por alguns modelos novos
+          // Tentar primeiro generateContent tradicional com maxOutputTokens minimalista (rápido e direto)
           try {
-            await ai.interactions.create({
-              model: model,
-              input: 'ping',
+            await ai.models.generateContent({
+              model,
+              contents: 'ping',
+              config: {
+                maxOutputTokens: 2,
+                temperature: 0,
+              },
             });
-          } catch (intErr: any) {
-            // Se falhar informando que o modelo NÃO suporta Interactions, tentamos o generateContent tradicional
-            if (intErr.message?.includes('not supported') || intErr.message?.includes('generateContent')) {
-              await ai.models.generateContent({
+          } catch (genErr: any) {
+            // Se falhar no generateContent, tentar com Interactions API
+            try {
+              await ai.interactions.create({
                 model,
-                contents: 'ping',
-                config: {
-                  maxOutputTokens: 2,
-                  temperature: 0,
-                },
+                input: 'ping',
               });
-            } else {
-              throw intErr;
+            } catch (intErr: any) {
+              throw genErr; // Lançar o erro original do generateContent para análise detalhada
             }
           }
         }
@@ -594,13 +634,27 @@ export interface CliExecutionParams {
 }
 
 export const AGENT_FALLBACK_CHAINS: Record<string, string[]> = {
-  architect: ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-2.5-flash'],
-  auditor: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-2.5-flash'],
-  investigator: ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-flash'],
-  principal: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite', 'gemini-3.5-flash'],
-  tester: ['gemini-3-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite'],
-  worker: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-2.5-flash-lite', 'gemini-3.5-flash'],
+  architect: ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+  auditor: ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+  investigator: ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+  principal: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash'],
+  tester: ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+  worker: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'],
 };
+
+export function normalizeCliModelName(rawModel?: string): string {
+  if (!rawModel || rawModel === 'auto') return 'gemini-3.5-flash-lite';
+  const m = rawModel.trim().toLowerCase();
+  
+  // Map UI catalog aliases or deprecated models to active, production-stable models with high quota limits
+  if (m.includes('3.8') || m.includes('3.7') || m === 'gemini-3-flash') return 'gemini-3.6-flash';
+  if (m === 'gemini-3.5-flash' || m.includes('2.5') || m.includes('transcribe') || m.includes('tts')) return 'gemini-3.5-flash-lite';
+  if (m.includes('3.1-flash-lite')) return 'gemini-3.1-flash-lite';
+  if (m.includes('3.5-flash-lite')) return 'gemini-3.5-flash-lite';
+  if (m.includes('3.6-flash')) return 'gemini-3.6-flash';
+  
+  return 'gemini-3.5-flash-lite';
+}
 
 export function getApiErrorCode(code: number, stderrText: string, reportedErrorText: string): number | null {
   const combined = (stderrText + ' ' + reportedErrorText).toLowerCase();
@@ -1132,21 +1186,17 @@ export function executeGeminiCli(
 
       // Determine model: respect the configured model for the agent/execution, default to 'gemini-3.5-flash-lite'
       let requestedModel = state?.currentModel || params.model;
-      if (!requestedModel || requestedModel === 'auto') {
-        requestedModel = 'gemini-3.5-flash-lite';
-      }
+      const chosenModel = normalizeCliModelName(requestedModel);
 
       // Infer agentId if not explicitly provided
       let agentId = params.agentId?.toLowerCase() || '';
       if (!agentId && requestedModel) {
-        if (requestedModel.includes('3.8')) agentId = 'auditor';
-        else if (requestedModel.includes('3.7')) agentId = 'investigator';
-        else if (requestedModel.includes('3.5-flash-lite')) agentId = 'principal';
-        else if (requestedModel.includes('3.1-flash-lite')) agentId = 'worker';
-        else if (requestedModel === 'gemini-3-flash') agentId = 'tester';
+        if (requestedModel.includes('auditor') || requestedModel.includes('3.8')) agentId = 'auditor';
+        else if (requestedModel.includes('investigator') || requestedModel.includes('3.7')) agentId = 'investigator';
+        else if (requestedModel.includes('principal') || requestedModel.includes('3.5-flash-lite')) agentId = 'principal';
+        else if (requestedModel.includes('worker') || requestedModel.includes('3.1-flash-lite')) agentId = 'worker';
+        else if (requestedModel.includes('tester') || requestedModel.includes('3-flash')) agentId = 'tester';
       }
-
-      const chosenModel = requestedModel;
 
       // Sincronizar dinamicamente parâmetros do modelo (temperature, topP, topK, maxOutputTokens, thinking, thinkingLevel) no settings.json
       try {
@@ -1355,11 +1405,15 @@ export function executeGeminiCli(
       });
 
       execState.childProcess = child;
-      sysLog.info(
-        'CLI',
-        `Iniciando execução Gemini CLI [ExecutionID: ${executionId}, Modelo: ${chosenModel}, Agente: ${agentId || 'N/D'}, Tentativa: ${retryCount}/3] (Prompt: "${params.prompt.substring(0, 50)}${params.prompt.length > 50 ? '...' : ''}")`,
-        { executionId, model: chosenModel, sessionId: params.sessionId, approvalMode: params.approvalMode, cwd, agentId, retryCount }
-      );
+      logSubagentEvent({
+        timestamp: new Date().toISOString(),
+        executionId,
+        eventType: 'SUBAGENT_INVOKE_START',
+        agentName: agentId || 'principal',
+        model: chosenModel,
+        prompt: params.prompt,
+        details: { sessionId: params.sessionId, cwd, retryCount },
+      });
 
       let buffer = '';
       const MAX_STDERR_MEMORY = 64 * 1024; // Limite de 64 KB na memória para evitar memory bloat
@@ -1445,6 +1499,16 @@ export function executeGeminiCli(
                   parameters: tParams,
                   timestamp: Date.now(),
                 });
+
+                const targetAgent = tParams.agent_name || tParams.agent || tParams.name || (tName === 'invoke_agent' ? 'subagent' : undefined);
+                logSubagentEvent({
+                  timestamp: new Date().toISOString(),
+                  executionId,
+                  eventType: 'SUBAGENT_TOOL_CALL',
+                  agentName: targetAgent || agentId || 'principal',
+                  toolName: tName,
+                  args: tParams,
+                });
               }
 
               const isToolResult =
@@ -1463,6 +1527,13 @@ export function executeGeminiCli(
                 if (callId) {
                   activeToolCalls.delete(callId);
                 }
+                logSubagentEvent({
+                  timestamp: new Date().toISOString(),
+                  executionId,
+                  eventType: 'SUBAGENT_TOOL_RESULT',
+                  agentName: agentId || 'principal',
+                  result: parsed.result || parsed.data?.result || parsed.content,
+                });
               }
 
               if (parsed.type === 'final_api_request') {
@@ -1485,6 +1556,15 @@ export function executeGeminiCli(
                     lastSubagentSessionId = reqItem.sessionId;
                     lastSubagentModel = reqItem.model;
                   }
+
+                  logSubagentEvent({
+                    timestamp: reqItem.timestamp,
+                    executionId,
+                    eventType: 'SUBAGENT_FINAL_REQUEST',
+                    agentName: reqItem.role === 'subagent' ? (lastSubagentRequestId || 'subagent') : agentId,
+                    model: reqItem.model,
+                    details: { requestId: reqItem.requestId, role: reqItem.role },
+                  });
 
                   params.onEvent({
                     type: 'final_api_request',
@@ -1766,7 +1846,10 @@ export function executeGeminiCli(
         // Se houver chamadas de ferramentas/subagentes pendentes sem fechamento formal, emitir tool_result terminal
         if (hasUnresolvedToolCalls) {
           for (const unres of activeToolCalls.values()) {
-            let toolFailureReason = reportedErrorText || stderrText.trim();
+            let toolFailureReason = reportedErrorText;
+            if (!toolFailureReason && stderrText.trim() && !isAuthNotice) {
+              toolFailureReason = stderrText.trim();
+            }
             if (isQuotaError) {
               toolFailureReason = 'Cota de requisições excedida na API Gemini (Erro 429 / Quota Exceeded / RESOURCE_EXHAUSTED) durante a execução do subagente.';
             } else if (isFetchFailed) {
@@ -2002,9 +2085,23 @@ Você atingiu o limite de requisições.
               lastRequestId: lastSubagentRequestId,
             },
           });
-          sysLog.error('CLI', `Gemini CLI finalizado com falha (código: ${code}): ${finalMessage.substring(0, 100)}`, { exitCode: code, stderr: stderrText.substring(0, 200) });
+          logSubagentEvent({
+            timestamp: new Date().toISOString(),
+            executionId,
+            eventType: 'SUBAGENT_ERROR',
+            agentName: agentId || 'principal',
+            model: chosenModel,
+            error: finalMessage,
+            stderr: stderrText,
+          });
         } else {
-          sysLog.success('CLI', `Execução do Gemini CLI concluída com sucesso (código 0).`, { sessionId: params.sessionId });
+          logSubagentEvent({
+            timestamp: new Date().toISOString(),
+            executionId,
+            eventType: 'SUBAGENT_COMPLETE',
+            agentName: agentId || 'principal',
+            model: chosenModel,
+          });
         }
 
         if (systemPromptFile && fs.existsSync(systemPromptFile)) {

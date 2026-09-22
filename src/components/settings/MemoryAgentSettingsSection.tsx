@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Brain, ShieldCheck, Save, Loader2, CheckCircle2, Sparkles } from 'lucide-react';
 import { MemoryAgentConfig, SharedMemoryItem } from '../../types.js';
+import { fetchJsonSafely } from '../../utils/apiUtils.js';
 
 export const MemoryAgentSettingsSection: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -22,9 +23,8 @@ export const MemoryAgentSettingsSection: React.FC = () => {
   const fetchMemories = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/memories');
-      if (res.ok) {
-        const data: SharedMemoryItem[] = await res.json();
+      const data = await fetchJsonSafely<SharedMemoryItem[]>('/api/memories', undefined, []);
+      if (data && Array.isArray(data)) {
         setMemories(data);
         if (data.length > 0) {
           setSelectedMemId(data[0].id);

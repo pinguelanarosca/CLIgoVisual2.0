@@ -15,6 +15,7 @@ import {
   Eye,
 } from 'lucide-react';
 import { AppVersionItem, VersionDiffItem, ProjectItem, AuthorizedDir } from '../types.js';
+import { fetchJsonSafely } from '../utils/apiUtils';
 
 interface VersionsSidebarProps {
   isOpen: boolean;
@@ -48,9 +49,8 @@ export const VersionsSidebar: React.FC<VersionsSidebarProps> = ({
       if (activeProject?.id) params.set('projectId', activeProject.id);
       if (workspaceDir) params.set('workspaceDir', workspaceDir);
 
-      const res = await fetch(`/api/versions?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
+      const data = await fetchJsonSafely<AppVersionItem[]>(`/api/versions?${params.toString()}`, undefined, []);
+      if (data && Array.isArray(data)) {
         setVersions(data);
       }
     } catch (err: any) {
@@ -81,19 +81,18 @@ export const VersionsSidebar: React.FC<VersionsSidebarProps> = ({
     try {
       setRestoringId(id);
       setFeedback(null);
-      const res = await fetch(`/api/versions/${id}/restore`, {
+      const data = await fetchJsonSafely<{ success: boolean; message?: string }>(`/api/versions/${id}/restore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workspaceDir }),
       });
 
-      const data = await res.json();
-      if (data.success) {
-        setFeedback({ type: 'success', message: data.message });
+      if (data?.success) {
+        setFeedback({ type: 'success', message: data.message || 'Versão restaurada com sucesso!' });
         await fetchVersions();
         if (onVersionRestored) onVersionRestored();
       } else {
-        setFeedback({ type: 'error', message: data.message || 'Falha ao restaurar versão' });
+        setFeedback({ type: 'error', message: data?.message || 'Falha ao restaurar versão' });
       }
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Erro na requisição' });
@@ -115,9 +114,8 @@ export const VersionsSidebar: React.FC<VersionsSidebarProps> = ({
         const params = new URLSearchParams();
         if (workspaceDir) params.set('workspaceDir', workspaceDir);
 
-        const res = await fetch(`/api/versions/${id}/diff?${params.toString()}`);
-        if (res.ok) {
-          const data = await res.json();
+        const data = await fetchJsonSafely<{ diffs: VersionDiffItem[] }>(`/api/versions/${id}/diff?${params.toString()}`);
+        if (data?.diffs) {
           setVersionDiffs((prev) => ({ ...prev, [id]: data.diffs || [] }));
         }
       } catch (err: any) {

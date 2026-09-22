@@ -1,9 +1,54 @@
 import { Response } from 'express';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { SystemLogEntry, SystemLogLevel, SystemLogCategory } from '../src/types.js';
 
 const MAX_LOGS = 2500;
-const logsBuffer: SystemLogEntry[] = [];
-let logIdCounter = 1;
+const LOG_DIR = path.join(os.homedir(), '.local', 'share', 'gemini-gui', 'logs');
+const LOG_FILE = path.join(LOG_DIR, 'system-logs.json');
+
+// Ensure log directory exists
+try {
+  if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
+} catch (e) {
+  console.error('Erro ao criar diretório de logs:', e);
+}
+
+// Load initial logs from disk if available
+function loadLogsFromDisk(): SystemLogEntry[] {
+  try {
+    if (fs.existsSync(LOG_FILE)) {
+      const data = fs.readFileSync(LOG_FILE, 'utf8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) {
+        return parsed.slice(-MAX_LOGS);
+      }
+    }
+  } catch (err) {
+    console.error('Erro ao carregar logs persistentes do disco:', err);
+  }
+  return [];
+}
+
+const logsBuffer: SystemLogEntry[] = loadLogsFromDisk();
+let logIdCounter = logsBuffer.length + 1;
+
+// Throttle saving to disk to prevent excessive IO
+let saveTimeout: NodeJS.Timeout | null = null;
+function scheduleSaveToDisk() {
+  if (saveTimeout) return;
+  saveTimeout = setTimeout(() => {
+    saveTimeout = null;
+    try {
+      fs.writeFileSync(LOG_FILE, JSON.stringify(logsBuffer, null, 2), 'utf8');
+    } catch (err) {
+      console.error('Erro ao salvar logs em disco:', err);
+    }
+  }, 1000);
+}
 
 // Active SSE subscribers
 const sseClients = new Set<Response>();
@@ -43,6 +88,8 @@ export function addLog(
   if (logsBuffer.length > MAX_LOGS) {
     logsBuffer.shift();
   }
+
+  scheduleSaveToDisk();
 
   // Broadcast to all active SSE subscribers
   if (sseClients.size > 0) {
@@ -101,6 +148,7 @@ export function getLogs(options?: {
 export function clearLogs(): void {
   logsBuffer.length = 0;
   addLog('info', 'SYSTEM', 'Buffer de logs limpo pelo usuário.');
+  scheduleSaveToDisk();
 }
 
 export function exportLogsText(): string {

@@ -14,6 +14,7 @@ import {
   Bot,
 } from 'lucide-react';
 import { SharedMemoryItem, ProjectItem, AgentConfig } from '../types.js';
+import { fetchJsonSafely } from '../utils/apiUtils';
 
 interface SharedMemorySidebarProps {
   isOpen: boolean;
@@ -66,19 +67,15 @@ export const SharedMemorySidebar: React.FC<SharedMemorySidebarProps> = ({
         params.set('sessionId', currentSessionId);
       }
 
-      const res = await fetch(`/api/memories?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        const effectiveMem: SharedMemoryItem | undefined = data.effective;
-        
-        if (effectiveMem) {
-          setCurrentMemory(effectiveMem);
-          setEditContent(effectiveMem.content);
-          if (effectiveMem.agentConfig?.agentId) {
-            setSelectedAgentId(effectiveMem.agentConfig.agentId);
-          }
-          if (onMemoryChanged) onMemoryChanged(effectiveMem);
+      const data = await fetchJsonSafely<{ effective?: SharedMemoryItem }>(`/api/memories?${params.toString()}`);
+      if (data && data.effective) {
+        const effectiveMem: SharedMemoryItem = data.effective;
+        setCurrentMemory(effectiveMem);
+        setEditContent(effectiveMem.content);
+        if (effectiveMem.agentConfig?.agentId) {
+          setSelectedAgentId(effectiveMem.agentConfig.agentId);
         }
+        if (onMemoryChanged) onMemoryChanged(effectiveMem);
       }
     } catch (err: any) {
       console.error('Falha ao carregar memória compartilhada:', err);

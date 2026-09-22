@@ -80,7 +80,7 @@ interface ChatViewProps {
   onPlayTts: (text: string, messageId: string) => void;
   currentlyNarratingId: string | null;
   onStopTts: () => void;
-  onTranscribeAudio: (audioBlob: Blob) => Promise<string>;
+  onTranscribeAudio: (audioBlob: Blob, signal?: AbortSignal) => Promise<string>;
   approvalMode: 'default' | 'auto_edit' | 'yolo' | 'plan';
   onChangeApprovalMode?: (mode: 'default' | 'auto_edit' | 'yolo' | 'plan') => void;
   metrics?: { rpm: number; tpm: number; rpd: number };
@@ -273,6 +273,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   // Audio Recording (STT)
+  const sttAbortControllerRef = useRef<AbortController | null>(null);
+
+  const cancelTranscription = () => {
+    if (sttAbortControllerRef.current) {
+      sttAbortControllerRef.current.abort();
+      sttAbortControllerRef.current = null;
+    }
+    setIsTranscribing(false);
+  };
+
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -291,14 +301,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
         setRecordingStream(null);
         setIsTranscribing(true);
 
+        const controller = new AbortController();
+        sttAbortControllerRef.current = controller;
+
         try {
-          const transcribedText = await onTranscribeAudio(audioBlob);
+          const transcribedText = await onTranscribeAudio(audioBlob, controller.signal);
           if (transcribedText) {
             setInputText((prev) => (prev ? `${prev} ${transcribedText}` : transcribedText));
           }
-        } catch (err) {
-          console.error('Falha na transcrição:', err);
+        } catch (err: any) {
+          if (err.name !== 'AbortError') {
+            console.error('Falha na transcrição:', err);
+          }
         } finally {
+          sttAbortControllerRef.current = null;
           setIsTranscribing(false);
         }
       };
@@ -868,9 +884,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
             {isRecording ? (
               <LiveAudioWaveform stream={recordingStream} isRecording={isRecording} />
             ) : isTranscribing ? (
-              <div className="flex-1 flex items-center gap-2 px-2 py-1 text-xs text-amber-400 font-mono">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Transcrevendo fala com IA...</span>
+              <div className="flex-1 flex items-center justify-between gap-2 px-2 py-1 text-xs text-amber-400 font-mono">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Transcrevendo fala com IA...</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={cancelTranscription}
+                  className="px-2 py-0.5 text-xs rounded bg-red-950/80 hover:bg-red-900 border border-red-800/80 text-red-300 transition flex items-center gap-1 cursor-pointer font-sans"
+                  title="Cancelar transcrição"
+                >
+                  <X className="w-3 h-3" />
+                  <span>Cancelar</span>
+                </button>
               </div>
             ) : (
               <textarea
@@ -904,13 +931,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
                 </button>
               ) : isTranscribing ? (
-                <button
-                  type="button"
-                  disabled
-                  className="p-1.5 rounded bg-amber-950/60 text-amber-400 transition shrink-0 cursor-not-allowed"
+                <div
+                  title="Transcrevendo..."
+                  className="p-1.5 rounded text-zinc-500 opacity-40 shrink-0 pointer-events-none select-none"
                 >
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                </button>
+                  <Mic className="w-3.5 h-3.5" />
+                </div>
               ) : (
                 <button
                   type="button"

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Sparkles, RefreshCw, CheckCircle2, AlertCircle, GitPullRequest } from 'lucide-react';
 import { CliStatus } from '../../types.js';
+import { fetchJsonSafely } from '../../utils/apiUtils.js';
 
 interface CliSettingsSectionProps {
   cliStatus: CliStatus | null;
@@ -44,9 +45,21 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
     setIsValidatingApi(true);
     setApiValidationResult(null);
     try {
-      const res = await fetch('/api/cli/validate-key', { method: 'POST' });
-      const data = await res.json();
-      setApiValidationResult(data);
+      const data = await fetchJsonSafely<{
+        success: boolean;
+        message: string;
+        latencyMs?: number;
+        modelTested?: string;
+      }>('/api/cli/validate-key', { method: 'POST' });
+
+      if (data) {
+        setApiValidationResult(data);
+      } else {
+        setApiValidationResult({
+          success: false,
+          message: 'Falha ao obter resposta válida da validação da API.',
+        });
+      }
       if (onRefreshStatus) onRefreshStatus();
     } catch (err: any) {
       setApiValidationResult({

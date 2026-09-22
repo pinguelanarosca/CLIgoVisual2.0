@@ -6,10 +6,11 @@ import { CommandsSettingsSection } from './settings/CommandsSettingsSection.js';
 import { McpSettingsSection } from './settings/McpSettingsSection.js';
 import { PoliciesSettingsSection } from './settings/PoliciesSettingsSection.js';
 import { AudioSettingsSection } from './settings/AudioSettingsSection.js';
-import { VoicePresetsSection } from './settings/VoicePresetsSection.js';
+import { VoiceCDJStudio } from './voice/VoiceCDJStudio.js';
 import { PackagingSettingsSection } from './settings/PackagingSettingsSection.js';
 import { MemoryAgentSettingsSection } from './settings/MemoryAgentSettingsSection.js';
 import { BackupAndResetSection } from './BackupAndResetSection.js';
+import { fetchJsonSafely } from '../utils/apiUtils.js';
 import {
   Settings,
   Terminal,
@@ -225,9 +226,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const loadLocalPolicies = async () => {
     try {
-      const res = await fetch('/api/policies');
-      const data = await res.json();
-      setPolicies(data);
+      const data = await fetchJsonSafely<PolicyConfig[]>('/api/policies', undefined, []);
+      if (data && Array.isArray(data)) {
+        setPolicies(data);
+      }
     } catch (err) {
       console.error('Falha ao carregar políticas:', err);
     }
@@ -393,7 +395,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               { id: 'commands', label: 'Comandos (6)', icon: Code2 },
               { id: 'mcp', label: 'MCP (GitHub)', icon: Layers },
               { id: 'policies', label: 'Políticas de IA', icon: ShieldCheck },
-              { id: 'voice', label: 'Voz (Narrador)', icon: Volume2 },
+              { id: 'voice', label: 'Estúdio CDJ de Voz', icon: Volume2 },
               { id: 'hooks', label: 'Hooks Operacionais', icon: Sliders },
               { id: 'permissions', label: 'Permissões & Modos', icon: Shield },
               { id: 'interface', label: 'Aparência & Tema', icon: Paintbrush },
@@ -512,9 +514,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               />
             )}
 
-            {/* 7.5 VOICE */}
+            {/* 7.5 VOICE CDJ STUDIO */}
             {activeTab === 'voice' && (
-              <VoicePresetsSection
+              <VoiceCDJStudio
                 audioSettings={audioSettings}
                 onUpdateAudioSettings={onUpdateAudioSettings}
               />

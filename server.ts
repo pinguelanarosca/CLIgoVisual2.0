@@ -1,14 +1,23 @@
 import 'dotenv/config';
 import { discoverApiKeyFromLoginEnv } from './server/env-discovery.js';
 discoverApiKeyFromLoginEnv();
+
 import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { exec } from 'node:child_process';
+import { exec, execSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer as createViteServer } from 'vite';
 import { getGuiDataDir } from './server/paths-service.js';
+
+// Garantir que os patches de confiabilidade da CLI e subagentes estejam aplicados
+try {
+  const patchScript = path.resolve(process.cwd(), 'scripts/patch-gemini-cli.cjs');
+  if (fs.existsSync(patchScript)) {
+    execSync(`node "${patchScript}"`, { stdio: 'ignore' });
+  }
+} catch {}
 
 // Safe directory resolution compatible with both CommonJS (compiled dist/server.cjs) and ESM (tsx)
 const getAppDir = (): string => {
@@ -81,6 +90,7 @@ import {
   registerSseClient,
   addLog,
 } from './server/logger-service.js';
+import { getSubagentLogs } from './server/subagent-logger.js';
 import {
   exportFullSystemBackup,
   restoreSystemBackup,
@@ -677,8 +687,18 @@ priority = 90
     if (!audioBase64) {
       return res.status(400).json({ error: 'Dados de áudio não fornecidos.' });
     }
-    const result = await transcribeAudio(audioBase64, mimeType, model, apiKey, apiUrl, instructions);
-    res.json(result);
+
+    const controller = new AbortController();
+    req.on('close', () => {
+      if (!res.writableEnded) {
+        controller.abort();
+      }
+    });
+
+    const result = await transcribeAudio(audioBase64, mimeType, model, apiKey, apiUrl, instructions, controller.signal);
+    if (!res.writableEnded) {
+      res.json(result);
+    }
   });
 
   app.post('/api/audio/tts', async (req, res) => {
@@ -686,8 +706,18 @@ priority = 90
     if (!text) {
       return res.status(400).json({ error: 'Texto para narração é obrigatório.' });
     }
-    const result = await synthesizeSpeech(text, voice, model, apiKey, apiUrl, instructions);
-    res.json(result);
+
+    const controller = new AbortController();
+    req.on('close', () => {
+      if (!res.writableEnded) {
+        controller.abort();
+      }
+    });
+
+    const result = await synthesizeSpeech(text, voice, model, apiKey, apiUrl, instructions, controller.signal);
+    if (!res.writableEnded) {
+      res.json(result);
+    }
   });
 
   // 12. Packaging & Status Distinction Matrix
@@ -895,6 +925,12 @@ priority = 90
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(text);
+  });
+
+  app.get('/api/subagent-logs', (req, res) => {
+    const limit = req.query.limit ? Number(req.query.limit) : 200;
+    const subagentLogs = getSubagentLogs(limit);
+    res.json({ logs: subagentLogs, total: subagentLogs.length });
   });
 
   // 15. App Versions (File Snapshots & Safe Restore)

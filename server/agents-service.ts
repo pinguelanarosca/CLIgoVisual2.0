@@ -196,6 +196,26 @@ export function ensureAgentsSeeded(targetDir?: string): AgentConfig[] {
       saveAgentToFile(defaultAgent, targetDir);
     }
   }
+
+  // Ensure common aliases exist on disk so subagent invocations like codebase_investigator resolve
+  const defaultAliases: Record<string, string[]> = {
+    investigator: ['codebase_investigator', 'code_investigator', 'investigator_agent'],
+    principal: ['orquestrador', 'orchestrator', 'principal_orchestrator'],
+    architect: ['software_architect', 'architect_agent'],
+    auditor: ['security_auditor', 'auditor_agent'],
+    tester: ['qa_tester', 'tester_agent'],
+    worker: ['code_worker', 'worker_agent'],
+  };
+
+  for (const defaultAgent of DEFAULT_AGENTS) {
+    const aliases = defaultAliases[defaultAgent.name] || [];
+    for (const aliasName of aliases) {
+      const aliasFilePath = path.join(agentsDir, `${aliasName}.md`);
+      if (!fs.existsSync(aliasFilePath)) {
+        saveAgentToFile({ ...defaultAgent, name: aliasName }, targetDir);
+      }
+    }
+  }
   
   syncAgentsToSettings(targetDir);
 
@@ -330,6 +350,23 @@ export function migrateExistingAgents(targetDir?: string): { migratedCount: numb
   return { migratedCount, agents: migratedAgents };
 }
 
+export const ALIAS_TO_PRIMARY: Record<string, string> = {
+  codebase_investigator: 'investigator',
+  code_investigator: 'investigator',
+  investigator_agent: 'investigator',
+  orquestrador: 'principal',
+  orchestrator: 'principal',
+  principal_orchestrator: 'principal',
+  software_architect: 'architect',
+  architect_agent: 'architect',
+  security_auditor: 'auditor',
+  auditor_agent: 'auditor',
+  qa_tester: 'tester',
+  tester_agent: 'tester',
+  code_worker: 'worker',
+  worker_agent: 'worker',
+};
+
 export function loadAgents(targetDir?: string): AgentConfig[] {
   const agentsDir = getAgentsDirectory(targetDir);
   if (!fs.existsSync(agentsDir)) {
@@ -344,10 +381,15 @@ export function loadAgents(targetDir?: string): AgentConfig[] {
   const loadedMap = new Map<string, AgentConfig>();
 
   for (const file of files) {
+    const agentName = file.replace(/\.md$/, '');
+    // Ignore alias files when loading the UI agent list so duplicate cards are not displayed
+    if (ALIAS_TO_PRIMARY[agentName]) {
+      continue;
+    }
+
     const filePath = path.join(agentsDir, file);
     try {
       const content = fs.readFileSync(filePath, 'utf8');
-      const agentName = file.replace(/\.md$/, '');
       const agentMeta = metadata[agentName] || {};
       const parsed = parseAgentMarkdown(content, agentName, agentMeta);
       if (parsed) {
@@ -438,6 +480,36 @@ export function saveAgentToFile(agent: AgentConfig, targetDir?: string) {
 
   // Sincronizar configurações do modelo no settings.json do Gemini CLI
   syncAgentsToSettings(targetDir, agent.name, agent);
+
+  // Se o agente salvo for um dos 6 agentes primários, sincronizar seus arquivos de alias no disco para o CLI
+  const defaultAliases: Record<string, string[]> = {
+    investigator: ['codebase_investigator', 'code_investigator', 'investigator_agent'],
+    principal: ['orquestrador', 'orchestrator', 'principal_orchestrator'],
+    architect: ['software_architect', 'architect_agent'],
+    auditor: ['security_auditor', 'auditor_agent'],
+    tester: ['qa_tester', 'tester_agent'],
+    worker: ['code_worker', 'worker_agent'],
+  };
+
+  const aliases = defaultAliases[agent.name];
+  if (aliases && aliases.length > 0) {
+    for (const aliasName of aliases) {
+      const aliasFilePath = path.join(agentsDir, `${aliasName}.md`);
+      const aliasFmLines = [
+        '---',
+        `name: ${aliasName}`,
+        `model: ${agent.model || 'gemini-3.5-flash-lite'}`,
+        `description: "${(agent.description || '').replace(/"/g, '\\"')}"`,
+        `kind: ${agent.kind || 'local'}`,
+        `tools: ${JSON.stringify(agent.tools || ['*'])}`,
+      ];
+      if (typeof agent.temperature === 'number') aliasFmLines.push(`temperature: ${agent.temperature}`);
+      if (typeof agent.maxTurns === 'number') aliasFmLines.push(`max_turns: ${agent.maxTurns}`);
+      aliasFmLines.push('---', '', effectivePrompt.trim());
+      fs.writeFileSync(aliasFilePath, aliasFmLines.join('\n'), 'utf8');
+      syncAgentsToSettings(targetDir, aliasName, { ...agent, name: aliasName });
+    }
+  }
 }
 
 export function deleteAgent(name: string, targetDir?: string): boolean {

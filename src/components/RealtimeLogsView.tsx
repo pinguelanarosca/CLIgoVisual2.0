@@ -23,6 +23,7 @@ import {
   Server,
 } from 'lucide-react';
 import { SystemLogEntry, SystemLogLevel, SystemLogCategory } from '../types';
+import { fetchJsonSafely } from '../utils/apiUtils';
 
 interface RealtimeLogsViewProps {
   onEmitClientLog?: (message: string, level?: SystemLogLevel, category?: SystemLogCategory) => void;
@@ -71,12 +72,9 @@ export const RealtimeLogsView: React.FC<RealtimeLogsViewProps> = () => {
   // 1. Initial load of logs from API
   const fetchInitialLogs = async () => {
     try {
-      const res = await fetch('/api/logs?limit=500');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.logs)) {
-          setLogs(data.logs);
-        }
+      const data = await fetchJsonSafely<{ logs: SystemLogEntry[] }>('/api/logs?limit=500', undefined, { logs: [] });
+      if (data && Array.isArray(data.logs)) {
+        setLogs(data.logs);
       }
     } catch (err) {
       console.error('Falha ao carregar histórico inicial de logs:', err);

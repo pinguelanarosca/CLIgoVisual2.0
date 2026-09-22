@@ -329,6 +329,9 @@ export interface AudioSettings {
   sttInstructions?: string;
   ttsInstructions?: string;
   savedVoicePresets: VoicePreset[];
+  activeTtsAgentId?: string;
+  activeSttAgentId?: string;
+  directorConfig?: any;
   audioModelStatus: {
     sttAvailable: boolean;
     ttsAvailable: boolean;
@@ -445,6 +448,7 @@ export type SystemLogCategory =
   | 'GIT'
   | 'PROJECT'
   | 'AGENT'
+  | 'AGENTS'
   | 'SKILL'
   | 'COMMAND'
   | 'MCP'
