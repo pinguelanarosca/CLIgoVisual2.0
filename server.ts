@@ -356,23 +356,45 @@ priority = 90
   });
 
   app.post('/api/config/api-key', (req, res) => {
-    const { apiKey } = req.body;
-    if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
-      return res.status(400).json({ error: 'Chave de API não pode ser vazia.' });
+    const { apiKey, exaApiKey } = req.body;
+    let hasUpdate = false;
+
+    if (apiKey && typeof apiKey === 'string' && apiKey.trim()) {
+      const cleanKey = apiKey.trim();
+      process.env.GEMINI_API_KEY = cleanKey;
+      process.env.GOOGLE_GENAI_API_KEY = cleanKey;
+      process.env.GOOGLE_API_KEY = cleanKey;
+      hasUpdate = true;
     }
-    const cleanKey = apiKey.trim();
-    process.env.GEMINI_API_KEY = cleanKey;
-    process.env.GOOGLE_GENAI_API_KEY = cleanKey;
-    process.env.GOOGLE_API_KEY = cleanKey;
+
+    if (exaApiKey !== undefined && typeof exaApiKey === 'string') {
+      process.env.EXA_API_KEY = exaApiKey.trim();
+      hasUpdate = true;
+    }
+
+    if (!hasUpdate) {
+      return res.status(400).json({ error: 'Nenhuma chave fornecida para salvar.' });
+    }
 
     try {
       const guiDir = getGuiDataDir();
       fs.mkdirSync(guiDir, { recursive: true });
       const envPath = path.join(guiDir, '.env');
-      fs.writeFileSync(envPath, `GEMINI_API_KEY=${cleanKey}\nGOOGLE_GENAI_API_KEY=${cleanKey}\nGOOGLE_API_KEY=${cleanKey}\n`, { mode: 0o600 });
+      const lines: string[] = [];
+      if (process.env.GEMINI_API_KEY) {
+        lines.push(`GEMINI_API_KEY=${process.env.GEMINI_API_KEY}`);
+      }
+      if (process.env.EXA_API_KEY) {
+        lines.push(`EXA_API_KEY=${process.env.EXA_API_KEY}`);
+      }
+      fs.writeFileSync(envPath, lines.join('\n') + '\n', { mode: 0o600 });
     } catch {}
 
-    res.json({ success: true, authConfigured: true });
+    res.json({
+      success: true,
+      authConfigured: Boolean(process.env.GEMINI_API_KEY),
+      exaConfigured: Boolean(process.env.EXA_API_KEY),
+    });
   });
 
   // 2. Real Execution via Server-Sent Events (SSE)

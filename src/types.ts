@@ -16,6 +16,8 @@ export interface CliStatus {
   connectionState: 'connected' | 'error' | 'not_detected';
   authConfigured: boolean;
   maskedApiKey?: string;
+  maskedExaKey?: string;
+  exaConfigured?: boolean;
   apiValid?: boolean;
   apiChecked?: boolean;
   apiError?: string;

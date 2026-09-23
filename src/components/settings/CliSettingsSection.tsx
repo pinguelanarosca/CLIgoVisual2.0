@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sparkles, RefreshCw, CheckCircle2, AlertCircle, GitPullRequest } from 'lucide-react';
+import { Sparkles, RefreshCw, CheckCircle2, AlertCircle, GitPullRequest, Key, Eye, EyeOff, Save, Check, Globe } from 'lucide-react';
 import { CliStatus } from '../../types.js';
 import { fetchJsonSafely } from '../../utils/apiUtils.js';
 
@@ -25,6 +25,71 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
     latencyMs?: number;
     modelTested?: string;
   } | null>(null);
+
+  // Gemini API Key Input state
+  const [geminiKeyInput, setGeminiKeyInput] = useState('');
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [isSavingGeminiKey, setIsSavingGeminiKey] = useState(false);
+  const [geminiKeyFeedback, setGeminiKeyFeedback] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Exa API Key Input state
+  const [exaKeyInput, setExaKeyInput] = useState('');
+  const [showExaKey, setShowExaKey] = useState(false);
+  const [isSavingExaKey, setIsSavingExaKey] = useState(false);
+  const [exaKeyFeedback, setExaKeyFeedback] = useState<{ success: boolean; message: string } | null>(null);
+
+  const handleSaveGeminiKey = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!geminiKeyInput.trim()) return;
+    setIsSavingGeminiKey(true);
+    setGeminiKeyFeedback(null);
+    try {
+      const res = await fetch('/api/config/api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: geminiKeyInput.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setGeminiKeyFeedback({ success: true, message: 'Chave GEMINI_API_KEY salva e ativada com sucesso!' });
+        setGeminiKeyInput('');
+        if (onRefreshStatus) onRefreshStatus();
+        handleTestApiConnection();
+      } else {
+        setGeminiKeyFeedback({ success: false, message: data.error || 'Erro ao salvar chave.' });
+      }
+    } catch (err: any) {
+      setGeminiKeyFeedback({ success: false, message: `Erro de rede: ${err?.message || err}` });
+    } finally {
+      setIsSavingGeminiKey(false);
+    }
+  };
+
+  const handleSaveExaKey = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!exaKeyInput.trim()) return;
+    setIsSavingExaKey(true);
+    setExaKeyFeedback(null);
+    try {
+      const res = await fetch('/api/config/api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ exaApiKey: exaKeyInput.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setExaKeyFeedback({ success: true, message: 'Chave EXA_API_KEY salva com sucesso!' });
+        setExaKeyInput('');
+        if (onRefreshStatus) onRefreshStatus();
+      } else {
+        setExaKeyFeedback({ success: false, message: data.error || 'Erro ao salvar chave.' });
+      }
+    } catch (err: any) {
+      setExaKeyFeedback({ success: false, message: `Erro de rede: ${err?.message || err}` });
+    } finally {
+      setIsSavingExaKey(false);
+    }
+  };
 
   const handleSelectCliPath = async (selectedPath: string) => {
     try {
@@ -249,6 +314,93 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
             {isValidatingApi ? 'Validando conexão com o Google Gemini...' : 'Testar Conexão com a API em Tempo Real'}
           </button>
         </div>
+
+        {/* Formulário Interativo de Chave GEMINI_API_KEY */}
+        <form onSubmit={handleSaveGeminiKey} className="pt-3 border-t border-zinc-200/80 dark:border-zinc-800 space-y-2">
+          <label className="block text-xs font-semibold text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5">
+            <Key className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+            <span>Inserir / Atualizar GEMINI_API_KEY</span>
+          </label>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                type={showGeminiKey ? 'text' : 'password'}
+                value={geminiKeyInput}
+                onChange={(e) => setGeminiKeyInput(e.target.value)}
+                placeholder={cliStatus?.maskedApiKey ? `Chave atual: ${cliStatus.maskedApiKey} (digite para alterar)` : 'Cole sua chave AIzaSy... do Gemini'}
+                className="w-full pl-3 pr-9 py-2 text-xs font-mono rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/80 text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <button
+                type="button"
+                onClick={() => setShowGeminiKey(!showGeminiKey)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
+                title={showGeminiKey ? 'Ocultar chave' : 'Mostrar chave'}
+              >
+                {showGeminiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <button
+              type="submit"
+              disabled={isSavingGeminiKey || !geminiKeyInput.trim()}
+              className="px-3.5 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{isSavingGeminiKey ? 'Salvando...' : 'Salvar Chave'}</span>
+            </button>
+          </div>
+          {geminiKeyFeedback && (
+            <p className={`text-[11px] font-medium ${geminiKeyFeedback.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {geminiKeyFeedback.message}
+            </p>
+          )}
+        </form>
+
+        {/* Formulário Interativo de Chave EXA_API_KEY */}
+        <form onSubmit={handleSaveExaKey} className="pt-2 border-t border-zinc-200/80 dark:border-zinc-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-semibold text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5">
+              <Globe className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+              <span>EXA_API_KEY (Buscas Web / MCP Neural Search - Opcional)</span>
+            </label>
+            {cliStatus?.maskedExaKey && (
+              <span className="font-mono text-[10px] text-zinc-500 bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">
+                Ativa: {cliStatus.maskedExaKey}
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                type={showExaKey ? 'text' : 'password'}
+                value={exaKeyInput}
+                onChange={(e) => setExaKeyInput(e.target.value)}
+                placeholder={cliStatus?.maskedExaKey ? `Chave atual: ${cliStatus.maskedExaKey} (digite para alterar)` : 'Cole sua chave da Exa (ex: exa_...)'}
+                className="w-full pl-3 pr-9 py-2 text-xs font-mono rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/80 text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-purple-500"
+              />
+              <button
+                type="button"
+                onClick={() => setShowExaKey(!showExaKey)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
+                title={showExaKey ? 'Ocultar chave' : 'Mostrar chave'}
+              >
+                {showExaKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <button
+              type="submit"
+              disabled={isSavingExaKey || !exaKeyInput.trim()}
+              className="px-3.5 py-2 text-xs font-semibold rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-xs"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{isSavingExaKey ? 'Salvando...' : 'Salvar Exa'}</span>
+            </button>
+          </div>
+          {exaKeyFeedback && (
+            <p className={`text-[11px] font-medium ${exaKeyFeedback.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {exaKeyFeedback.message}
+            </p>
+          )}
+        </form>
 
         {apiValidationResult && (
           <div

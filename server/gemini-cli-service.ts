@@ -427,6 +427,17 @@ export async function detectCliStatus(
     }
   }
 
+  const rawExaKey = process.env.EXA_API_KEY || '';
+  const exaConfigured = Boolean(rawExaKey);
+  let maskedExaKey = undefined;
+  if (rawExaKey) {
+    if (rawExaKey.length > 8) {
+      maskedExaKey = `${rawExaKey.substring(0, 4)}...${rawExaKey.substring(rawExaKey.length - 4)}`;
+    } else {
+      maskedExaKey = '***';
+    }
+  }
+
   const [localVersion, globalVersion, apiCheck] = await Promise.all([
     queryBinaryVersion(localCliPath),
     queryBinaryVersion(globalCliPath),
@@ -458,6 +469,8 @@ export async function detectCliStatus(
       connectionState: 'connected',
       authConfigured,
       maskedApiKey,
+      maskedExaKey,
+      exaConfigured,
       apiValid: apiCheck.valid,
       apiChecked: true,
       apiError: !apiCheck.valid ? apiCheck.message : undefined,
@@ -498,6 +511,8 @@ export async function detectCliStatus(
           connectionState: localVersion || globalVersion ? 'connected' : 'error',
           authConfigured,
           maskedApiKey,
+          maskedExaKey,
+          exaConfigured,
           apiValid: apiCheck.valid,
           apiChecked: true,
           apiError: !apiCheck.valid ? apiCheck.message : undefined,
@@ -529,6 +544,8 @@ export async function detectCliStatus(
           connectionState: 'not_detected',
           authConfigured,
           maskedApiKey,
+          maskedExaKey,
+          exaConfigured,
           apiValid: apiCheck.valid,
           apiChecked: true,
           apiError: !apiCheck.valid ? apiCheck.message : undefined,
@@ -553,6 +570,8 @@ export async function detectCliStatus(
             connectionState: 'connected',
             authConfigured,
             maskedApiKey,
+            maskedExaKey,
+            exaConfigured,
             apiValid: apiCheck.valid,
             apiChecked: true,
             apiError: !apiCheck.valid ? apiCheck.message : undefined,
@@ -573,6 +592,8 @@ export async function detectCliStatus(
             connectionState: localVersion ? 'connected' : 'error',
             authConfigured,
             maskedApiKey,
+            maskedExaKey,
+            exaConfigured,
             apiValid: apiCheck.valid,
             apiChecked: true,
             apiError: !apiCheck.valid ? apiCheck.message : undefined,
