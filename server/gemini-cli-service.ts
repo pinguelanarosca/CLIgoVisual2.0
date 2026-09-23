@@ -158,9 +158,20 @@ export async function validateGeminiApiKey(
   // Fast-path: Validação instantânea via REST endpoint do Google Generative Language API
   try {
     const startTimeFast = Date.now();
-    const resFast = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, {
+    const isOAuthToken = apiKey.startsWith('AQ.') || apiKey.startsWith('ya29.');
+    const fetchHeaders: Record<string, string> = {
+      'User-Agent': 'GeminiGUI-Validator/1.0',
+      'x-goog-api-key': apiKey,
+    };
+    if (isOAuthToken) {
+      fetchHeaders['Authorization'] = `Bearer ${apiKey}`;
+    }
+
+    const fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+
+    const resFast = await fetch(fetchUrl, {
       method: 'GET',
-      headers: { 'User-Agent': 'GeminiGUI-Validator/1.0' },
+      headers: fetchHeaders,
       signal: AbortSignal.timeout(4000),
     });
 
@@ -197,10 +208,11 @@ export async function validateGeminiApiKey(
 
   const startTime = Date.now();
   const validationModels = Array.from(new Set([
-    targetModel && targetModel !== 'gemini-3.1-flash-lite' ? targetModel : 'gemini-2.5-flash',
+    targetModel || 'gemini-3.5-flash-lite',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
     'gemini-2.5-flash',
     'gemini-1.5-flash',
-    'gemini-2.0-flash',
   ]));
 
   let lastError: any = null;

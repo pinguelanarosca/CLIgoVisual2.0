@@ -19,7 +19,8 @@ function patchFile(fileName) {
   let content = fs.readFileSync(filePath, 'utf8');
 
   // 1. Final API request capture in generateContentStream
-  const alreadyPatchedMarker = /\/\/ __REAL_FINAL_API_REQUEST_CAPTURED__[\s\S]*?process\.stdout\.write\(JSON\.stringify\(_captureEvent\) \+ "\\n"\);\s*\}\s*catch \(_err\) \{\}/;
+  const alreadyPatchedMarker = /\/\/ __REAL_FINAL_API_REQUEST_CAPTURED__[\s\S]*?if\s*\(role\s*!==\s*'subagent'\)\s*\{\s*process\.stdout\.write\(JSON\.stringify\(_captureEvent\)\s*\+\s*"\\n"\);\s*\}\s*\}\s*catch \(_err\) \{\}/;
+  const oldPatchedMarker = /\/\/ __REAL_FINAL_API_REQUEST_CAPTURED__[\s\S]*?process\.stdout\.write\(JSON\.stringify\(_captureEvent\)\s*\+\s*"\\n"\);\s*\}\s*catch \(_err\) \{\}/;
   const originalTargetPattern = /if\s*\(\/########\\d\+\$\/\.test\(userPromptId\)\)\s*\{\s*this\.config\.setLatestApiRequest\(req\);\s*\}/;
 
   const streamReplacement = `// __REAL_FINAL_API_REQUEST_CAPTURED__
@@ -50,11 +51,15 @@ function patchFile(fileName) {
               _fs.writeFileSync(_f, JSON.stringify(_captureEvent, null, 2), 'utf8');
             } catch {}
           }
-          process.stdout.write(JSON.stringify(_captureEvent) + "\\n");
+          if (role !== 'subagent') {
+            process.stdout.write(JSON.stringify(_captureEvent) + "\\n");
+          }
         } catch (_err) {}`;
 
   if (alreadyPatchedMarker.test(content)) {
     content = content.replace(alreadyPatchedMarker, streamReplacement);
+  } else if (oldPatchedMarker.test(content)) {
+    content = content.replace(oldPatchedMarker, streamReplacement);
   } else if (originalTargetPattern.test(content)) {
     content = content.replace(originalTargetPattern, streamReplacement);
   }
@@ -85,30 +90,49 @@ function patchFile(fileName) {
           role,
           finalApiRequest: _realFinalApiRequest
         };
-        process.stdout.write(JSON.stringify(_captureEvent) + "\\n");
+        if (role !== 'subagent') {
+          process.stdout.write(JSON.stringify(_captureEvent) + "\\n");
+        }
       } catch (_err) {}`;
     });
   }
 
-  // 3. LocalAgentExecutor executeTurn - treat text response as completion when functionCalls.length === 0
-  const executeTurnNoCallsPattern = /if\s*\(functionCalls\.length\s*===\s*0\)\s*\{\s*this\.emitActivity\("ERROR",\s*\{\s*error:\s*`Agent stopped calling tools but did not call '\$\{COMPLETE_TASK_TOOL_NAME\}' to finalize the session\.`[\s\S]*?finalResult:\s*null\s*\};\s*\}/;
+  // 3. LocalAgentExecutor executeTurn - destructure textResponse and treat text response as completion when functionCalls.length === 0
+  const callModelDestructurePattern = /const\s*\{\s*functionCalls,\s*modelToUse\s*\}\s*=\s*await\s*promptIdContext\.run\(\s*promptId,\s*async\s*\(\)\s*=>\s*this\.callModel\(/;
+  if (callModelDestructurePattern.test(content)) {
+    content = content.replace(callModelDestructurePattern, `const { functionCalls, textResponse, modelToUse } = await promptIdContext.run(
+      promptId,
+      async () => this.callModel(`);
+  }
+
+  const executeTurnNoCallsPattern = /if\s*\(functionCalls\.length\s*===\s*0\)\s*\{\s*[\s\S]*?return\s*\{\s*status:\s*"stop",\s*terminateReason:\s*(?:AgentTerminateMode\.ERROR_NO_COMPLETE_TASK_CALL|"ERROR_NO_COMPLETE_TASK_CALL"),\s*finalResult:\s*null\s*\};\s*\}/;
 
   const executeTurnReplacement = `if (functionCalls.length === 0) {
-      if (textResponse && textResponse.trim()) {
+      let _extractedResult = (typeof textResponse === 'string' && textResponse.trim()) ? textResponse.trim() : "";
+      if (!_extractedResult) {
+        try {
+          const _hist = chat.getHistory(true);
+          const _lastTurn = _hist && _hist[_hist.length - 1];
+          if (_lastTurn && _lastTurn.parts) {
+            _extractedResult = _lastTurn.parts.filter(p => !p.thought && p.text).map(p => p.text).join('\\n').trim();
+          }
+        } catch {}
+      }
+      if (_extractedResult) {
         return {
           status: "stop",
-          terminateReason: AgentTerminateMode.GOAL,
-          finalResult: textResponse.trim()
+          terminateReason: "GOAL",
+          finalResult: _extractedResult
         };
       }
       this.emitActivity("ERROR", {
         error: \`Agent stopped calling tools but did not call '\${COMPLETE_TASK_TOOL_NAME}' to finalize the session.\`,
         context: "protocol_violation",
-        errorType: SubagentActivityErrorType.GENERIC
+        errorType: "GENERIC"
       });
       return {
         status: "stop",
-        terminateReason: AgentTerminateMode.ERROR_NO_COMPLETE_TASK_CALL,
+        terminateReason: "ERROR_NO_COMPLETE_TASK_CALL",
         finalResult: null
       };
     }`;
