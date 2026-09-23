@@ -79,6 +79,7 @@ import {
   generateManualUpdateCommands,
   performRebuild,
   scheduleServerRestart,
+  registerActiveServer,
   DEFAULT_GIT_REPO_URL,
   DEFAULT_GIT_BRANCH,
 } from './server/git-updater-service.js';
@@ -1163,9 +1164,10 @@ priority = 90
     });
   }
 
-  app.listen(PORT, HOST, () => {
+  const server = app.listen(PORT, HOST, () => {
     console.log(`Gemini CLI GUI server running at http://${HOST}:${PORT}`);
   });
+  registerActiveServer(server);
 }
 
 startServer().catch((err) => {

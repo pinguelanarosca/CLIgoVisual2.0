@@ -254,7 +254,7 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
             )}
             <div>
               <p className="font-semibold">{apiValidationResult.message}</p>
-              {apiValidationResult.latencyMs !== undefined && (
+              {apiValidationResult.success && apiValidationResult.latencyMs !== undefined && (
                 <p className="text-[11px] opacity-80 mt-0.5">
                   Latência de resposta da API: <strong>{apiValidationResult.latencyMs}ms</strong>
                   {apiValidationResult.modelTested && ` • Modelo verificado: ${apiValidationResult.modelTested}`}

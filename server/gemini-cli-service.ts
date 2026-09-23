@@ -158,16 +158,11 @@ export async function validateGeminiApiKey(
   // Fast-path: Validação instantânea via REST endpoint do Google Generative Language API
   try {
     const startTimeFast = Date.now();
-    const isOAuthToken = apiKey.startsWith('AQ.') || apiKey.startsWith('ya29.');
+    const fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
     const fetchHeaders: Record<string, string> = {
       'User-Agent': 'GeminiGUI-Validator/1.0',
       'x-goog-api-key': apiKey,
     };
-    if (isOAuthToken) {
-      fetchHeaders['Authorization'] = `Bearer ${apiKey}`;
-    }
-
-    const fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
 
     const resFast = await fetch(fetchUrl, {
       method: 'GET',
@@ -190,15 +185,12 @@ export async function validateGeminiApiKey(
     } else if (resFast.status === 400 || resFast.status === 401 || resFast.status === 403) {
       const errJson: any = await resFast.json().catch(() => ({}));
       const errDetail = errJson.error?.message || `HTTP ${resFast.status}`;
-      const latencyMs = Date.now() - startTimeFast;
       const res = {
         configured: true,
         valid: false,
         message: `Chave presente no ambiente, mas rejeitada pelo Google Gemini API (${resFast.status}). Erro: ${errDetail}`,
-        modelTested: targetModel || 'gemini-3.5-flash-lite',
-        latencyMs,
       };
-      lastValidationCache = { timestamp: now, model: targetModel, apiKey, result: res };
+      // Não salvar em cache validações com falha para permitir novas tentativas limpas
       sysLog.warn('API', `Chave GEMINI_API_KEY rejeitada (${resFast.status}): ${errDetail}`);
       return res;
     }
@@ -298,17 +290,14 @@ export async function validateGeminiApiKey(
     sysLog.success('API', `Validação da GEMINI_API_KEY bem-sucedida (${latencyMs}ms)`, { model: res.modelTested });
     return res;
   } else {
-    const latencyMs = Date.now() - startTime;
     const errMsg = lastError?.message || String(lastError);
     const res = {
       configured: true,
       valid: false,
-      message: `Chave presente no ambiente, mas a validação falhou em todos os modelos testados (${validationModels.join(', ')}). Último erro: ${errMsg}`,
-      modelTested: targetModel,
-      latencyMs,
+      message: `Chave GEMINI_API_KEY presente no ambiente, mas a validação falhou: ${errMsg}`,
     };
-    lastValidationCache = { timestamp: now, model: targetModel, apiKey, result: res };
-    sysLog.warn('API', `Validação da GEMINI_API_KEY falhou em todos os modelos: ${errMsg}`, { latencyMs });
+    // Não salvar falhas no cache para permitir retentativas imediatas
+    sysLog.warn('API', `Validação da GEMINI_API_KEY falhou: ${errMsg}`);
     return res;
   }
 }

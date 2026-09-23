@@ -289,44 +289,85 @@ export interface PerformGitUpdateOptions {
   restartServer?: boolean;
 }
 
+let activeServerInstance: any = null;
+
+export function registerActiveServer(server: any) {
+  activeServerInstance = server;
+}
+
 export function scheduleServerRestart(delayMs: number = 1500) {
   sysLog.warn('SYSTEM', `Reinício programado do processo do servidor em ${delayMs}ms...`);
   setTimeout(() => {
     sysLog.info('SYSTEM', 'Iniciando processo de reinício automático...');
+    
+    // Se estiver rodando sob gerenciador de processos (PM2), fechar e sair é suficiente
+    const isUnderPm2 = process.env.pm_id !== undefined || process.env.PM2_HOME !== undefined;
+
     try {
-      const execPath = process.execPath;
-      const nodeArgs = [...process.execArgv, ...process.argv.slice(1)];
-      const cwd = process.cwd();
-      const env = { ...process.env };
+      if (activeServerInstance && typeof activeServerInstance.close === 'function') {
+        activeServerInstance.close();
+      }
+    } catch {}
 
-      // Script gerenciador temporário desvinculado (detached)
-      // Aguarda 1.2s para garantir que o processo pai encerre e libere a porta 3000,
-      // e em seguida spawna a nova instância do servidor.
-      const inlineScript = `
-        setTimeout(() => {
+    if (!isUnderPm2) {
+      try {
+        const execPath = process.execPath;
+        const nodeArgs = [...process.execArgv, ...process.argv.slice(1)];
+        const cwd = process.cwd();
+        const env = { ...process.env };
+
+        // Script launcher inteligente: aguarda a porta 3000 ser liberada antes de iniciar
+        const inlineScript = `
           const { spawn } = require('child_process');
-          const child = spawn(${JSON.stringify(execPath)}, ${JSON.stringify(nodeArgs)}, {
-            cwd: ${JSON.stringify(cwd)},
-            detached: true,
-            stdio: 'inherit',
-            env: process.env
-          });
-          child.unref();
-        }, 1200);
-      `;
+          const net = require('net');
 
-      const launcher = spawn(execPath, ['-e', inlineScript], {
-        cwd,
-        detached: true,
-        stdio: 'ignore',
-        env,
-      });
-      launcher.unref();
-    } catch (err: any) {
-      sysLog.error('SYSTEM', `Erro ao agendar processo de reinício: ${err.message}`);
+          function tryStartServer(retriesLeft) {
+            const socket = new net.Socket();
+            socket.once('error', () => {
+              // Porta liberada! Spawna o servidor.
+              socket.destroy();
+              const child = spawn(${JSON.stringify(execPath)}, ${JSON.stringify(nodeArgs)}, {
+                cwd: ${JSON.stringify(cwd)},
+                detached: true,
+                stdio: 'inherit',
+                env: process.env
+              });
+              child.unref();
+            });
+            socket.once('connect', () => {
+              // Porta ainda ocupada, tenta novamente em 400ms
+              socket.destroy();
+              if (retriesLeft > 0) {
+                setTimeout(() => tryStartServer(retriesLeft - 1), 400);
+              } else {
+                const child = spawn(${JSON.stringify(execPath)}, ${JSON.stringify(nodeArgs)}, {
+                  cwd: ${JSON.stringify(cwd)},
+                  detached: true,
+                  stdio: 'inherit',
+                  env: process.env
+                });
+                child.unref();
+              }
+            });
+            socket.connect(3000, '127.0.0.1');
+          }
+
+          setTimeout(() => tryStartServer(25), 800);
+        `;
+
+        const launcher = spawn(execPath, ['-e', inlineScript], {
+          cwd,
+          detached: true,
+          stdio: 'ignore',
+          env,
+        });
+        launcher.unref();
+      } catch (err: any) {
+        sysLog.error('SYSTEM', `Erro ao agendar processo de reinício: ${err.message}`);
+      }
     }
 
-    // Encerra o processo atual liberando a porta 3000
+    // Encerra o processo atual liberando o SO
     process.exit(0);
   }, delayMs);
 }
