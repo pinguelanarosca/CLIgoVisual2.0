@@ -1,24 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Cpu,
   Mic,
-  Bot,
-  Boxes,
-  Database,
-  Binary,
+  Volume2,
   Sparkles,
   Info,
   RotateCcw,
   CheckCircle2,
   ShieldCheck,
-  ShieldAlert,
-  ArrowRight,
-  Zap,
-  Check,
   Radio,
+  Bot,
 } from 'lucide-react';
 import { MODELS_CATALOG } from '../constants/modelsCatalog.js';
-import { AgentConfig } from '../types.js';
+import { AgentConfig, AudioSettings } from '../types.js';
+import { getSavedVoiceAgents, VoiceAgent } from '../services/voice/voiceAgentsStore.js';
 
 interface ModelCatalogViewProps {
   agents: AgentConfig[];
@@ -27,6 +22,8 @@ interface ModelCatalogViewProps {
   onResetDefaultAgentsConfig: () => Promise<void>;
   onSaveAgent?: (agent: AgentConfig) => Promise<void>;
   isResetting?: boolean;
+  audioSettings?: AudioSettings;
+  onUpdateAudioSettings?: (updates: Partial<AudioSettings>) => void;
 }
 
 export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
@@ -36,12 +33,64 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
   onResetDefaultAgentsConfig,
   onSaveAgent,
   isResetting = false,
+  audioSettings,
+  onUpdateAudioSettings,
 }) => {
   const [activeCategoryTab, setActiveCategoryTab] = useState<string>('all');
   const [resetSuccess, setResetSuccess] = useState(false);
   const [savedAgentId, setSavedAgentId] = useState<string | null>(null);
+  const [voiceAgents, setVoiceAgents] = useState<VoiceAgent[]>([]);
+  const [testingAgentId, setTestingAgentId] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, { success: boolean; message: string }>>({});
+  const [testErrorModal, setTestErrorModal] = useState<{ agentName: string; error: string } | null>(null);
 
-  const defaultAgentPairs = [
+  useEffect(() => {
+    const loaded = getSavedVoiceAgents();
+    setVoiceAgents(loaded);
+  }, []);
+
+  const handleTestAgent = async (agentId: string, model: string, type: 'programming' | 'voice', voiceName?: string, customInstructions?: string) => {
+    setTestingAgentId(agentId);
+    setTestResults((prev) => {
+      const updated = { ...prev };
+      delete updated[agentId];
+      return updated;
+    });
+
+    try {
+      const res = await fetch('/api/agents/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, type, voiceName, customInstructions }),
+      });
+      const data = await res.json();
+      setTestResults((prev) => ({
+        ...prev,
+        [agentId]: { success: data.success, message: data.message },
+      }));
+
+      if (!data.success) {
+        setTestErrorModal({
+          agentName: agentId,
+          error: data.message || 'Falha de requisição desconhecida.',
+        });
+      }
+    } catch (err: any) {
+      const errMsg = err.message || String(err);
+      setTestResults((prev) => ({
+        ...prev,
+        [agentId]: { success: false, message: errMsg },
+      }));
+      setTestErrorModal({
+        agentName: agentId,
+        error: `Falha ao tentar conectar com o servidor: ${errMsg}`,
+      });
+    } finally {
+      setTestingAgentId(null);
+    }
+  };
+
+  const defaultProgrammingPairs = [
     {
       role: 'Principal / Orchestrator',
       id: 'principal',
@@ -98,18 +147,6 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
     }
   };
 
-  const handleModelChange = async (agentId: string, newModel: string) => {
-    const targetAgent = agents.find((a) => a.id.toLowerCase() === agentId.toLowerCase());
-    if (targetAgent && onSaveAgent) {
-      await onSaveAgent({
-        ...targetAgent,
-        model: newModel,
-      });
-      setSavedAgentId(agentId);
-      setTimeout(() => setSavedAgentId(null), 2500);
-    }
-  };
-
   const handleSelectPrimary = (agentId: string) => {
     if (onSelectAgent) {
       const match = agents.find((a) => a.id.toLowerCase() === agentId.toLowerCase());
@@ -121,110 +158,54 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
     }
   };
 
-  const sections = [
-    {
-      group: 'stable',
-      title: '1. Modelos Estáveis (Produção)',
-      icon: Cpu,
-      desc: 'Modelos de produção estáveis para geração de texto, raciocínio, auditoria e tarefas do sistema.',
-      priorityNote: 'Prioridade recomendada: 3.8 Flash → 3.7 → 3.6 → 3.5 → 3 → 3.1 Flash Lite → 2.5 Flash → 2.5 Flash Lite → 3.5 Flash Lite.',
-    },
-    {
-      group: 'preview',
-      title: '2. Modelos Preview & Especializados',
-      icon: Boxes,
-      desc: 'Modelos preview de raciocínio avançado, geração e edição de imagens, geração de vídeos, geração musical e robótica.',
-      subdivisions: [
-        { label: 'Raciocínio & STEM', chain: 'gemini-3.1-pro-preview' },
-        { label: 'Geração de Imagens', chain: 'gemini-3.1-flash-image (Nano Banana 2) → gemini-3.1-flash-lite-image → gemini-3-pro-image' },
-        { label: 'Geração de Vídeo', chain: 'veo-3.1-generate-preview (4K) → veo-3.1-lite-generate-preview (1080p)' },
-        { label: 'Geração Musical', chain: 'lyria-3-clip-preview (30s) → lyria-3-pro-preview (completo)' },
-        { label: 'Embodied AI / Robótica', chain: 'gemini-robotics-er-2-preview' },
-      ],
-    },
-    {
-      group: 'audio',
-      title: '3. Áudio, Voz e API Live',
-      icon: Mic,
-      desc: 'Modelos oficiais para transcrição STT, síntese TTS e sessões contínuas via Live API.',
-      subdivisions: [
-        { label: 'Transcrição STT', chain: 'gemini-3.5-transcribe (estático) → gemini-3.5-transcribe-live (ao vivo)' },
-        { label: 'Síntese de Voz TTS', chain: 'gemini-3.1-flash-tts-preview (Kore, Puck, Charon, Fenrir, Zephyr)' },
-        { label: 'Live API em Tempo Real', chain: 'gemini-3.8-live → gemini-3.8-live-extended-thinking' },
-        { label: 'Tradução Simultânea', chain: 'gemini-3.5-transcribe-live (Live API)' },
-      ],
-    },
-    {
-      group: 'embeddings',
-      title: '4. Embeddings & Busca Semântica',
-      icon: Database,
-      desc: 'Representação vetorial densa para indexação de código, RAG e busca semântica.',
-      priorityNote: 'Ordem de preferência: gemini-embedding-2-preview → text-embedding-004',
-    },
-    {
-      group: 'agents',
-      title: '5. Agentes & Automação',
-      icon: Bot,
-      desc: 'Motores nativos dedicados para agentes autônomos e fluxos contínuos de desenvolvimento e pesquisa.',
-      subdivisions: [
-        { label: 'Automação & Orquestração', chain: 'antigravity (motor autônomo nativo)' },
-        { label: 'Pesquisa Analítica', chain: 'deep-research (investigações aprofundadas multi-fonte)' },
-      ],
-    },
-    {
-      group: 'gemma',
-      title: '6. Modelos Abertos (Gemma)',
-      icon: Binary,
-      desc: 'Pesos abertos para inferência local de alto desempenho e auditoria descentralizada.',
-      subdivisions: [
-        { label: 'Alta Densidade', chain: 'gemma-4-31b' },
-        { label: 'Balanceado', chain: 'gemma-4-26b' },
-      ],
-    },
-  ];
-
   const handleReset = async () => {
     await onResetDefaultAgentsConfig();
     setResetSuccess(true);
     setTimeout(() => setResetSuccess(false), 3000);
   };
 
+  const sections = [
+    {
+      group: 'stable',
+      title: '1. Texto, Chat e Raciocínio',
+      icon: Cpu,
+      priorityNote: 'Prioridade prática de uso: Gemini 3.8 Flash → 3.7 → 3.6 → 3.5 → 3 → 3.1 Flash Lite → 2.5 Flash → 2.5 Flash Lite → 3.5 Flash Lite.',
+    },
+    {
+      group: 'audio',
+      title: '2. Voz, Transcrição, Tradução e Áudio em Tempo Real',
+      icon: Mic,
+    },
+  ];
+
+  const activeSttAgentId = audioSettings?.activeSttAgentId || (voiceAgents[0]?.id || 'agent_narrador_oficial');
+  const backupSttAgentId = audioSettings?.backupSttAgentId || (voiceAgents[1]?.id || voiceAgents[0]?.id || '');
+
+  // Strict rule: Only agents created with valid TTS models (gemini-2.5-flash, gemini-2.0-flash, browser-native) appear in the TTS Narrador dropdown
+  const ttsOnlyVoiceAgents = voiceAgents.filter((agent) => {
+    const model = (agent.config?.model || '').toLowerCase();
+    return agent.type === 'narrator' || agent.type === 'hybrid' || model.includes('2.5-flash') || model.includes('2.0-flash') || model.includes('browser-native');
+  });
+  const displayTtsAgents = ttsOnlyVoiceAgents.length > 0 ? ttsOnlyVoiceAgents : voiceAgents;
+
+  const activeTtsAgentId = audioSettings?.activeTtsAgentId || (displayTtsAgents[0]?.id || 'agent_narrador_oficial');
+  const backupTtsAgentId = audioSettings?.backupTtsAgentId || (displayTtsAgents[1]?.id || displayTtsAgents[0]?.id || '');
+
   return (
-    <div className="space-y-4">
-      {/* Top Banner: Compact Agent & Failover Manager */}
-      <div className="p-3 sm:p-4 rounded-xl border border-blue-200/80 dark:border-blue-900/50 bg-blue-50/40 dark:bg-blue-950/20 space-y-3 shadow-2xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+    <div className="space-y-6">
+      {/* Painel Superior: Atribuição de Agentes Titulares e Reservas */}
+      <div className="p-4 rounded-2xl border border-blue-200/80 dark:border-blue-900/50 bg-blue-50/40 dark:bg-blue-950/20 space-y-4 shadow-2xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
             <div>
               <h4 className="text-xs font-bold text-blue-900 dark:text-blue-200">
-                Agentes Titulares & Auto-Fallback Reserva
+                Mapeamento de Agentes Titulares & Reservas (Programação e Voz)
               </h4>
               <p className="text-[11px] text-blue-700/80 dark:text-blue-300/70">
-                Selecione o agente principal e configure o agente reserva para failover em erros 429/500/503.
+                Selecione os agentes responsáveis e seus respectivos backups para cada função do sistema.
               </p>
             </div>
-          </div>
-        </div>
-
-        {/* Top Control Bar: Active Titular Agent Selector & Reset Button */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-1 pb-2 border-b border-blue-100 dark:border-blue-900/40">
-          <div className="flex items-center gap-2 flex-1 max-w-md">
-            <Bot className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
-            <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200 shrink-0">
-              Agente Titular:
-            </span>
-            <select
-              value={selectedAgentId || 'principal'}
-              onChange={(e) => handleSelectPrimary(e.target.value)}
-              className="w-full bg-white dark:bg-zinc-900 border border-blue-300 dark:border-blue-700/80 rounded-lg py-1 px-2 text-xs font-semibold text-blue-700 dark:text-blue-300 outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-2xs"
-            >
-              {(agents && agents.length > 0 ? agents : defaultAgentPairs.map(d => ({ id: d.id, name: d.id, displayName: d.role, model: d.primaryModel }))).map((ag) => (
-                <option key={ag.id} value={ag.id}>
-                  {ag.displayName || ag.name} — Modelo: {ag.model}
-                </option>
-              ))}
-            </select>
           </div>
 
           <button
@@ -239,15 +220,16 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
         </div>
 
         {resetSuccess && (
-          <div className="px-2.5 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs flex items-center gap-2 animate-fadeIn">
+          <div className="px-3 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs flex items-center gap-2">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <span>Configurações e agentes reservas salvos com sucesso (.gemini/agents/*.md)!</span>
+            <span>Configurações dos agentes restauradas com sucesso!</span>
           </div>
         )}
 
-        {/* 6 Compact Agent Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-0.5">
-          {defaultAgentPairs.map((item) => {
+        {/* 8 Cards Padronizados de Agentes (6 Programação + 2 Voz) */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          {/* 6 Cards de Agentes de Programação */}
+          {defaultProgrammingPairs.map((item) => {
             const currentAgent = agents.find(
               (a) => a.id.toLowerCase() === item.id.toLowerCase() || a.name.toLowerCase() === item.id.toLowerCase()
             );
@@ -256,12 +238,20 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
               selectedAgentId?.toLowerCase() === item.id.toLowerCase() ||
               selectedAgentId?.toLowerCase() === currentAgent?.id?.toLowerCase();
 
+            // Find dynamic quota from catalog in real-time
+            const matchedModel = MODELS_CATALOG.find(
+              (m) => m.id === currentAgent?.model || m.id === item.primaryModel
+            );
+            const dynamicQuota = matchedModel
+              ? `${matchedModel.rpm} RPM / ${matchedModel.rpd} RPD`
+              : item.quota;
+
             return (
               <div
                 key={item.role}
-                className={`p-3 rounded-lg transition-all border shadow-2xs flex flex-col justify-between space-y-2 relative group ${
+                className={`p-3.5 rounded-xl transition-all border shadow-2xs flex flex-col justify-between space-y-3 relative ${
                   isCurrentActive
-                    ? 'bg-blue-50/60 dark:bg-blue-950/30 border-blue-400 dark:border-blue-600 ring-1 ring-blue-500/30'
+                    ? 'bg-blue-50/70 dark:bg-blue-950/40 border-blue-400 dark:border-blue-600 ring-1 ring-blue-500/30'
                     : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800'
                 }`}
               >
@@ -272,8 +262,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                   </div>
                 )}
 
-                {/* Header & Primary Action */}
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <div className="flex items-center justify-between gap-1.5">
                     <div className="flex items-center gap-1.5 min-w-0">
                       <button
@@ -288,23 +277,21 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                         <Radio className={`w-2.5 h-2.5 ${isCurrentActive ? 'text-white' : 'text-zinc-400'}`} />
                         <span>{isCurrentActive ? 'Ativo' : 'Usar'}</span>
                       </button>
-                      <span className="font-semibold text-xs text-zinc-900 dark:text-zinc-100 truncate">{item.role}</span>
+                      <span className="font-bold text-xs text-zinc-900 dark:text-zinc-100 truncate">{item.role}</span>
                     </div>
 
-                    <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 shrink-0">
-                      {item.id}
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 shrink-0 font-bold border border-blue-200/50 dark:border-blue-800/50">
+                      {dynamicQuota}
                     </span>
                   </div>
 
-                  {/* Assigned Agent Select */}
-                  <div className="space-y-0.5">
+                  <div className="space-y-1">
                     <div className="flex items-center justify-between text-[10px]">
-                      <span className="text-zinc-500 dark:text-zinc-400">Agente Atribuído:</span>
-                      <span className="text-zinc-400 font-mono text-[9px]">{currentAgent?.model || item.primaryModel}</span>
+                      <span className="text-zinc-500 dark:text-zinc-400 font-semibold">Agente Atribuído:</span>
                     </div>
 
                     <select
-                      className="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-md py-1 px-1.5 text-[11px] font-medium text-blue-700 dark:text-blue-300 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                      className="w-full bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg py-1.5 px-2 text-[11px] font-semibold text-blue-700 dark:text-blue-300 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
                       value={currentAgent?.id || item.id}
                       onChange={(e) => {
                         const targetId = e.target.value;
@@ -320,20 +307,14 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                   </div>
                 </div>
 
-                {/* Backup / Fallback Box */}
-                <div className="p-2 rounded-md bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/30 space-y-1">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <div className="flex items-center gap-1 text-amber-800 dark:text-amber-300 font-semibold">
-                      <ShieldCheck className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
-                      <span>Agente Reserva</span>
-                    </div>
-                    <span className="text-[8px] font-medium px-1 rounded bg-amber-200/50 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200">
-                      Auto-Fallback
-                    </span>
+                <div className="p-2 rounded-lg bg-amber-50/40 dark:bg-amber-950/25 border border-amber-200/50 dark:border-amber-900/30 space-y-1">
+                  <div className="flex items-center gap-1 text-amber-800 dark:text-amber-300 text-[10px] font-bold">
+                    <ShieldCheck className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span>Agente Reserva (Auto-Fallback)</span>
                   </div>
 
                   <select
-                    className="w-full bg-white dark:bg-zinc-900 border border-amber-300/80 dark:border-amber-800/60 rounded py-0.5 px-1.5 text-[10px] font-medium text-zinc-800 dark:text-zinc-200 outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
+                    className="w-full bg-white dark:bg-zinc-900 border border-amber-300/60 dark:border-amber-800/50 rounded-md py-1 px-1.5 text-[10px] font-medium text-zinc-800 dark:text-zinc-200 outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
                     value={activeBackupId}
                     onChange={(e) => handleBackupChange(item.id, e.target.value)}
                   >
@@ -346,31 +327,268 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                       ))}
                   </select>
                 </div>
+
+                {/* Botão de Teste Único de Chamada de API */}
+                <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800/80 flex items-center justify-between gap-1">
+                  <button
+                    type="button"
+                    disabled={testingAgentId !== null}
+                    onClick={() =>
+                      handleTestAgent(
+                        item.role,
+                        currentAgent?.model || item.primaryModel,
+                        'programming'
+                      )
+                    }
+                    className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 text-[10px] font-bold cursor-pointer transition flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {testingAgentId === item.role ? 'Testando...' : 'Testar Conexão'}
+                  </button>
+
+                  {testResults[item.role] && (
+                    <span
+                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        testResults[item.role].success
+                          ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                          : 'bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
+                      }`}
+                      title={testResults[item.role].message}
+                    >
+                      {testResults[item.role].success ? '✅ Conectado' : '❌ Falhou'}
+                    </span>
+                  )}
+                </div>
               </div>
             );
           })}
+
+          {/* CARD 7: AGENTE TRANSCRITOR (STT) - PADRONIZADO */}
+          {(() => {
+            const assignedSttAgent = voiceAgents.find(v => v.id === activeSttAgentId) || voiceAgents[0];
+            const sttMatchedModel = MODELS_CATALOG.find(m => m.id === assignedSttAgent?.config?.model);
+            const sttDynamicQuota = sttMatchedModel ? `${sttMatchedModel.rpm} RPM / ${sttMatchedModel.rpd} RPD` : '150 RPM / 500 RPD';
+
+            return (
+              <div className="p-3.5 rounded-xl transition-all border border-blue-500/40 bg-gradient-to-br from-blue-500/10 via-zinc-50 to-white dark:from-blue-950/30 dark:via-zinc-900 dark:to-zinc-900 shadow-2xs flex flex-col justify-between space-y-3">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <div className="p-1 rounded bg-blue-500/10 text-blue-500">
+                        <Mic className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="font-bold text-xs text-zinc-900 dark:text-zinc-100">Transcritor (STT)</span>
+                    </div>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-700 dark:text-blue-300 font-bold">
+                      {sttDynamicQuota}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-zinc-500 dark:text-zinc-400 font-semibold">Agente Atribuído:</span>
+                    </div>
+
+                    <select
+                      value={activeSttAgentId}
+                      onChange={(e) => onUpdateAudioSettings && onUpdateAudioSettings({ activeSttAgentId: e.target.value })}
+                      className="w-full bg-white dark:bg-zinc-900 border border-blue-400 dark:border-blue-700 rounded-lg py-1.5 px-2 text-[11px] font-bold text-blue-700 dark:text-blue-300 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                    >
+                      {voiceAgents.length > 0 ? (
+                        voiceAgents.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            🎤 {v.name} ({v.config.baseGeminiVoice || 'Kore'})
+                          </option>
+                        ))
+                      ) : (
+                        <option value="agent_narrador_oficial">🎤 Narrador Oficial (Kore)</option>
+                      )}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 space-y-1">
+                  <div className="flex items-center gap-1 text-amber-800 dark:text-amber-300 text-[10px] font-bold">
+                    <ShieldCheck className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span>Agente Reserva (Auto-Fallback)</span>
+                  </div>
+
+                  <select
+                    value={backupSttAgentId}
+                    onChange={(e) => onUpdateAudioSettings && onUpdateAudioSettings({ backupSttAgentId: e.target.value })}
+                    className="w-full bg-white dark:bg-zinc-900 border border-amber-300/80 dark:border-amber-800/60 rounded-md py-1 px-1.5 text-[10px] font-medium text-zinc-800 dark:text-zinc-200 outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
+                  >
+                    {voiceAgents.length > 0 ? (
+                      voiceAgents.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          🎤 {v.name} ({v.config.baseGeminiVoice || 'Kore'})
+                        </option>
+                      ))
+                    ) : (
+                      <option value="agent_narrador_oficial">🎤 Narrador Oficial (Kore)</option>
+                    )}
+                  </select>
+                </div>
+
+                {/* Botão de Teste Único */}
+                <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800/85 flex items-center justify-between gap-1">
+                  <button
+                    type="button"
+                    disabled={testingAgentId !== null}
+                    onClick={() =>
+                      handleTestAgent(
+                        'Transcritor (STT)',
+                        assignedSttAgent?.config?.model || 'gemini-3.5-flash',
+                        'programming',
+                        assignedSttAgent?.config?.baseGeminiVoice,
+                        assignedSttAgent?.config?.promptStt
+                      )
+                    }
+                    className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 dark:bg-blue-950 dark:hover:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-[10px] font-bold cursor-pointer transition flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {testingAgentId === 'Transcritor (STT)' ? 'Testando...' : 'Testar STT'}
+                  </button>
+
+                  {testResults['Transcritor (STT)'] && (
+                    <span
+                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        testResults['Transcritor (STT)'].success
+                          ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                          : 'bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
+                      }`}
+                      title={testResults['Transcritor (STT)'].message}
+                    >
+                      {testResults['Transcritor (STT)'].success ? '✅ OK' : '❌ Falhou'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* CARD 8: AGENTE NARRADOR (TTS) - PADRONIZADO */}
+          {(() => {
+            const assignedTtsAgent = displayTtsAgents.find(v => v.id === activeTtsAgentId) || displayTtsAgents[0] || voiceAgents[0];
+            const ttsMatchedModel = MODELS_CATALOG.find(m => m.id === assignedTtsAgent?.config?.model);
+            const ttsDynamicQuota = ttsMatchedModel ? `${ttsMatchedModel.rpm} RPM / ${ttsMatchedModel.rpd} RPD` : '30 RPM / 106 RPD';
+
+            return (
+              <div className="p-3.5 rounded-xl transition-all border border-emerald-500/40 bg-gradient-to-br from-emerald-500/10 via-zinc-50 to-white dark:from-emerald-950/30 dark:via-zinc-900 dark:to-zinc-900 shadow-2xs flex flex-col justify-between space-y-3">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <div className="p-1 rounded bg-emerald-500/10 text-emerald-500">
+                        <Volume2 className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="font-bold text-xs text-zinc-900 dark:text-zinc-100">Narrador (TTS)</span>
+                    </div>
+                    <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-bold">
+                      {ttsDynamicQuota}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-zinc-500 dark:text-zinc-400 font-semibold">Agente Atribuído:</span>
+                    </div>
+
+                    <select
+                      value={activeTtsAgentId}
+                      onChange={(e) => onUpdateAudioSettings && onUpdateAudioSettings({ activeTtsAgentId: e.target.value })}
+                      className="w-full bg-white dark:bg-zinc-900 border border-emerald-400 dark:border-emerald-700 rounded-lg py-1.5 px-2 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                    >
+                      {displayTtsAgents.length > 0 ? (
+                        displayTtsAgents.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            🎭 {v.name} ({v.config.baseGeminiVoice || 'Kore'})
+                          </option>
+                        ))
+                      ) : (
+                        <option value="agent_narrador_oficial">🎭 Narrador Oficial (Kore)</option>
+                      )}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 space-y-1">
+                  <div className="flex items-center gap-1 text-amber-800 dark:text-amber-300 text-[10px] font-bold">
+                    <ShieldCheck className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span>Agente Reserva (Auto-Fallback)</span>
+                  </div>
+
+                  <select
+                    value={backupTtsAgentId}
+                    onChange={(e) => onUpdateAudioSettings && onUpdateAudioSettings({ backupTtsAgentId: e.target.value })}
+                    className="w-full bg-white dark:bg-zinc-900 border border-amber-300/80 dark:border-amber-800/60 rounded-md py-1 px-1.5 text-[10px] font-medium text-zinc-800 dark:text-zinc-200 outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
+                  >
+                    {displayTtsAgents.length > 0 ? (
+                      displayTtsAgents.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          🎭 {v.name} ({v.config.baseGeminiVoice || 'Kore'})
+                        </option>
+                      ))
+                    ) : (
+                      <option value="agent_narrador_oficial">🎭 Narrador Oficial (Kore)</option>
+                    )}
+                  </select>
+                </div>
+
+                {/* Botão de Teste Único */}
+                <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800/85 flex items-center justify-between gap-1">
+                  <button
+                    type="button"
+                    disabled={testingAgentId !== null}
+                    onClick={() =>
+                      handleTestAgent(
+                        'Narrador (TTS)',
+                        assignedTtsAgent?.config?.model || 'gemini-2.5-flash',
+                        'voice',
+                        assignedTtsAgent?.config?.baseGeminiVoice || 'Kore',
+                        assignedTtsAgent?.config?.promptTts
+                      )
+                    }
+                    className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold cursor-pointer transition flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {testingAgentId === 'Narrador (TTS)' ? 'Testando...' : 'Testar TTS'}
+                  </button>
+
+                  {testResults['Narrador (TTS)'] && (
+                    <span
+                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        testResults['Narrador (TTS)'].success
+                          ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                          : 'bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
+                      }`}
+                      title={testResults['Narrador (TTS)'].message}
+                    >
+                      {testResults['Narrador (TTS)'].success ? '✅ OK' : '❌ Falhou'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </div>
 
-      {/* Category Tabs */}
+      {/* Abas de Categoria */}
       <div className="flex gap-1 overflow-x-auto pb-1 border-b border-zinc-200 dark:border-zinc-800">
         <button
           onClick={() => setActiveCategoryTab('all')}
-          className={`px-2.5 py-1 rounded-md text-xs font-medium whitespace-nowrap transition cursor-pointer ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition cursor-pointer ${
             activeCategoryTab === 'all'
-              ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+              ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-xs'
               : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800'
           }`}
         >
-          Todos ({MODELS_CATALOG.length})
+          Todos os Modelos ({MODELS_CATALOG.length})
         </button>
         {sections.map((sec) => (
           <button
             key={sec.group}
             onClick={() => setActiveCategoryTab(sec.group)}
-            className={`px-2.5 py-1 rounded-md text-xs font-medium whitespace-nowrap transition cursor-pointer ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition cursor-pointer ${
               activeCategoryTab === sec.group
-                ? 'bg-blue-600 text-white shadow-2xs'
+                ? 'bg-blue-600 text-white shadow-xs'
                 : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800'
             }`}
           >
@@ -379,7 +597,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
         ))}
       </div>
 
-      {/* Sections Table View */}
+      {/* Tabelas de Modelos */}
       {sections
         .filter((sec) => activeCategoryTab === 'all' || activeCategoryTab === sec.group)
         .map((sec) => {
@@ -388,50 +606,39 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
           return (
             <div
               key={sec.group}
-              className="border border-zinc-200 dark:border-zinc-800 rounded-lg overflow-hidden bg-white dark:bg-zinc-900 shadow-2xs"
+              className="border border-zinc-200 dark:border-zinc-800 rounded-2xl overflow-hidden bg-white dark:bg-zinc-900 shadow-2xs"
             >
-              <div className="px-3 py-2 bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-2">
+              <div className="px-4 py-3 bg-zinc-50/80 dark:bg-zinc-800/50 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <Icon className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-                  <h5 className="font-semibold text-xs text-zinc-900 dark:text-zinc-100">
+                  <Icon className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                  <h5 className="font-bold text-xs text-zinc-900 dark:text-zinc-100">
                     {sec.title}
                   </h5>
                 </div>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300">
+                <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300 font-bold">
                   {sectionModels.length} modelos
                 </span>
               </div>
 
               {sec.priorityNote && (
-                <div className="bg-amber-50/60 dark:bg-amber-950/20 border-b border-amber-200/40 dark:border-amber-900/40 px-3 py-1.5 text-[11px] text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
-                  <Info className="w-3 h-3 text-amber-600 shrink-0" />
+                <div className="bg-amber-50/80 dark:bg-amber-950/30 border-b border-amber-200/60 dark:border-amber-900/40 px-4 py-2.5 text-xs text-amber-900 dark:text-amber-200 flex items-center gap-2 font-medium">
+                  <Info className="w-4 h-4 text-amber-600 shrink-0" />
                   <span>{sec.priorityNote}</span>
                 </div>
               )}
 
-              {sec.subdivisions && (
-                <div className="bg-emerald-50/40 dark:bg-emerald-950/15 border-b border-emerald-200/40 dark:border-emerald-900/40 p-2 text-xs grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                  {sec.subdivisions.map((sub, idx) => (
-                    <div key={idx} className="bg-white/80 dark:bg-zinc-800/80 px-2 py-1 rounded border border-emerald-200/30 dark:border-emerald-800/30 text-[11px]">
-                      <span className="font-medium text-emerald-800 dark:text-emerald-300">{sub.label}: </span>
-                      <span className="font-mono text-zinc-600 dark:text-zinc-400">{sub.chain}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Table */}
+              {/* Tabela de Modelos */}
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
-                    <tr className="bg-zinc-100/40 dark:bg-zinc-800/30 text-zinc-600 dark:text-zinc-400 font-semibold border-b border-zinc-200 dark:border-zinc-800 text-[11px]">
-                      <th className="py-1.5 px-2.5 text-center w-12">#</th>
-                      <th className="py-1.5 px-2.5">Modelo</th>
-                      <th className="py-1.5 px-2.5 text-center w-20">RPM</th>
-                      <th className="py-1.5 px-2.5 text-center w-20">TPM</th>
-                      <th className="py-1.5 px-2.5 text-center w-20">RPD</th>
-                      <th className="py-1.5 px-2.5 text-center w-20">Tipo</th>
-                      <th className="py-1.5 px-2.5">Descrição</th>
+                    <tr className="bg-zinc-100/60 dark:bg-zinc-800/40 text-zinc-600 dark:text-zinc-400 font-bold border-b border-zinc-200 dark:border-zinc-800 text-[11px]">
+                      <th className="py-2.5 px-3 text-center w-12">#</th>
+                      <th className="py-2.5 px-3">Modelo</th>
+                      <th className="py-2.5 px-3 text-center w-24">RPM</th>
+                      <th className="py-2.5 px-3 text-center w-24">TPM</th>
+                      <th className="py-2.5 px-3 text-center w-24">RPD</th>
+                      <th className="py-2.5 px-3 text-center w-28">Categoria</th>
+                      <th className="py-2.5 px-3">Descrição</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800/60">
@@ -440,12 +647,12 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                         key={item.id}
                         className="hover:bg-zinc-50/80 dark:hover:bg-zinc-800/30 transition text-[11px]"
                       >
-                        <td className="py-1.5 px-2.5 text-center font-mono text-zinc-400">
+                        <td className="py-2.5 px-3 text-center font-mono text-zinc-400 font-bold">
                           {item.order}
                         </td>
-                        <td className="py-1.5 px-2.5">
+                        <td className="py-2.5 px-3">
                           <div className="flex flex-col">
-                            <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                            <span className="font-bold text-zinc-900 dark:text-zinc-100">
                               {item.name}
                             </span>
                             <span className="font-mono text-[10px] text-zinc-400">
@@ -453,42 +660,39 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                             </span>
                           </div>
                         </td>
-                        <td className="py-1.5 px-2.5 text-center font-mono text-[10px] text-zinc-600 dark:text-zinc-400">
+                        <td className="py-2.5 px-3 text-center font-mono text-[10px] text-zinc-700 dark:text-zinc-300 font-semibold">
                           {item.rpm}
                         </td>
-                        <td className="py-1.5 px-2.5 text-center font-mono text-[10px] text-zinc-600 dark:text-zinc-400">
+                        <td className="py-2.5 px-3 text-center font-mono text-[10px] text-zinc-700 dark:text-zinc-300 font-semibold">
                           {item.tpm}
                         </td>
-                        <td className="py-1.5 px-2.5 text-center font-mono text-[10px] text-zinc-600 dark:text-zinc-400">
+                        <td className="py-2.5 px-3 text-center font-mono text-[10px] text-zinc-700 dark:text-zinc-300 font-semibold">
                           {item.rpd}
                         </td>
-                        <td className="py-1.5 px-2.5 text-center">
+                        <td className="py-2.5 px-3 text-center">
                           <span
-                            className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-medium ${
-                              item.category === 'Estável'
+                            className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                              item.category === 'Txt Out'
                                 ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300'
-                                : item.category === 'Preview'
-                                ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300'
                                 : item.category === 'API Live'
                                 ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
-                                : item.category === 'Áudio'
-                                ? 'bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300'
-                                : item.category === 'Embeddings'
-                                ? 'bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300'
-                                : item.category === 'Agents'
+                                : item.category === 'Multimod'
                                 ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300'
-                                : item.category === 'Gemma'
-                                ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300'
                                 : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
                             }`}
                           >
                             {item.category}
                           </span>
                         </td>
-                        <td className="py-1.5 px-2.5 text-zinc-500 dark:text-zinc-400">
+                        <td className="py-2.5 px-3 text-zinc-600 dark:text-zinc-300 leading-relaxed">
                           {item.recommendedRole && (
-                            <span className="text-blue-600 dark:text-blue-400 font-medium mr-1.5">
+                            <span className="text-blue-600 dark:text-blue-400 font-bold mr-1.5">
                               [Padrão: {item.recommendedRole}]
+                            </span>
+                          )}
+                          {item.subFunction && (
+                            <span className="text-emerald-600 dark:text-emerald-400 font-bold mr-1.5">
+                              [{item.subFunction}]
                             </span>
                           )}
                           {item.description}
@@ -501,6 +705,41 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
             </div>
           );
         })}
+
+      {/* Modal Overlay para Notificação de Falha de Conexão */}
+      {testErrorModal && (
+        <div className="fixed inset-0 bg-black/65 flex items-center justify-center p-4 z-55 animate-fade-in backdrop-blur-xs">
+          <div className="bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-full bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 shrink-0">
+                <Info className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
+                  Falha no Teste do Agente
+                </h4>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  A requisição de verificação de conexão única para o modelo do agente <strong>{testErrorModal.agentName}</strong> falhou.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-rose-50/50 dark:bg-rose-950/15 border border-rose-100 dark:border-rose-900/40 rounded-xl max-h-48 overflow-y-auto text-[11px] font-mono text-rose-700 dark:text-rose-300 whitespace-pre-wrap leading-relaxed">
+              {testErrorModal.error}
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setTestErrorModal(null)}
+                className="px-4 py-2 rounded-xl bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-xs font-bold hover:opacity-90 cursor-pointer transition shadow-sm"
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

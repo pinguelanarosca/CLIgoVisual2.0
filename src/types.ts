@@ -331,7 +331,9 @@ export interface AudioSettings {
   ttsInstructions?: string;
   savedVoicePresets: VoicePreset[];
   activeTtsAgentId?: string;
+  backupTtsAgentId?: string;
   activeSttAgentId?: string;
+  backupSttAgentId?: string;
   directorConfig?: any;
   audioModelStatus: {
     sttAvailable: boolean;

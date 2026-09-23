@@ -26,12 +26,18 @@ export async function generateTtsPreviewAudio(
       }),
     });
 
-    if (response.ok) {
+    const contentType = response.headers.get('content-type') || '';
+    if (response.ok && contentType.includes('application/json')) {
       const data = await response.json();
       if (data.audioBase64) {
         const audioUrl = `data:audio/mp3;base64,${data.audioBase64}`;
         return { audioUrl, audioBase64: data.audioBase64 };
       }
+      if (data.error) {
+        console.warn('Servidor TTS retornou mensagem:', data.error);
+      }
+    } else {
+      console.warn(`Resposta do servidor TTS não foi JSON válido (${response.status} ${response.statusText}). Utilizando síntese local.`);
     }
   } catch (err: any) {
     console.error('Erro na geração de preview TTS:', err);

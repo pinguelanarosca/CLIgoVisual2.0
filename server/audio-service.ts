@@ -32,23 +32,27 @@ function getGenAiClient(customApiKey?: string, customApiUrl?: string): GoogleGen
 // Production stable models (high limit, 1500 req/day) are 1st and 2nd.
 // 20 requests/day preview/experimental models are strictly 3rd and 4th.
 const FALLBACK_CHAIN: Record<string, string> = {
-  'gemini-2.5-flash': 'gemini-1.5-flash',
-  'gemini-1.5-flash': 'gemini-3.5-flash-lite',
+  'gemini-2.5-flash': 'gemini-2.0-flash',
+  'gemini-2.0-flash': 'gemini-1.5-flash',
+  'gemini-3.1-flash-lite': 'gemini-3.5-flash-lite',
   'gemini-3.5-flash-lite': 'gemini-3.5-flash',
-  'gemini-3.5-flash': 'gemini-3.6-flash',
-  'gemini-3.1-flash-tts': 'gemini-2.5-flash',
-  'gemini-3.5-transcribe': 'gemini-2.5-flash',
+  'gemini-3.5-flash': 'gemini-3.8-flash',
+  'gemini-3.8-flash': 'gemini-3.6-flash',
+  'gemini-3.6-flash': 'gemini-2.5-flash',
+  'gemini-1.5-flash': 'gemini-2.5-flash',
 };
 
 export function normalizeAudioModel(rawModel?: string): string {
   if (!rawModel || rawModel === 'auto') return 'gemini-2.5-flash';
   const m = rawModel.trim().toLowerCase();
+  if (m.includes('tts') || m.includes('audio') || m.includes('narrador')) return 'gemini-2.5-flash';
+  if (m.includes('3.1-flash-lite')) return 'gemini-3.1-flash-lite';
+  if (m.includes('3.5-flash-lite')) return 'gemini-3.5-flash-lite';
+  if (m.includes('3.8-flash')) return 'gemini-3.8-flash';
+  if (m.includes('3.6-flash')) return 'gemini-3.6-flash';
+  if (m.includes('3.5-flash')) return 'gemini-3.5-flash';
   if (m.includes('2.5-flash') || m.includes('2.5')) return 'gemini-2.5-flash';
   if (m.includes('1.5-flash') || m.includes('1.5')) return 'gemini-1.5-flash';
-  if (m.includes('3.5-flash-lite')) return 'gemini-3.5-flash-lite';
-  if (m.includes('3.5-flash')) return 'gemini-3.5-flash';
-  if (m.includes('3.1-flash-tts')) return 'gemini-3.1-flash-tts';
-  if (m.includes('3.6-flash')) return 'gemini-3.6-flash';
   return 'gemini-2.5-flash';
 }
 

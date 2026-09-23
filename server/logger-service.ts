@@ -6,17 +6,23 @@ import { SystemLogEntry, SystemLogLevel, SystemLogCategory } from '../src/types.
 
 const MAX_LOGS = 3000;
 const LOG_DIR = path.join(os.homedir(), '.local', 'share', 'gemini-gui', 'logs');
+const WORKSPACE_LOG_DIR = path.resolve('./logs');
 const LOG_FILE = path.join(LOG_DIR, 'system-logs.json');
 const APPEND_LOG_FILE = path.join(LOG_DIR, 'system-logs.log');
 const APP_DEBUG_LOG_FILE = path.join(LOG_DIR, 'app-debug.log');
+const WORKSPACE_LOG_FILE = path.join(WORKSPACE_LOG_DIR, 'system-logs.log');
+const WORKSPACE_CRASH_LOG_FILE = path.join(WORKSPACE_LOG_DIR, 'crash-debug.log');
 
-// Ensure log directory exists
+// Ensure log directories exist synchronously
 try {
   if (!fs.existsSync(LOG_DIR)) {
     fs.mkdirSync(LOG_DIR, { recursive: true });
   }
+  if (!fs.existsSync(WORKSPACE_LOG_DIR)) {
+    fs.mkdirSync(WORKSPACE_LOG_DIR, { recursive: true });
+  }
 } catch (e) {
-  console.error('Erro ao criar diretório de logs:', e);
+  console.error('Erro ao criar diretórios de logs:', e);
 }
 
 // Load initial logs from disk if available
@@ -114,6 +120,10 @@ export function addLog(
     const line = `[${entry.formattedDateTime}] [${entry.level.toUpperCase().padEnd(7)}] [${entry.category.padEnd(8)}]${srcStr} ${entry.message}${detailsStr}\n`;
     fs.appendFileSync(APPEND_LOG_FILE, line, 'utf8');
     fs.appendFileSync(APP_DEBUG_LOG_FILE, line, 'utf8');
+    fs.appendFileSync(WORKSPACE_LOG_FILE, line, 'utf8');
+    if (entry.level === 'error' || entry.category === 'AGENT' || entry.category === 'CLI') {
+      fs.appendFileSync(WORKSPACE_CRASH_LOG_FILE, line, 'utf8');
+    }
   } catch {}
 
   scheduleSaveToDisk();

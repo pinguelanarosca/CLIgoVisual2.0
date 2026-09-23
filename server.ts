@@ -505,6 +505,89 @@ priority = 90
     res.json({ success: ok, agents: loadAgents() });
   });
 
+  app.post('/api/agents/test', async (req, res) => {
+    const { model, type, voiceName, customInstructions } = req.body;
+    
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY;
+    if (!apiKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'A chave de API do Gemini (GEMINI_API_KEY) não está configurada nas variáveis de ambiente (.env).'
+      });
+    }
+
+    try {
+      const { GoogleGenAI, Modality } = await import('@google/genai');
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+      const targetModel = model || 'gemini-2.5-flash';
+      const start = Date.now();
+
+      if (type === 'voice' || type === 'narrator') {
+        const validVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
+        const chosenVoice = validVoices.includes(voiceName) ? voiceName : 'Kore';
+        
+        const response = await ai.models.generateContent({
+          model: targetModel,
+          contents: [{ parts: [{ text: 'Teste de áudio rápido.' }] }],
+          config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: chosenVoice },
+              },
+            },
+            systemInstruction: customInstructions || 'Fale brevemente.',
+          },
+        });
+
+        const audioBase64 = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        const latency = Date.now() - start;
+
+        if (audioBase64) {
+          return res.json({
+            success: true,
+            message: `Conexão de Voz com o modelo [${targetModel}] estabelecida com sucesso em ${latency}ms (Áudio sintetizado recebido).`,
+            latencyMs: latency
+          });
+        } else {
+          throw new Error('A API retornou resposta, mas sem dados binários de áudio sintetizados.');
+        }
+      } else {
+        const response = await ai.models.generateContent({
+          model: targetModel,
+          contents: [{ parts: [{ text: 'Responda apenas "OK" para teste de conexão.' }] }],
+          config: {
+            maxOutputTokens: 5,
+            systemInstruction: customInstructions || undefined,
+          }
+        });
+
+        const text = response.text?.trim() || '';
+        const latency = Date.now() - start;
+
+        return res.json({
+          success: true,
+          message: `Conexão de Texto com o modelo [${targetModel}] estabelecida com sucesso em ${latency}ms. Resposta: "${text}".`,
+          latencyMs: latency
+        });
+      }
+    } catch (err: any) {
+      console.error('Falha no teste do agente:', err);
+      const errMsg = err.message || String(err);
+      return res.status(500).json({
+        success: false,
+        message: `A requisição de teste para o modelo falhou. Motivo: ${errMsg}`
+      });
+    }
+  });
+
   app.post('/api/agents/reset-defaults', (req, res) => {
     const agents = resetAllAgentsToDefault();
     sysLog.info('AGENT', 'Todos os agentes foram restaurados para o padrão de fábrica.', { count: agents.length });

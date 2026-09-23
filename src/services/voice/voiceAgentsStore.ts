@@ -1,4 +1,5 @@
 import { VoiceAgent, VoiceDirectorConfig } from './voiceTypes.js';
+export type { VoiceAgent, VoiceDirectorConfig };
 import { FACTORY_VOICE_AGENTS } from './voicePresets.js';
 import { compileDirectorPrompt } from './voiceDirector.js';
 

@@ -252,9 +252,9 @@ export function App() {
   // Audio Settings & Narration State
   const [audioSettings, setAudioSettings] = useState<AudioSettings>({
     sttEnabled: true,
-    sttModel: 'gemini-3.5-flash-lite',
+    sttModel: 'gemini-3.1-flash-lite',
     ttsEnabled: true,
-    ttsModel: 'gemini-3.5-flash-lite',
+    ttsModel: 'gemini-3.1-flash-tts',
     ttsVoice: 'Kore',
     ttsSpeed: 1.0,
     autoPlayTts: false,
@@ -986,7 +986,8 @@ export function App() {
         }),
       });
 
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         if (data.audioBase64) {
           const audio = new Audio(`data:audio/mp3;base64,${data.audioBase64}`);

@@ -4,13 +4,18 @@ import os from 'os';
 import { sysLog } from './logger-service.js';
 
 const LOG_DIR = path.join(os.homedir(), '.local', 'share', 'gemini-gui', 'logs');
+const WORKSPACE_LOG_DIR = path.resolve('./logs');
 const SUBAGENT_JSONL_FILE = path.join(LOG_DIR, 'subagent-executions.jsonl');
 const SUBAGENT_TXT_FILE = path.join(LOG_DIR, 'subagent-executions.log');
+const WORKSPACE_SUBAGENT_TXT_FILE = path.join(WORKSPACE_LOG_DIR, 'subagents.log');
 
 // Ensure directory exists synchronously at module import
 try {
   if (!fs.existsSync(LOG_DIR)) {
     fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(WORKSPACE_LOG_DIR)) {
+    fs.mkdirSync(WORKSPACE_LOG_DIR, { recursive: true });
   }
 } catch (e) {
   console.error('[SubagentLogger] Error creating log directory:', e);
@@ -66,6 +71,7 @@ export function logSubagentEvent(event: SubagentExecutionEvent): void {
       entry.stderr ? `| STDERR: ${entry.stderr.slice(-300)}` : ''
     }\n`;
     fs.appendFileSync(SUBAGENT_TXT_FILE, formattedLine, 'utf8');
+    fs.appendFileSync(WORKSPACE_SUBAGENT_TXT_FILE, formattedLine, 'utf8');
   } catch (err) {
     console.error('[SubagentLogger] Failed sync append to LOG:', err);
   }

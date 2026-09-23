@@ -458,6 +458,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   onSelectAgent={onSelectAgent}
                   onResetDefaultAgentsConfig={onResetDefaultAgentsConfig || (async () => {})}
                   onSaveAgent={onSaveAgent}
+                  audioSettings={audioSettings}
+                  onUpdateAudioSettings={onUpdateAudioSettings}
                 />
               </div>
             )}
