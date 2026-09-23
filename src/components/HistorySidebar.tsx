@@ -112,9 +112,22 @@ export const HistorySidebar: React.FC<HistorySidebarProps> = ({
                 >
                   <div className="px-2 py-1 bg-zinc-900/80 border-b border-zinc-800/60 flex items-center justify-between">
                     <span className="text-xs font-semibold text-zinc-200 truncate">{proj.name}</span>
-                    <span className="text-[9px] font-mono px-1 rounded bg-zinc-800 text-zinc-400">
-                      {projSessions.length}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] font-mono px-1 rounded bg-zinc-800 text-zinc-400">
+                        {projSessions.length}
+                      </span>
+                      <button
+                        onClick={() => {
+                          onNewSession(proj.id);
+                          onClose();
+                        }}
+                        title={`Novo chat em '${proj.name}'`}
+                        className="flex items-center gap-0.5 px-1 py-0.5 rounded bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 hover:text-white text-[9px] font-medium transition cursor-pointer"
+                      >
+                        <Plus className="w-2.5 h-2.5" />
+                        <span>Chat</span>
+                      </button>
+                    </div>
                   </div>
 
                   <div className="p-1 space-y-1">

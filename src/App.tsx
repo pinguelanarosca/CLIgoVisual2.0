@@ -310,10 +310,6 @@ export function App() {
 
       if (projs && Array.isArray(projs)) {
         setProjects(projs);
-        if (projs.length > 0 && !activeProject) {
-          setActiveProject(projs[0]);
-          setFilesViewDir(projs[0].associatedDirs?.[0] || '');
-        }
       }
 
       if (dirs && Array.isArray(dirs)) {
