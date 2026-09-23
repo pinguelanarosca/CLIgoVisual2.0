@@ -142,6 +142,7 @@ export class AcpSession {
     if (fs.existsSync(customPolicyPath)) {
       args.push('--policy', customPolicyPath);
     }
+    args.push('--skip-trust');
 
     const cliPath = getResolvedCliPath();
     const activeApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;

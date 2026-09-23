@@ -408,8 +408,8 @@ export async function detectCliStatus(
   forceFresh = false,
   targetModel = 'gemini-3.1-flash-lite'
 ): Promise<CliStatus> {
-  if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY) {
-    discoverApiKeyFromLoginEnv(true);
+  if (forceFresh || (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY)) {
+    discoverApiKeyFromLoginEnv(forceFresh);
   }
 
   const cliPath = getResolvedCliPath();
@@ -1273,6 +1273,7 @@ export function executeGeminiCli(
         : (fallbackChain.indexOf(requestedModel) !== -1 ? fallbackChain.indexOf(requestedModel) : -1);
 
       args.push('-m', chosenModel);
+      args.push('--skip-trust');
 
       if (params.approvalMode) {
         args.push('--approval-mode', params.approvalMode);
@@ -1347,11 +1348,9 @@ export function executeGeminiCli(
         MAX_RETRIES: '0',
         GEMINI_CLI_NO_RELAUNCH: '1',
         GEMINI_CLI_SYSTEM_SETTINGS_PATH: tempSettingsFile,
-        ...(activeApiKey ? {
-          GEMINI_API_KEY: activeApiKey,
-          GOOGLE_GENAI_API_KEY: activeApiKey,
-          GOOGLE_API_KEY: activeApiKey,
-        } : {}),
+        GEMINI_API_KEY: activeApiKey || '',
+        GOOGLE_API_KEY: activeApiKey || '',
+        GOOGLE_GENAI_API_KEY: activeApiKey || '',
       };
 
       if (systemPromptFile) {

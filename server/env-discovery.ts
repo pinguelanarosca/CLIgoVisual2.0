@@ -11,7 +11,7 @@ const DISCOVERY_NEGATIVE_TTL_MS = 5 * 60 * 1000; // 5 minutes negative cache TTL
 function extractKeyFromString(content: string): string | null {
   if (!content) return null;
   // Match export GEMINI_API_KEY=..., GEMINI_API_KEY=..., GOOGLE_GENAI_API_KEY=..., GOOGLE_API_KEY=...
-  const envRegex = /^\s*(?:export\s+)?(?:GEMINI_API_KEY|GOOGLE_GENAI_API_KEY|GOOGLE_API_KEY)\s*=\s*(?:["']?)(AIza[0-9A-Za-z-_]{25,}|[0-9A-Za-z-_]{30,})(?:["']?)\s*$/m;
+  const envRegex = /^\s*(?:export\s+)?(?:GEMINI_API_KEY|GOOGLE_GENAI_API_KEY|GOOGLE_API_KEY)\s*=\s*(?:["']?)([0-9A-Za-z-_./]{20,})(?:["']?)\s*$/m;
   const match = content.match(envRegex);
   if (match && match[1]) {
     return match[1].trim();
@@ -22,7 +22,7 @@ function extractKeyFromString(content: string): string | null {
     const parsed = JSON.parse(content);
     if (typeof parsed === 'object' && parsed !== null) {
       const key = parsed.GEMINI_API_KEY || parsed.geminiApiKey || parsed.apiKey || parsed.GOOGLE_GENAI_API_KEY;
-      if (typeof key === 'string' && (key.startsWith('AIza') || key.length >= 30)) {
+      if (typeof key === 'string' && key.trim().length >= 20) {
         return key.trim();
       }
     }
@@ -79,16 +79,16 @@ function getCandidateHomeDirs(): string[] {
 }
 
 export function discoverApiKeyFromLoginEnv(forceRefresh = false): void {
-  const existingKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (existingKey && existingKey.trim()) {
-    hasDiscovered = true;
-    lastDiscoveryResult = 'found';
-    lastDiscoveryTime = Date.now();
-    return;
-  }
-
-  const now = Date.now();
   if (!forceRefresh) {
+    const existingKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (existingKey && existingKey.trim()) {
+      hasDiscovered = true;
+      lastDiscoveryResult = 'found';
+      lastDiscoveryTime = Date.now();
+      return;
+    }
+
+    const now = Date.now();
     if (lastDiscoveryResult === 'found') return;
     if (lastDiscoveryResult === 'not_found' && (now - lastDiscoveryTime < DISCOVERY_NEGATIVE_TTL_MS)) {
       return;

@@ -333,6 +333,7 @@ if [ -z "\$GEMINI_API_KEY" ]; then
         if [ -n "\$KEY_BASHRC" ]; then
             export GEMINI_API_KEY="\$KEY_BASHRC"
             export GOOGLE_GENAI_API_KEY="\$KEY_BASHRC"
+            export GOOGLE_API_KEY="\$KEY_BASHRC"
         fi
     fi
     if [ -z "\$GEMINI_API_KEY" ] && [ -f "\$USER_HOME/.profile" ]; then
@@ -340,6 +341,7 @@ if [ -z "\$GEMINI_API_KEY" ]; then
         if [ -n "\$KEY_PROF" ]; then
             export GEMINI_API_KEY="\$KEY_PROF"
             export GOOGLE_GENAI_API_KEY="\$KEY_PROF"
+            export GOOGLE_API_KEY="\$KEY_PROF"
         fi
     fi
     if [ -z "\$GEMINI_API_KEY" ] && [ -f "\$USER_HOME/.zshrc" ]; then
@@ -347,6 +349,7 @@ if [ -z "\$GEMINI_API_KEY" ]; then
         if [ -n "\$KEY_ZSH" ]; then
             export GEMINI_API_KEY="\$KEY_ZSH"
             export GOOGLE_GENAI_API_KEY="\$KEY_ZSH"
+            export GOOGLE_API_KEY="\$KEY_ZSH"
         fi
     fi
     if [ -z "\$GEMINI_API_KEY" ] && [ -f "\$USER_HOME/.local/share/gemini-gui/.env" ]; then
@@ -354,6 +357,7 @@ if [ -z "\$GEMINI_API_KEY" ]; then
         if [ -n "\$KEY_LOCAL_ENV" ]; then
             export GEMINI_API_KEY="\$KEY_LOCAL_ENV"
             export GOOGLE_GENAI_API_KEY="\$KEY_LOCAL_ENV"
+            export GOOGLE_API_KEY="\$KEY_LOCAL_ENV"
         fi
     fi
 fi

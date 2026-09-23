@@ -175,8 +175,14 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
               <Sparkles className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
               <span>GEMINI_API_KEY (Variável de Ambiente)</span>
               {cliStatus?.authConfigured && (
-                <span className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.5 rounded font-medium">
-                  {cliStatus.apiValid ? 'Validada & Ativa' : 'Detectada no Ambiente'}
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                    cliStatus.apiValid
+                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                      : 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
+                  }`}
+                >
+                  {cliStatus.apiValid ? 'Validada & Ativa' : 'Falha na API'}
                 </span>
               )}
             </h5>
@@ -203,21 +209,26 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
           )}
           <div className="flex justify-between items-center">
             <span className="text-zinc-500 dark:text-zinc-400">Status Operacional:</span>
-            <span className="font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-              {cliStatus?.authConfigured ? (
-                <>
+            {cliStatus?.authConfigured ? (
+              cliStatus.apiValid ? (
+                <span className="font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  {cliStatus.apiValid ? 'Verificada e Operacional' : 'Configurada no Servidor'}
-                </>
-              ) : (
-                <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  Defina GEMINI_API_KEY no ambiente
+                  Verificada e Operacional
                 </span>
-              )}
-            </span>
+              ) : (
+                <span className="font-medium text-rose-600 dark:text-rose-400 flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  Rejeitada pela API (HTTP 401)
+                </span>
+              )
+            ) : (
+              <span className="font-medium text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                <AlertCircle className="w-3.5 h-3.5" />
+                Ausente no Ambiente
+              </span>
+            )}
           </div>
-          {cliStatus?.modelTested && (
+          {cliStatus?.apiValid && cliStatus?.modelTested && (
             <div className="flex justify-between items-center">
               <span className="text-zinc-500 dark:text-zinc-400">Modelo Testado:</span>
               <span className="font-mono text-[11px] text-zinc-600 dark:text-zinc-300">
