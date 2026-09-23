@@ -49,7 +49,7 @@ for (const envFile of fallbackEnvPaths) {
   }
 }
 import { detectCliStatus, executeGeminiCli, cancelActiveExecution, cancelExecutionById, setCustomCliPath, validateGeminiApiKey } from './server/gemini-cli-service.js';
-import { ensureAgentsSeeded, loadAgents, saveAgentToFile, deleteAgent, resetAllAgentsToDefault } from './server/agents-service.js';
+import { ensureAgentsSeeded, loadAgents, saveAgentToFile, deleteAgent, resetAllAgentsToDefault, ensureAllAgentsSynchronizedAndAcknowledged } from './server/agents-service.js';
 import { ensureSkillsSeeded, loadSkills, saveSkillToFile, deleteSkill } from './server/skills-service.js';
 import { ensureCommandsSeeded, loadCommands, saveCommandToFile, deleteCommand } from './server/commands-service.js';
 import { loadMcpSettings, saveMcpSettings, testMcpServer } from './server/mcp-service.js';
@@ -150,6 +150,7 @@ async function startServer() {
 
   // Seed default agents, skills, commands, MCP, policies
   ensureAgentsSeeded();
+  ensureAllAgentsSynchronizedAndAcknowledged();
   ensureSkillsSeeded();
   ensureCommandsSeeded();
   loadMcpSettings();
@@ -163,8 +164,7 @@ async function startServer() {
       fs.mkdirSync(geminiDir, { recursive: true });
     }
     const policyFile = path.join(geminiDir, 'web-preview-policy.toml');
-    if (!fs.existsSync(policyFile)) {
-      const policyContent = `# Web Preview Environment Policy to allow essential development tools in headless execution.
+    const policyContent = `# Web Preview Environment Policy to allow essential development tools in headless execution.
 # This prevents tools from being blocked by default non-interactive / headless checks.
 
 [[rule]]
@@ -173,14 +173,14 @@ toolName = [
   "run_shell_command",
   "write_file",
   "activate_skill",
-  "web_fetch"
+  "web_fetch",
+  "invoke_agent"
 ]
 decision = "allow"
 priority = 90
 `;
-      fs.writeFileSync(policyFile, policyContent, 'utf8');
-      sysLog.info('SYSTEM', 'Política de visualização web (.gemini/web-preview-policy.toml) semeada com sucesso.');
-    }
+    fs.writeFileSync(policyFile, policyContent, 'utf8');
+    sysLog.info('SYSTEM', 'Política de visualização web (.gemini/web-preview-policy.toml) semeada com sucesso.');
   } catch (err: any) {
     console.error('Falha ao semear a política de visualização web:', err?.message);
   }
@@ -412,7 +412,11 @@ priority = 90
     });
 
     const sendSse = (event: string, data: any) => {
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      try {
+        if (!res.writableEnded && !res.destroyed) {
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        }
+      } catch {}
     };
 
     const execution = executeGeminiCli({
@@ -438,28 +442,36 @@ priority = 90
       overrideBasePrompt,
       baseInstructions,
       onEvent: (evt) => {
-        const payload =
-          typeof evt.data === 'object' && evt.data !== null
-            ? { executionId, type: evt.type, ...evt.data }
-            : { executionId, type: evt.type, data: evt.data };
-        sendSse(evt.type, payload);
+        try {
+          const payload =
+            typeof evt.data === 'object' && evt.data !== null
+              ? { executionId, type: evt.type, ...evt.data }
+              : { executionId, type: evt.type, data: evt.data };
+          sendSse(evt.type, payload);
+        } catch {}
       },
       onDone: (exitCode, signal) => {
-        sendSse('done', { executionId, exitCode, signal });
-        res.end();
+        try {
+          sendSse('done', { executionId, exitCode, signal });
+          if (!res.writableEnded && !res.destroyed) {
+            res.end();
+          }
+        } catch {}
       },
       onError: (err) => {
-        sendSse('error', { executionId, message: err.message });
-        res.end();
+        try {
+          sendSse('error', { executionId, message: err.message });
+          if (!res.writableEnded && !res.destroyed) {
+            res.end();
+          }
+        } catch {}
       },
     });
 
     sendSse('start', { timestamp: new Date().toISOString(), executionId: execution.executionId });
 
     res.on('close', () => {
-      if (!res.writableEnded) {
-        execution.cancel();
-      }
+      // Client closed connection
     });
   });
 
@@ -715,7 +727,7 @@ priority = 90
       }
 
       const controller = new AbortController();
-      req.on('close', () => {
+      res.on('close', () => {
         if (!res.writableEnded) {
           controller.abort();
         }
@@ -741,7 +753,7 @@ priority = 90
       }
 
       const controller = new AbortController();
-      req.on('close', () => {
+      res.on('close', () => {
         if (!res.writableEnded) {
           controller.abort();
         }

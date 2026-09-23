@@ -1,6 +1,6 @@
 ---
 name: architect
-model: gemini-3.6-flash
+model: gemini-2.5-flash
 description: "Agente especializado em design de sistemas, arquitetura de software, modularidade, desacoplamento, contratos de interfaces e integridade estrutural."
 kind: local
 tools: ["*"]

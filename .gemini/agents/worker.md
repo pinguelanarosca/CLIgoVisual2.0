@@ -1,6 +1,6 @@
 ---
 name: worker
-model: gemini-3.1-flash-lite
+model: gemini-3.5-flash-lite
 description: "Agente especializado em tarefas de alto volume, geração de código boilerplate, refatorações diretas, transformações em lote e implementação de rotina."
 kind: local
 tools: ["*"]

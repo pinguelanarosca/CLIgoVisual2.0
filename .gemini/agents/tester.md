@@ -1,6 +1,6 @@
 ---
 name: tester
-model: gemini-3-flash
+model: gemini-2.5-flash
 description: "Agente especializado em criação e execução de testes automatizados (unitários, integração e e2e), validação comportamental e análise de falhas."
 kind: local
 tools: ["*"]

@@ -108,3 +108,130 @@
 .glow-active {
   animation: subtle-glow 1.5s ease-in-out infinite;
 }
+
+/* ============================================================
+   Gemini Creative Star — Action States & Micro-Animations
+   ============================================================ */
+
+@keyframes gemini-thinkScale {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+.animate-gemini-thinkScale {
+  animation: gemini-thinkScale 4.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes gemini-tilt {
+  0%, 100% { transform: rotate(-2.5deg); }
+  50% { transform: rotate(2.5deg); }
+}
+.animate-gemini-tilt {
+  animation: gemini-tilt 3.2s ease-in-out infinite;
+}
+
+@keyframes gemini-execScale {
+  0%, 100% { transform: scale(1); }
+  45% { transform: scale(1.12); }
+  70% { transform: scale(1.04); }
+}
+.animate-gemini-execScale {
+  animation: gemini-execScale 1.1s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+}
+
+@keyframes gemini-breatheA {
+  0%, 100% { transform: scale(0.97); }
+  50% { transform: scale(1.04); }
+}
+.animate-gemini-breatheA {
+  animation: gemini-breatheA 3.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes gemini-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-1.2px); }
+  30% { transform: translateX(1.1px); }
+  45% { transform: translateX(-0.8px); }
+  60% { transform: translateX(0.9px); }
+  75% { transform: translateX(-0.5px); }
+}
+.animate-gemini-shake {
+  animation: gemini-shake 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+}
+
+@keyframes gemini-cancel {
+  0% { transform: scale(1); }
+  100% { transform: scale(0.95); }
+}
+.animate-gemini-cancel {
+  animation: gemini-cancel 1.2s cubic-bezier(0.7, 0, 0.3, 1) forwards;
+}
+
+@keyframes gemini-concluScale {
+  0%, 100% { transform: scale(1); }
+  15% { transform: scale(1.06); }
+  30% { transform: scale(1); }
+}
+.animate-gemini-concluScale {
+  animation: gemini-concluScale 2.4s ease-out infinite;
+}
+
+@keyframes gemini-shimmerMove {
+  0% { transform: translateX(-70px) skewX(-12deg); }
+  50% { transform: translateX(70px) skewX(-12deg); }
+  100% { transform: translateX(70px) skewX(-12deg); }
+}
+
+@keyframes gemini-editFlow {
+  0% { transform: translateY(-40px); }
+  100% { transform: translateY(140px); }
+}
+
+@keyframes gemini-drawBorder {
+  0% { stroke-dashoffset: 320; }
+  55% { stroke-dashoffset: 0; }
+  85% { stroke-dashoffset: 0; opacity: 0.9; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+
+@keyframes gemini-orbitInternal {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes gemini-orbitExternal {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes gemini-pulseGlow {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50% { opacity: 0.95; transform: scale(1.06); }
+}
+
+@keyframes gemini-ringPulse {
+  0% { transform: scale(0.86); opacity: 0.7; }
+  70% { opacity: 0.18; }
+  100% { transform: scale(1.42); opacity: 0; }
+}
+
+@keyframes gemini-ringExpansive {
+  0% { transform: scale(0.88); opacity: 0.75; }
+  100% { transform: scale(1.65); opacity: 0; }
+}
+
+@keyframes gemini-flash {
+  0% { opacity: 0; }
+  8% { opacity: 0.55; }
+  18% { opacity: 0; }
+  100% { opacity: 0; }
+}
+
+@keyframes gemini-glowPulseRed {
+  0%, 100% { opacity: 0.28; transform: scale(1); }
+  50% { opacity: 0.65; transform: scale(1.08); }
+}
+
+@keyframes gemini-warmGlow {
+  0%, 100% { opacity: 0.08; transform: scale(0.9); }
+  50% { opacity: 0.18; transform: scale(1.1); }
+}

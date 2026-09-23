@@ -88,18 +88,32 @@ async function callWithRetryAndFallback<T>(
           await new Promise((resolve) => setTimeout(resolve, 500 * attempts));
         }
         
-        // Wrap execution with a 15-second timeout per attempt
+        let timeoutHandle: NodeJS.Timeout | null = null;
+        let abortHandler: (() => void) | null = null;
+
         const timeoutPromise = new Promise<never>((_, reject) => {
-          const t = setTimeout(() => reject(new Error(`Timeout de 15s excedido na API Gemini (${currentModel})`)), 15000);
+          timeoutHandle = setTimeout(() => reject(new Error(`Timeout de 45s excedido na API Gemini (${currentModel})`)), 45000);
           if (abortSignal) {
-            abortSignal.addEventListener('abort', () => {
-              clearTimeout(t);
+            abortHandler = () => {
+              if (timeoutHandle) clearTimeout(timeoutHandle);
               reject(new Error('Operação de áudio cancelada pelo usuário.'));
-            }, { once: true });
+            };
+            if (abortSignal.aborted) {
+              abortHandler();
+            } else {
+              abortSignal.addEventListener('abort', abortHandler, { once: true });
+            }
           }
         });
 
-        return await Promise.race([executeFn(currentModel), timeoutPromise]);
+        try {
+          return await Promise.race([executeFn(currentModel), timeoutPromise]);
+        } finally {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          if (abortSignal && abortHandler) {
+            abortSignal.removeEventListener('abort', abortHandler);
+          }
+        }
       } catch (err: any) {
         if (abortSignal?.aborted || err.message?.includes('cancelada pelo usuário')) {
           throw new Error('Operação de áudio cancelada pelo usuário.');

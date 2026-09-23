@@ -321,6 +321,7 @@ export interface AudioSettings {
   ttsVoice: string; // 'Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'
   ttsSpeed: number; // 0.75 - 1.5
   autoPlayTts: boolean;
+  autoSendVoicePrompt?: boolean;
   filterCodeInTts: boolean;
   filterDiffsInTts: boolean;
   micStatus: 'ready' | 'recording' | 'transcribing' | 'error';

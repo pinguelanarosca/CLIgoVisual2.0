@@ -149,6 +149,18 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
             </p>
           </div>
 
+          <div className="pt-2 border-t border-zinc-200/50 dark:border-zinc-700/50">
+            <label className="flex items-center gap-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={audioSettings.autoSendVoicePrompt ?? true}
+                onChange={(e) => onUpdateAudioSettings({ autoSendVoicePrompt: e.target.checked })}
+                className="rounded border-zinc-300 dark:border-zinc-700 text-blue-600 focus:ring-blue-500"
+              />
+              <span>Enviar mensagem automaticamente ao concluir gravação de voz</span>
+            </label>
+          </div>
+
           {(audioSettings.sttModel === 'gemini-2.5-flash' || audioSettings.sttModel === 'gemini-1.5-flash') && (
             <div className="mt-2 text-[10px] bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 p-2.5 rounded-lg flex gap-1.5 leading-normal">
               <Check className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-500" />

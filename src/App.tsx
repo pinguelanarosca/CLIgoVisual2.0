@@ -258,6 +258,7 @@ export function App() {
     ttsVoice: 'Kore',
     ttsSpeed: 1.0,
     autoPlayTts: false,
+    autoSendVoicePrompt: true,
     filterCodeInTts: true,
     filterDiffsInTts: true,
     micStatus: 'ready',
@@ -915,10 +916,16 @@ export function App() {
     }
 
     try {
-      const buffer = await audioBlob.arrayBuffer();
-      const base64Audio = btoa(
-        new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-      );
+      const base64Audio = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const res = (reader.result as string) || '';
+          const base64 = res.includes(',') ? res.split(',')[1] : res;
+          resolve(base64);
+        };
+        reader.onerror = () => reject(new Error('Falha ao processar arquivo de áudio.'));
+        reader.readAsDataURL(audioBlob);
+      });
 
       const res = await fetch('/api/audio/stt', {
         method: 'POST',
@@ -1526,6 +1533,7 @@ export function App() {
               currentlyNarratingId={currentlyNarratingId}
               onStopTts={handleStopTts}
               onTranscribeAudio={handleTranscribeAudio}
+              autoSendVoicePrompt={audioSettings.autoSendVoicePrompt ?? true}
               approvalMode={approvalMode}
               onChangeApprovalMode={setApprovalMode}
               metrics={liveMetrics}

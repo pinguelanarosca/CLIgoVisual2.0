@@ -465,10 +465,21 @@ export const RealtimeLogsView: React.FC<RealtimeLogsViewProps> = () => {
           ) : (
             filteredLogs.map((log) => {
               const isDetailsOpen = expandedDetailsId === log.id;
+              const isAgentFlow =
+                log.category === 'AGENT' ||
+                log.message.includes('[DELEGAÇÃO') ||
+                log.message.includes('[AGENTE') ||
+                log.message.includes('[PRÉ-VOO') ||
+                log.message.includes('[FERRAMENTA EM USO]') ||
+                log.message.includes('[RESUMO DE EXECUÇÃO]');
               return (
                 <div
                   key={log.id}
-                  className="group relative rounded p-1 hover:bg-zinc-900/80 transition border border-zinc-900/60 leading-tight space-y-0.5"
+                  className={`group relative rounded p-1.5 transition border leading-tight space-y-1 ${
+                    isAgentFlow
+                      ? 'bg-indigo-950/25 border-indigo-500/50 shadow-sm shadow-indigo-950/60 hover:bg-indigo-950/40'
+                      : 'border-zinc-900/60 hover:bg-zinc-900/80'
+                  }`}
                 >
                   <div className="flex items-start gap-1 flex-wrap">
                     {/* Timestamp */}

@@ -1,6 +1,6 @@
 ---
 name: investigator
-model: gemini-3.7-flash
+model: gemini-2.5-flash
 description: "Agente especializado em investigação profunda de código, busca e rastreamento de bugs, pesquisa em fontes e diagnóstico técnico empírico com evidências."
 kind: local
 tools: ["*"]

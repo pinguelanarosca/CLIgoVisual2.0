@@ -9,7 +9,8 @@ import { GoogleGenAI } from '@google/genai';
 import { CliStatus } from '../src/types.js';
 import { sysLog } from './logger-service.js';
 import { logSubagentEvent, getSubagentLogs } from './subagent-logger.js';
-import { syncAgentsToSettings, loadAgents, buildEffectiveSystemPrompt } from './agents-service.js';
+import { AgentExecutionTracker } from './agent-execution-tracker.js';
+import { syncAgentsToSettings, loadAgents, buildEffectiveSystemPrompt, ensureAllAgentsSynchronizedAndAcknowledged } from './agents-service.js';
 import { syncPoliciesToSettings } from './policies-service.js';
 import { getGuiDataDir } from './paths-service.js';
 import { loadMcpSettings } from './mcp-service.js';
@@ -635,58 +636,49 @@ export interface CliExecutionParams {
 }
 
 export const AGENT_FALLBACK_CHAINS: Record<string, string[]> = {
-  architect: ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
-  auditor: ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
-  investigator: ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
-  principal: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash'],
-  tester: ['gemini-3.6-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
-  worker: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.6-flash'],
+  architect: ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'],
+  auditor: ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'],
+  investigator: ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'],
+  principal: ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro'],
+  tester: ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'],
+  worker: ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro'],
 };
 
 export function normalizeCliModelName(rawModel?: string): string {
   if (!rawModel || rawModel === 'auto') return 'gemini-3.5-flash-lite';
   const m = rawModel.trim().toLowerCase();
   
-  // Map UI catalog aliases or deprecated models to active, production-stable models with high quota limits
-  if (m.includes('3.8') || m.includes('3.7') || m === 'gemini-3-flash') return 'gemini-3.6-flash';
-  if (m === 'gemini-3.5-flash' || m.includes('2.5') || m.includes('transcribe') || m.includes('tts')) return 'gemini-3.5-flash-lite';
-  if (m.includes('3.1-flash-lite')) return 'gemini-3.1-flash-lite';
-  if (m.includes('3.5-flash-lite')) return 'gemini-3.5-flash-lite';
-  if (m.includes('3.6-flash')) return 'gemini-3.6-flash';
+  if (m.includes('pro')) return 'gemini-2.5-pro';
+  if (m.includes('preview')) return 'gemini-3-flash-preview';
+  if (m.includes('3.5-flash-lite') || m.includes('3.1-flash-lite') || m.includes('flash-lite')) return 'gemini-3.5-flash-lite';
+  if (m.includes('2.5') || m.includes('3.6') || m.includes('3.7') || m.includes('3.8') || m.includes('flash')) return 'gemini-2.5-flash';
   
   return 'gemini-3.5-flash-lite';
 }
 
-export function getApiErrorCode(code: number, stderrText: string, reportedErrorText: string): number | null {
+export function getApiErrorCode(code: number | null, stderrText: string, reportedErrorText: string): number | null {
   const combined = (stderrText + ' ' + reportedErrorText).toLowerCase();
   
-  // High priority: literal status codes
-  const statusMatch = combined.match(/status (?:code )?([0-9]{3})/i) || combined.match(/\[([0-9]{3})\]/);
+  // High priority: literal status codes like "status: 429", "status code 429", "[429]", "Error 404", "HTTP 503"
+  const statusMatch = combined.match(/(?:status code|status|http status|error code)\s*[:=\[]?\s*([45][0-9]{2})/i) || combined.match(/\[([45][0-9]{2})\]/);
   if (statusMatch) {
     return parseInt(statusMatch[1], 10);
   }
 
   if (
-    combined.includes('400') ||
     combined.includes('invalid argument') ||
     combined.includes('invalid_argument') ||
-    combined.includes('bad request') ||
-    combined.includes('cannot set') ||
-    combined.includes('oneof field') ||
     combined.includes('_thinking_level')
   ) {
     return 400;
   }
-  if (combined.includes('409') || combined.includes('conflict') || combined.includes('already_exists')) {
-    return 409;
-  }
-  if (combined.includes('429') || combined.includes('quota') || combined.includes('rate limit') || combined.includes('terminalquotaerror') || combined.includes('resource_exhausted')) {
+  if (combined.includes('terminalquotaerror') || combined.includes('resource_exhausted') || combined.includes('quota exceeded') || combined.includes('rate limit exceeded')) {
     return 429;
   }
-  if (combined.includes('500') || combined.includes('internal error') || combined.includes('internal server error')) {
+  if (combined.includes('internal server error') || combined.includes('internal error')) {
     return 500;
   }
-  if (combined.includes('503') || combined.includes('unavailable') || combined.includes('service unavailable') || combined.includes('experiencing high demand')) {
+  if (combined.includes('service unavailable') || combined.includes('model overloaded') || combined.includes('temporarily overloaded')) {
     return 503;
   }
   return null;
@@ -1199,6 +1191,23 @@ export function executeGeminiCli(
         else if (requestedModel.includes('tester') || requestedModel.includes('3-flash')) agentId = 'tester';
       }
 
+      // 5. Rastreamento e Sincronização Robusta dos Agentes no Sistema
+      const tracker = new AgentExecutionTracker(executionId, agentId || 'principal', chosenModel);
+      let syncResult = { synchronizedCount: 0, acknowledgedCount: 0, directories: [] as string[] };
+      try {
+        syncResult = ensureAllAgentsSynchronizedAndAcknowledged(cwd);
+      } catch (syncErr) {
+        sysLog.warn('AGENT', `Aviso durante sincronização de agentes: ${syncErr}`);
+      }
+
+      const allDiscoveredAgents = loadAgents(cwd);
+      const availableSubagents = allDiscoveredAgents.filter(
+        (a) => a.name.toLowerCase() !== (agentId || 'principal').toLowerCase()
+      );
+      tracker.setAvailableSubagents(availableSubagents.map((a) => a.name));
+      tracker.trackPreflight(cwd, availableSubagents.map((a) => a.name), syncResult.acknowledgedCount);
+      tracker.trackFlowStart(cwd, params.prompt);
+
       // Sincronizar dinamicamente parâmetros do modelo (temperature, topP, topK, maxOutputTokens, thinking, thinkingLevel) no settings.json
       try {
         syncAgentsToSettings(cwd, agentId || 'principal', {
@@ -1295,6 +1304,17 @@ export function executeGeminiCli(
         params.systemInstructions,
         params.overrideBasePrompt
       );
+
+      // Injetar Protocolo de Delegação de Subagentes para o Agente Principal / Orquestrador
+      const isOrchestrator = !agentId || agentId === 'principal' || agentId.includes('orchestrator');
+      if (isOrchestrator && availableSubagents.length > 0) {
+        const subagentsList = availableSubagents
+          .map((a) => `  * ${a.name}: ${a.role || a.description}`)
+          .join('\n');
+        const delegationProtocol = `\n\n[PROTOCOLO DE DELEGAÇÃO DE SUBAGENTES - FERRAMENTA invoke_agent]\nVocê é o coordenador geral. Para tarefas especializadas de investigação de código, arquitetura, segurança/auditoria, testes automatizados ou refatoração repetitiva, você DEVE delegar a execução usando a ferramenta 'invoke_agent'.\nSubagentes disponíveis no sistema:\n${subagentsList}\n\nCOMO ACIONAR A FERRAMENTA invoke_agent:\n- Chame a função 'invoke_agent' com os parâmetros:\n  * agent_name: O nome exato do subagente a ser acionado (ex: "investigator", "architect", "auditor", "tester", "worker").\n  * prompt: A instrução completa, detalhada, contendo objetivos, arquivos relevantes e critérios de aceite.\n- REGRA DE OURO: NÃO tente responder diretamente com adivinhações se a tarefa for de domínio de um subagente. Acione a ferramenta 'invoke_agent', espere a execução do subagente retornar os dados empíricos, e só então apresente o resultado consolidado.\n---\n`;
+        effectiveSystemPrompt = (effectiveSystemPrompt ? effectiveSystemPrompt + delegationProtocol : delegationProtocol);
+        tracker.trackProtocolCompiled(['invoke_agent'], availableSubagents.length);
+      }
 
       // Injetar Memória Persistente Compartilhada no contexto do modelo se fornecida
       if (params.sharedMemory && params.sharedMemory.trim()) {
@@ -1501,15 +1521,29 @@ export function executeGeminiCli(
                   timestamp: Date.now(),
                 });
 
-                const targetAgent = tParams.agent_name || tParams.agent || tParams.name || (tName === 'invoke_agent' ? 'subagent' : undefined);
-                logSubagentEvent({
-                  timestamp: new Date().toISOString(),
-                  executionId,
-                  eventType: 'SUBAGENT_TOOL_CALL',
-                  agentName: targetAgent || agentId || 'principal',
-                  toolName: tName,
-                  args: tParams,
-                });
+                if (tName === 'invoke_agent') {
+                  const targetAgent = tParams.agent_name || tParams.agent || tParams.name || 'investigator';
+                  tracker.trackSubagentInvocation(callId, targetAgent, tParams.prompt || '');
+                  logSubagentEvent({
+                    timestamp: new Date().toISOString(),
+                    executionId,
+                    eventType: 'SUBAGENT_INVOKE_START',
+                    agentName: targetAgent,
+                    toolName: tName,
+                    prompt: tParams.prompt,
+                    args: tParams,
+                  });
+                } else {
+                  tracker.trackNestedToolCall(tName, callId, tParams);
+                  logSubagentEvent({
+                    timestamp: new Date().toISOString(),
+                    executionId,
+                    eventType: 'SUBAGENT_TOOL_CALL',
+                    agentName: agentId || 'principal',
+                    toolName: tName,
+                    args: tParams,
+                  });
+                }
               }
 
               const isToolResult =
@@ -1525,16 +1559,36 @@ export function executeGeminiCli(
                   parsed.data?.tool_call_id ||
                   parsed.data?.tool_id ||
                   parsed.data?.id;
+
+                const prevCall = callId ? activeToolCalls.get(callId) : undefined;
                 if (callId) {
                   activeToolCalls.delete(callId);
                 }
-                logSubagentEvent({
-                  timestamp: new Date().toISOString(),
-                  executionId,
-                  eventType: 'SUBAGENT_TOOL_RESULT',
-                  agentName: agentId || 'principal',
-                  result: parsed.result || parsed.data?.result || parsed.content,
-                });
+
+                const resultData = parsed.result || parsed.data?.result || parsed.content;
+                const isFail = parsed.status === 'failed' || Boolean(parsed.error);
+
+                if (prevCall?.toolName === 'invoke_agent') {
+                  tracker.trackSubagentResult(callId || 'unknown', resultData, isFail ? 'failed' : 'success', parsed.error);
+                  logSubagentEvent({
+                    timestamp: new Date().toISOString(),
+                    executionId,
+                    eventType: isFail ? 'SUBAGENT_ERROR' : 'SUBAGENT_COMPLETE',
+                    agentName: prevCall.parameters?.agent_name || 'subagent',
+                    result: resultData,
+                    error: parsed.error,
+                  });
+                } else {
+                  tracker.trackSubagentResult(callId || 'unknown', resultData, isFail ? 'failed' : 'success', parsed.error);
+                  logSubagentEvent({
+                    timestamp: new Date().toISOString(),
+                    executionId,
+                    eventType: 'SUBAGENT_TOOL_RESULT',
+                    agentName: agentId || 'principal',
+                    toolName: prevCall?.toolName,
+                    result: resultData,
+                  });
+                }
               }
 
               if (parsed.type === 'final_api_request') {
@@ -1636,6 +1690,20 @@ export function executeGeminiCli(
         }
         if (logStream) {
           logStream.write(raw);
+        }
+
+        // Rastrear linhas de erro/aviso em tempo real para diagnóstico imediato
+        const lines = raw.split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          tracker.trackStderrLine(trimmed);
+          if (
+            !trimmed.includes('Both GOOGLE_API_KEY and GEMINI_API_KEY') &&
+            !trimmed.startsWith('\x1b')
+          ) {
+            sysLog.debug('CLI', `[STDERR] ${trimmed}`, { executionId });
+          }
         }
       });
 
@@ -2095,6 +2163,7 @@ Você atingiu o limite de requisições.
             error: finalMessage,
             stderr: stderrText,
           });
+          tracker.trackFlowSummary(code ?? 1, finalMessage);
         } else {
           logSubagentEvent({
             timestamp: new Date().toISOString(),
@@ -2103,6 +2172,7 @@ Você atingiu o limite de requisições.
             agentName: agentId || 'principal',
             model: chosenModel,
           });
+          tracker.trackFlowSummary(0);
         }
 
         if (systemPromptFile && fs.existsSync(systemPromptFile)) {

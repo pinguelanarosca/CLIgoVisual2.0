@@ -50,6 +50,7 @@ import { MessageRenderer } from './MessageRenderer.js';
 import { AgentProcessAccordion } from './AgentProcessAccordion.js';
 import { ContentViewerSidebar, ContentViewerItem } from './ContentViewerSidebar.js';
 import { classifyToolActivity, generateActivityTitle } from '../utils/activityTraceUtils.js';
+import { GeminiCreativeIcon, GeminiActionState } from './GeminiCreativeIcon.js';
 
 export const isThinkingSupported = (model?: string): boolean => {
   if (!model) return true;
@@ -95,6 +96,7 @@ interface ChatViewProps {
   onDeriveChat?: (messageIndex: number) => void;
   onOpenSharedMemory?: () => void;
   activeMemoryVersion?: number;
+  autoSendVoicePrompt?: boolean;
 }
 
 export interface AttachedFileItem {
@@ -134,8 +136,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onDeriveChat,
   onOpenSharedMemory,
   activeMemoryVersion = 1,
+  autoSendVoicePrompt = true,
 }) => {
   const [inputText, setInputText] = useState('');
+  const inputTextRef = useRef(inputText);
+  inputTextRef.current = inputText;
+
   const [attachedFiles, setAttachedFiles] = useState<AttachedFileItem[]>([]);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
@@ -305,13 +311,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
       };
 
       mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         stream.getTracks().forEach((track) => track.stop());
         setRecordingStream(null);
+
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        if (audioBlob.size === 0) {
+          setIsTranscribing(false);
+          return;
+        }
+
         setIsTranscribing(true);
 
         const controller = new AbortController();
@@ -319,8 +333,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         try {
           const transcribedText = await onTranscribeAudio(audioBlob, controller.signal);
-          if (transcribedText) {
-            setInputText((prev) => (prev ? `${prev} ${transcribedText}` : transcribedText));
+          if (transcribedText && transcribedText.trim()) {
+            const trimmed = transcribedText.trim();
+            const currentPrompt = inputTextRef.current.trim();
+            const fullPrompt = currentPrompt ? `${currentPrompt} ${trimmed}` : trimmed;
+
+            if (autoSendVoicePrompt && !isStreaming) {
+              setInputText('');
+              if (textareaRef.current) {
+                textareaRef.current.style.height = 'auto';
+              }
+              onSendMessage(fullPrompt);
+            } else {
+              setInputText((prev) => (prev ? `${prev} ${trimmed}` : trimmed));
+            }
           }
         } catch (err: any) {
           if (err.name !== 'AbortError') {
@@ -329,10 +355,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
         } finally {
           sttAbortControllerRef.current = null;
           setIsTranscribing(false);
+          setTimeout(() => {
+            textareaRef.current?.focus();
+          }, 50);
         }
       };
 
-      mediaRecorder.start();
+      mediaRecorder.start(250);
       setIsRecording(true);
       setRecordingSeconds(0);
       recordingTimerRef.current = setInterval(() => {
@@ -344,18 +373,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
-    if (recordingStream) {
-      recordingStream.getTracks().forEach((track) => track.stop());
-      setRecordingStream(null);
-    }
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
     }
     setIsRecording(false);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -442,8 +467,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
       >
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto py-4">
-            <div className="w-7 h-7 rounded bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 mb-1.5">
-              <Bot className="w-4 h-4" />
+            <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-1.5 p-1">
+              <GeminiCreativeIcon state="aguardando" size="md" tooltipText="CLIgoVisual 2.0 • Pronto para interagir" />
             </div>
             <h2 className="text-xs font-semibold text-zinc-200 tracking-tight">
               CLIgoVisual 2.0
@@ -476,7 +501,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             const isNarrating = currentlyNarratingId === msg.id;
 
             // Interactive activity state indicator for Gemini assistant
-            const getActivityState = () => {
+            const getActivityState = (): { state: GeminiActionState; label: string } => {
               if (msg.isStreaming) {
                 const runningTool = msg.toolCalls?.find((t) => t.status === 'running');
                 if (runningTool) {
@@ -485,94 +510,104 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                   if (isWebSearch) {
                     return {
-                      icon: <Globe className="w-3 h-3 text-cyan-400 animate-pulse" />,
-                      label: title,
-                      color: 'text-cyan-400',
+                      state: 'consultando',
+                      label: title || 'Consultando a web em tempo real...',
                     };
                   }
                   if (type === 'file_edit' || type === 'file_create') {
                     return {
-                      icon: <FileEdit className="w-3 h-3 text-blue-400 animate-pulse" />,
-                      label: title,
-                      color: 'text-blue-400',
+                      state: 'editando',
+                      label: title || 'Editando arquivos do projeto...',
                     };
                   }
                   if (type === 'file_read') {
                     return {
-                      icon: <FolderOpen className="w-3 h-3 text-amber-400 animate-pulse" />,
-                      label: title,
-                      color: 'text-amber-400',
+                      state: 'lendo',
+                      label: title || 'Lendo e analisando código/arquivos...',
                     };
                   }
-                  if (type === 'command') {
+                  if (type === 'command' || type === 'invoke_agent') {
                     return {
-                      icon: <Terminal className="w-3 h-3 text-emerald-400 animate-pulse" />,
-                      label: title,
-                      color: 'text-emerald-400',
-                    };
-                  }
-                  if (type === 'invoke_agent') {
-                    return {
-                      icon: <Bot className="w-3 h-3 text-violet-400 animate-pulse" />,
-                      label: title,
-                      color: 'text-violet-400',
+                      state: 'executando',
+                      label: title || 'Executando comando no terminal...',
                     };
                   }
                   return {
-                    icon: <Cpu className="w-3 h-3 text-purple-400 animate-pulse" />,
-                    label: title,
-                    color: 'text-purple-400',
+                    state: 'executando',
+                    label: title || 'Executando ação...',
                   };
                 }
                 return {
-                  icon: <Sparkles className="w-3 h-3 text-amber-400 animate-spin" />,
+                  state: 'pensando',
                   label: 'Pensando e gerando resposta...',
-                  color: 'text-amber-400',
                 };
               }
 
-              // Finished state
+              // Finished states: Check cancelation
+              const isCanceled =
+                msg.error?.toLowerCase().includes('cancelad') ||
+                msg.content?.toLowerCase().includes('cancelada pelo usuário') ||
+                msg.content?.toLowerCase().includes('cancelado pelo usuário');
+              if (isCanceled) {
+                return {
+                  state: 'cancelado',
+                  label: 'Execução pausada/cancelada pelo usuário',
+                };
+              }
+
+              // Check error
+              if (msg.error) {
+                return {
+                  state: 'erro',
+                  label: `Erro: ${msg.error}`,
+                };
+              }
+
+              // Finished states with tool calls
               if (msg.toolCalls && msg.toolCalls.length > 0) {
+                const hasSearch = msg.toolCalls.some((t) => {
+                  const { isWebSearch } = classifyToolActivity(t.toolName, t.parameters);
+                  return isWebSearch;
+                });
                 const hasEdits = msg.toolCalls.some((t) => {
                   const { type } = classifyToolActivity(t.toolName, t.parameters);
                   return type === 'file_edit' || type === 'file_create';
                 });
                 const hasCmds = msg.toolCalls.some((t) => {
                   const { type } = classifyToolActivity(t.toolName, t.parameters);
-                  return type === 'command';
-                });
-                const hasSearch = msg.toolCalls.some((t) => {
-                  const { isWebSearch } = classifyToolActivity(t.toolName, t.parameters);
-                  return isWebSearch;
+                  return type === 'command' || type === 'invoke_agent';
                 });
 
                 if (hasSearch) {
                   return {
-                    icon: <Globe className="w-3 h-3 text-cyan-400" />,
+                    state: 'consultando',
                     label: 'Concluído: Pesquisa web realizada',
-                    color: 'text-cyan-400',
                   };
                 }
                 if (hasEdits) {
                   return {
-                    icon: <FileEdit className="w-3 h-3 text-blue-400" />,
+                    state: 'editando',
                     label: 'Concluído: Arquivos e código modificados',
-                    color: 'text-blue-400',
                   };
                 }
                 if (hasCmds) {
                   return {
-                    icon: <Terminal className="w-3 h-3 text-emerald-400" />,
-                    label: 'Concluído: Comandos de terminal executados',
-                    color: 'text-emerald-400',
+                    state: 'executando',
+                    label: 'Concluído: Comandos executados com sucesso',
                   };
                 }
               }
 
+              if (!msg.content && !msg.error && (!msg.toolCalls || msg.toolCalls.length === 0)) {
+                return {
+                  state: 'aguardando',
+                  label: 'Aguardando...',
+                };
+              }
+
               return {
-                icon: <Sparkles className="w-3 h-3 text-indigo-400" />,
-                label: 'Google Gemini AI',
-                color: 'text-indigo-400',
+                state: 'concluido',
+                label: 'Concluído • Google Gemini AI',
               };
             };
 
@@ -590,33 +625,51 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       : 'mr-auto w-full max-w-4xl flex flex-col items-start'
                   }`}
                 >
-                  {/* Header da Mensagem: Autor + Data + Interactive Gemini Icon + Model Badge */}
+                  {/* Header da Mensagem: Autor com Ícone Criativo Gemini na Frente + Data + Model Badge */}
                   <div className={`flex items-center gap-1.5 mb-0.5 text-xs w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
-                    <span
-                      className={`font-semibold text-xs tracking-tight ${
-                        isUser ? 'text-zinc-200 font-mono' : 'text-blue-400'
-                      }`}
-                    >
-                      {isUser ? 'Você' : msg.agentName || currentAgent?.displayName || 'Agente'}
-                    </span>
-
-                    <span className="text-[10px] text-zinc-500 font-mono">
-                      {new Date(msg.timestamp).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </span>
-
-                    {!isUser && (
-                      <div
-                        className="flex items-center gap-1 font-mono text-[9px] px-1.5 py-0.2 rounded bg-zinc-900/90 text-zinc-400 border border-zinc-800/90 hover:border-zinc-700 transition cursor-help select-none"
-                        title={activity.label}
-                      >
-                        {activity.icon}
-                        <span className="text-zinc-300 font-medium">
-                          {msg.model || 'gemini'}
+                    {isUser ? (
+                      <>
+                        <span className="text-[10px] text-zinc-500 font-mono">
+                          {new Date(msg.timestamp).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
                         </span>
-                      </div>
+                        <div className="flex items-center gap-1.5">
+                          <GeminiCreativeIcon state="usuario" size="sm" tooltipText="Você (Usuário)" />
+                          <span className="font-semibold text-xs tracking-tight text-zinc-200 font-mono">
+                            Você
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-1.5">
+                          <GeminiCreativeIcon
+                            state={activity.state}
+                            size="sm"
+                            tooltipText={activity.label}
+                          />
+                          <span className="font-semibold text-xs tracking-tight text-blue-400">
+                            {msg.agentName || currentAgent?.displayName || 'Agente'}
+                          </span>
+                        </div>
+
+                        <span className="text-[10px] text-zinc-500 font-mono">
+                          {new Date(msg.timestamp).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+
+                        <div
+                          className="flex items-center font-mono text-[9px] px-1.5 py-0.5 rounded bg-zinc-900/90 text-zinc-400 border border-zinc-800/90 hover:border-zinc-700 transition select-none"
+                        >
+                          <span className="text-zinc-300 font-medium">
+                            {msg.model || 'gemini'}
+                          </span>
+                        </div>
+                      </>
                     )}
                   </div>
 

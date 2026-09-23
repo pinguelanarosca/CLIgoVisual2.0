@@ -27,7 +27,9 @@ export interface SubagentExecutionEvent {
     | 'SUBAGENT_COMPLETE'
     | 'SUBAGENT_ERROR'
     | 'SUBAGENT_STDERR'
-    | 'SUBAGENT_CRASH';
+    | 'SUBAGENT_CRASH'
+    | 'AGENT_DISCOVERY'
+    | 'AGENT_FLOW_SUMMARY';
   agentName?: string;
   model?: string;
   prompt?: string;
@@ -41,7 +43,7 @@ export interface SubagentExecutionEvent {
 
 /**
  * Synchronously writes log entries to disk (append-only) for crash resilience.
- * Also broadcasts to sysLog so the UI real-time logs menu receives every event.
+ * Also broadcasts to sysLog with category 'AGENT' so the UI real-time logs menu receives every event.
  */
 export function logSubagentEvent(event: SubagentExecutionEvent): void {
   const timestamp = event.timestamp || new Date().toISOString();
@@ -68,9 +70,9 @@ export function logSubagentEvent(event: SubagentExecutionEvent): void {
     console.error('[SubagentLogger] Failed sync append to LOG:', err);
   }
 
-  // 3. Publish to System Real-time Logs UI
-  const category = 'AGENTS';
-  const source = `Subagent:${entry.agentName || 'unknown'}`;
+  // 3. Publish to System Real-time Logs UI with standard AGENT category
+  const category = 'AGENT';
+  const source = `Agent:${entry.agentName || 'principal'}`;
   const details = {
     executionId: entry.executionId,
     agentName: entry.agentName,
@@ -85,26 +87,77 @@ export function logSubagentEvent(event: SubagentExecutionEvent): void {
 
   switch (entry.eventType) {
     case 'SUBAGENT_INVOKE_START':
-      sysLog.info(category, `🚀 Início de invocação do subagente [${entry.agentName}] (ID: ${entry.executionId})`, details, source);
+      sysLog.info(
+        category,
+        `🚀 [DELEGAÇÃO INICIADA] Invocação do subagente [${entry.agentName}] iniciada pelo orquestrador. Tarefa: "${(entry.prompt || '').slice(0, 120)}..."`,
+        details,
+        source
+      );
       break;
     case 'SUBAGENT_TOOL_CALL':
-      sysLog.info(category, `🛠️ Subagente [${entry.agentName || 'CLI'}] executando ferramenta: ${entry.toolName}`, details, source);
+      sysLog.info(
+        category,
+        `🛠️ [FERRAMENTA EM USO] [${entry.agentName || 'principal'}] acionando ferramenta [${entry.toolName}]`,
+        details,
+        source
+      );
       break;
     case 'SUBAGENT_TOOL_RESULT':
-      sysLog.info(category, `✅ Subagente [${entry.agentName || 'CLI'}] concluiu ferramenta: ${entry.toolName}`, details, source);
+      sysLog.info(
+        category,
+        `📥 [RETORNO FERRAMENTA] [${entry.agentName || 'principal'}] concluiu a execução da ferramenta [${entry.toolName}]`,
+        details,
+        source
+      );
       break;
     case 'SUBAGENT_FINAL_REQUEST':
-      sysLog.info(category, `📡 Subagente [${entry.agentName || 'CLI'}] enviando requisição final ao modelo ${entry.model}`, details, source);
+      sysLog.info(
+        category,
+        `📡 [REQUISIÇÃO API] [${entry.agentName || 'principal'}] enviando requisição final ao modelo [${entry.model || 'auto'}]`,
+        details,
+        source
+      );
       break;
     case 'SUBAGENT_COMPLETE':
-      sysLog.success(category, `🎉 Subagente [${entry.agentName}] finalizou com sucesso (ID: ${entry.executionId})`, details, source);
+      sysLog.success(
+        category,
+        `🎉 [DELEGAÇÃO CONCLUÍDA] Subagente [${entry.agentName}] finalizou com sucesso (Execução: ${entry.executionId})`,
+        details,
+        source
+      );
       break;
     case 'SUBAGENT_ERROR':
     case 'SUBAGENT_CRASH':
-      sysLog.error(category, `❌ Erro no subagente [${entry.agentName || 'CLI'}] (ID: ${entry.executionId}): ${entry.error || 'Falha desconhecida'}`, details, source);
+      sysLog.error(
+        category,
+        `❌ [ERRO DE SUBAGENTE] Falha no subagente [${entry.agentName || 'principal'}]: ${entry.error || 'Erro inesperado'}`,
+        details,
+        source
+      );
       break;
     case 'SUBAGENT_STDERR':
-      sysLog.warn(category, `⚠️ STDERR do subagente [${entry.agentName || 'CLI'}]: ${entry.stderr}`, details, source);
+      sysLog.warn(
+        category,
+        `⚠️ [STDERR SUBAGENTE] [${entry.agentName || 'principal'}]: ${entry.stderr}`,
+        details,
+        source
+      );
+      break;
+    case 'AGENT_DISCOVERY':
+      sysLog.info(
+        category,
+        `🔍 [DESCOBERTA DE AGENTES] Subagentes sincronizados e reconhecidos no sistema.`,
+        details,
+        source
+      );
+      break;
+    case 'AGENT_FLOW_SUMMARY':
+      sysLog.info(
+        category,
+        `📊 [RESUMO DE EXECUÇÃO] Fluxo de agentes finalizado.`,
+        details,
+        source
+      );
       break;
   }
 }

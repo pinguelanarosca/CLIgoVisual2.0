@@ -4,9 +4,11 @@ import path from 'path';
 import os from 'os';
 import { SystemLogEntry, SystemLogLevel, SystemLogCategory } from '../src/types.js';
 
-const MAX_LOGS = 2500;
+const MAX_LOGS = 3000;
 const LOG_DIR = path.join(os.homedir(), '.local', 'share', 'gemini-gui', 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'system-logs.json');
+const APPEND_LOG_FILE = path.join(LOG_DIR, 'system-logs.log');
+const APP_DEBUG_LOG_FILE = path.join(LOG_DIR, 'app-debug.log');
 
 // Ensure log directory exists
 try {
@@ -36,18 +38,34 @@ function loadLogsFromDisk(): SystemLogEntry[] {
 const logsBuffer: SystemLogEntry[] = loadLogsFromDisk();
 let logIdCounter = logsBuffer.length + 1;
 
-// Throttle saving to disk to prevent excessive IO
+/**
+ * Gravação síncrona atômica imediata para proteção total contra quedas ou encerramento do processo.
+ */
+export function flushLogsToDiskSync(): void {
+  try {
+    if (!fs.existsSync(LOG_DIR)) {
+      fs.mkdirSync(LOG_DIR, { recursive: true });
+    }
+    const tempFile = `${LOG_FILE}.tmp.${Date.now()}`;
+    fs.writeFileSync(tempFile, JSON.stringify(logsBuffer, null, 2), 'utf8');
+    fs.renameSync(tempFile, LOG_FILE);
+  } catch (err) {
+    try {
+      fs.writeFileSync(LOG_FILE, JSON.stringify(logsBuffer, null, 2), 'utf8');
+    } catch (directErr) {
+      console.error('Erro ao descarregar logs para disco de forma síncrona:', directErr);
+    }
+  }
+}
+
+// Throttle saving snapshot to disk to prevent excessive IO during dense streaming
 let saveTimeout: NodeJS.Timeout | null = null;
 function scheduleSaveToDisk() {
   if (saveTimeout) return;
   saveTimeout = setTimeout(() => {
     saveTimeout = null;
-    try {
-      fs.writeFileSync(LOG_FILE, JSON.stringify(logsBuffer, null, 2), 'utf8');
-    } catch (err) {
-      console.error('Erro ao salvar logs em disco:', err);
-    }
-  }, 1000);
+    flushLogsToDiskSync();
+  }, 500);
 }
 
 // Active SSE subscribers
@@ -89,14 +107,27 @@ export function addLog(
     logsBuffer.shift();
   }
 
+  // Append imediato no arquivo de log contínuo (append-only) para nunca perder eventos de subagentes ou falhas
+  try {
+    const detailsStr = details ? ` | Detalhes: ${typeof details === 'object' ? JSON.stringify(details) : details}` : '';
+    const srcStr = source ? ` [Origem: ${source}]` : '';
+    const line = `[${entry.formattedDateTime}] [${entry.level.toUpperCase().padEnd(7)}] [${entry.category.padEnd(8)}]${srcStr} ${entry.message}${detailsStr}\n`;
+    fs.appendFileSync(APPEND_LOG_FILE, line, 'utf8');
+    fs.appendFileSync(APP_DEBUG_LOG_FILE, line, 'utf8');
+  } catch {}
+
   scheduleSaveToDisk();
 
-  // Broadcast to all active SSE subscribers
+  // Broadcast seguro para todos os clientes SSE ativos sem quebrar o processo em caso de desconexão
   if (sseClients.size > 0) {
     const data = `data: ${JSON.stringify(entry)}\n\n`;
     sseClients.forEach((client) => {
       try {
-        client.write(data);
+        if (!client.writableEnded && !client.destroyed) {
+          client.write(data);
+        } else {
+          sseClients.delete(client);
+        }
       } catch {
         sseClients.delete(client);
       }
@@ -148,7 +179,7 @@ export function getLogs(options?: {
 export function clearLogs(): void {
   logsBuffer.length = 0;
   addLog('info', 'SYSTEM', 'Buffer de logs limpo pelo usuário.');
-  scheduleSaveToDisk();
+  flushLogsToDiskSync();
 }
 
 export function exportLogsText(): string {
@@ -173,7 +204,12 @@ export function registerSseClient(res: Response): () => void {
   // Send keep-alive heartbeat every 15s
   const interval = setInterval(() => {
     try {
-      res.write(': ping\n\n');
+      if (!res.writableEnded && !res.destroyed) {
+        res.write(': ping\n\n');
+      } else {
+        clearInterval(interval);
+        sseClients.delete(res);
+      }
     } catch {
       clearInterval(interval);
       sseClients.delete(res);
@@ -189,5 +225,33 @@ export function registerSseClient(res: Response): () => void {
   return cleanup;
 }
 
+// Guardiões de processo para garantir que nenhum log seja perdido em qualquer circunstância
+process.on('uncaughtException', (err) => {
+  sysLog.error('SYSTEM', `Uncaught Exception capturada pelo guardião de logs: ${err.message}`, { stack: err.stack });
+  flushLogsToDiskSync();
+});
+
+process.on('unhandledRejection', (reason: any) => {
+  const msg = reason?.message || String(reason);
+  sysLog.error('SYSTEM', `Unhandled Promise Rejection capturada pelo guardião de logs: ${msg}`, { stack: reason?.stack });
+  flushLogsToDiskSync();
+});
+
+process.on('beforeExit', () => {
+  flushLogsToDiskSync();
+});
+
+process.on('exit', () => {
+  flushLogsToDiskSync();
+});
+
+process.on('SIGINT', () => {
+  flushLogsToDiskSync();
+});
+
+process.on('SIGTERM', () => {
+  flushLogsToDiskSync();
+});
+
 // Initial system startup log
-sysLog.success('SYSTEM', 'Serviço de Logs em Tempo Real inicializado com sucesso.');
+sysLog.success('SYSTEM', 'Serviço de Logs em Tempo Real e Persistência Contínua inicializado com sucesso.');
