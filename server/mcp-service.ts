@@ -129,21 +129,6 @@ export function loadMcpSettings(targetDir?: string): McpConfig[] {
 }
 
 export function saveMcpSettings(servers: McpConfig[], targetDir?: string) {
-  const settingsFile = getSettingsFilePath(targetDir);
-  const dir = path.dirname(settingsFile);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  let settings: any = {};
-  if (fs.existsSync(settingsFile)) {
-    try {
-      settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-    } catch {
-      settings = {};
-    }
-  }
-
   const mcpServers: Record<string, any> = {};
   const guiMcpServers: Record<string, any> = {};
 
@@ -180,9 +165,37 @@ export function saveMcpSettings(servers: McpConfig[], targetDir?: string) {
     }
   }
 
-  settings.mcpServers = mcpServers;
-  settings.guiMcpServers = guiMcpServers;
-  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2), 'utf8');
+  const targetSettingsFiles = new Set<string>();
+  targetSettingsFiles.add(getSettingsFilePath(targetDir));
+  targetSettingsFiles.add(path.join(getGuiDataDir(), '.gemini', 'settings.json'));
+  targetSettingsFiles.add(path.join(os.homedir(), '.gemini', 'settings.json'));
+  if (targetDir) {
+    targetSettingsFiles.add(path.join(targetDir, '.gemini', 'settings.json'));
+  }
+
+  for (const settingsFile of targetSettingsFiles) {
+    try {
+      const dir = path.dirname(settingsFile);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      let settings: any = {};
+      if (fs.existsSync(settingsFile)) {
+        try {
+          settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+        } catch {
+          settings = {};
+        }
+      }
+
+      settings.mcpServers = mcpServers;
+      settings.guiMcpServers = guiMcpServers;
+      fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2), 'utf8');
+    } catch {
+      // Ignorar erros em diretórios não graváveis
+    }
+  }
 }
 
 export async function testMcpServer(mcp: McpConfig): Promise<{ success: boolean; message: string }> {

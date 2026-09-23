@@ -1,0 +1,60 @@
+{
+  "/root/.gemini/agents/architect.md": "641b552cf6b23c9a02b5ec5e62a7c40efb7755887f13f4e12a141b5315ea0f40",
+  "/root/.gemini/agents/auditor.md": "053fe8865be578110a09471ceb3514a2839012d18a3759b09a86a17023ad3b00",
+  "/root/.gemini/agents/investigator.md": "af748d16ffd93c041b5416dd38120e7e17ba30b9fa314f215720e9b9d9cd03fa",
+  "/root/.gemini/agents/principal.md": "1a8198f6c8dea04d980b000da03ef6396a6ae25c9e4d88fc3c2e56217c30a932",
+  "/root/.gemini/agents/tester.md": "c7a6062c13aeba478b0e80fe5fe01ed36fe1c669808a2f74802bf0964b8ace17",
+  "/root/.gemini/agents/worker.md": "f5549f6fbff77f8e6720129df9119e8c7a6fada7a5c97401d5d76c1f0818af64",
+  "/root/.local/share/gemini-gui/.gemini/agents/architect.md": "641b552cf6b23c9a02b5ec5e62a7c40efb7755887f13f4e12a141b5315ea0f40",
+  "/root/.local/share/gemini-gui/.gemini/agents/auditor.md": "053fe8865be578110a09471ceb3514a2839012d18a3759b09a86a17023ad3b00",
+  "/root/.local/share/gemini-gui/.gemini/agents/investigator.md": "af748d16ffd93c041b5416dd38120e7e17ba30b9fa314f215720e9b9d9cd03fa",
+  "/root/.local/share/gemini-gui/.gemini/agents/principal.md": "1a8198f6c8dea04d980b000da03ef6396a6ae25c9e4d88fc3c2e56217c30a932",
+  "/root/.local/share/gemini-gui/.gemini/agents/tester.md": "c7a6062c13aeba478b0e80fe5fe01ed36fe1c669808a2f74802bf0964b8ace17",
+  "/root/.local/share/gemini-gui/.gemini/agents/worker.md": "f5549f6fbff77f8e6720129df9119e8c7a6fada7a5c97401d5d76c1f0818af64",
+  "/app/applet/.gemini/agents/architect.md": "b4f03c4dcc8f76a6f54028754eb3d5ae2c9d9e3c137fc7e856fc9b737ae4db2c",
+  "/app/applet/.gemini/agents/auditor.md": "2515f6077485206404a213700a92db1f284868cd69e94964a3e8fdc3faee22ec",
+  "/app/applet/.gemini/agents/investigator.md": "b0ed5bf3c71247c2eb0b6c6bd3d55685b1c7360ac864861df45dc9c61ec56f00",
+  "/app/applet/.gemini/agents/principal.md": "dd37cbadc3fce9e307d7a0de1530df0bc1390abbee6b506775202f9e64259dc2",
+  "/app/applet/.gemini/agents/tester.md": "a59c93a693ac37a2ea27618a8d09330f6ea61dd7c37720c39b4430225065b38b",
+  "/app/applet/.gemini/agents/worker.md": "f5549f6fbff77f8e6720129df9119e8c7a6fada7a5c97401d5d76c1f0818af64",
+  "/root/.gemini": {
+    "architect": "641b552cf6b23c9a02b5ec5e62a7c40efb7755887f13f4e12a141b5315ea0f40",
+    "auditor": "053fe8865be578110a09471ceb3514a2839012d18a3759b09a86a17023ad3b00",
+    "investigator": "af748d16ffd93c041b5416dd38120e7e17ba30b9fa314f215720e9b9d9cd03fa",
+    "principal": "1a8198f6c8dea04d980b000da03ef6396a6ae25c9e4d88fc3c2e56217c30a932",
+    "tester": "c7a6062c13aeba478b0e80fe5fe01ed36fe1c669808a2f74802bf0964b8ace17",
+    "worker": "f5549f6fbff77f8e6720129df9119e8c7a6fada7a5c97401d5d76c1f0818af64"
+  },
+  "/root": {
+    "architect": "641b552cf6b23c9a02b5ec5e62a7c40efb7755887f13f4e12a141b5315ea0f40",
+    "auditor": "053fe8865be578110a09471ceb3514a2839012d18a3759b09a86a17023ad3b00",
+    "investigator": "af748d16ffd93c041b5416dd38120e7e17ba30b9fa314f215720e9b9d9cd03fa",
+    "principal": "1a8198f6c8dea04d980b000da03ef6396a6ae25c9e4d88fc3c2e56217c30a932",
+    "tester": "c7a6062c13aeba478b0e80fe5fe01ed36fe1c669808a2f74802bf0964b8ace17",
+    "worker": "f5549f6fbff77f8e6720129df9119e8c7a6fada7a5c97401d5d76c1f0818af64"
+  },
+  "/app/applet": {
+    "architect": "641b552cf6b23c9a02b5ec5e62a7c40efb7755887f13f4e12a141b5315ea0f40",
+    "auditor": "053fe8865be578110a09471ceb3514a2839012d18a3759b09a86a17023ad3b00",
+    "investigator": "af748d16ffd93c041b5416dd38120e7e17ba30b9fa314f215720e9b9d9cd03fa",
+    "principal": "1a8198f6c8dea04d980b000da03ef6396a6ae25c9e4d88fc3c2e56217c30a932",
+    "tester": "c7a6062c13aeba478b0e80fe5fe01ed36fe1c669808a2f74802bf0964b8ace17",
+    "worker": "f5549f6fbff77f8e6720129df9119e8c7a6fada7a5c97401d5d76c1f0818af64"
+  },
+  "/root/.local/share/gemini-gui/.gemini": {
+    "architect": "641b552cf6b23c9a02b5ec5e62a7c40efb7755887f13f4e12a141b5315ea0f40",
+    "auditor": "053fe8865be578110a09471ceb3514a2839012d18a3759b09a86a17023ad3b00",
+    "investigator": "af748d16ffd93c041b5416dd38120e7e17ba30b9fa314f215720e9b9d9cd03fa",
+    "principal": "1a8198f6c8dea04d980b000da03ef6396a6ae25c9e4d88fc3c2e56217c30a932",
+    "tester": "c7a6062c13aeba478b0e80fe5fe01ed36fe1c669808a2f74802bf0964b8ace17",
+    "worker": "f5549f6fbff77f8e6720129df9119e8c7a6fada7a5c97401d5d76c1f0818af64"
+  },
+  "/app/applet/.gemini": {
+    "architect": "b4f03c4dcc8f76a6f54028754eb3d5ae2c9d9e3c137fc7e856fc9b737ae4db2c",
+    "auditor": "2515f6077485206404a213700a92db1f284868cd69e94964a3e8fdc3faee22ec",
+    "investigator": "b0ed5bf3c71247c2eb0b6c6bd3d55685b1c7360ac864861df45dc9c61ec56f00",
+    "principal": "dd37cbadc3fce9e307d7a0de1530df0bc1390abbee6b506775202f9e64259dc2",
+    "tester": "a59c93a693ac37a2ea27618a8d09330f6ea61dd7c37720c39b4430225065b38b",
+    "worker": "f5549f6fbff77f8e6720129df9119e8c7a6fada7a5c97401d5d76c1f0818af64"
+  }
+}

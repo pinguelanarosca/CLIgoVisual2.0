@@ -14,19 +14,19 @@ export function sanitizeModelName(model?: string): string {
   if (!model || typeof model !== 'string') return 'gemini-3.5-flash-lite';
   const clean = model.trim().toLowerCase();
   
-  if (clean === 'gemini-3.7-flash' || clean === 'gemini-3.6-flash' || clean === 'gemini-3.8-flash' || clean === 'gemini-3-flash') {
-    return 'gemini-2.5-flash';
+  if (clean === 'gemini-2.5-flash' || clean === 'gemini-2.5-flash-lite' || clean === 'gemini-2.0-flash' || clean === 'gemini-1.5-flash') {
+    return 'gemini-3.5-flash-lite';
+  }
+  if (clean === 'gemini-2.5-pro' || clean === 'gemini-1.5-pro') {
+    return 'gemini-3.5-flash';
   }
   if (clean === 'gemini-3.1-flash-lite' || clean === 'gemini-flash-lite' || clean === 'flash-lite') {
     return 'gemini-3.5-flash-lite';
   }
-  if (clean === 'gemini-3-pro' || clean === 'gemini-3.5-pro') {
-    return 'gemini-2.5-pro';
-  }
   return model.trim();
 }
 
-const DEFAULT_AGENTS: AgentConfig[] = [
+export const DEFAULT_AGENTS: AgentConfig[] = [
   {
     id: 'principal',
     name: 'principal',
@@ -34,21 +34,25 @@ const DEFAULT_AGENTS: AgentConfig[] = [
     role: 'Principal/Orchestrator: coordenação, roteamento e consolidação.',
     model: 'gemini-3.5-flash-lite',
     backupAgentId: 'worker',
-    description: 'Coordenação geral, decomposição de tarefas complexas, roteamento e delegação estruturada para agentes especializados (investigator, architect, auditor, tester, worker) e consolidação dos resultados.',
+    description: 'Coordenação geral e execução direta e ágil. Para tarefas simples (listar pastas, ler arquivos, comandos rápidos), executa diretamente. Para tarefas complexas e multifásicas, delega para subagentes especializados.',
     baseInstructions: `Você é o Principal Orchestrator do Gemini CLI.
-Sua função primária:
-- Coordenação de fluxos de trabalho e decomposição de tarefas complexas.
-- DELEGAÇÃO ATIVA E OBRIGATÓRIA: Para qualquer tarefa que envolva investigação de código, arquitetura de sistemas, auditoria/segurança, testes automatizados ou refatoração/código repetitivo, você DEVE acionar a ferramenta \`invoke_agent\`.
-- Subagentes disponíveis para delegação:
-  * investigator: Use para investigação profunda de código, busca de bugs, rastreamento de causas raízes e diagnóstico técnico com evidências.
-  * architect: Use para decisões de design de software, modularidade, contratos de API e integridade estrutural.
-  * auditor: Use para auditoria de segurança, revisão rigorosa de código, detecção de regressões e conformidade de qualidade.
-  * tester: Use para criação de testes automatizados, execução de suítes de validação e análise de falhas.
-  * worker: Use para geração de boilerplate, transformações repetitivas em massa e refatorações diretas.
-- Como invocar: Chame a ferramenta \`invoke_agent\` especificando:
-  * agent_name: O nome exato do subagente ('investigator', 'architect', 'auditor', 'tester', ou 'worker').
-  * prompt: A instrução completa, detalhada e com todo o contexto técnico necessário para a execução.
-- NUNCA responda no lugar de um subagente sem chamá-lo: acione \`invoke_agent\`, aguarde os dados retornados pela ferramenta e só então sintetize a resposta final ao usuário.`,
+Princípio Fundamental: VELOCIDADE, ECONOMIA DE TOKENS, EXECUÇÃO DIRETA E RESPOSTAS ESTRUTURADAS EM MARKDOWN.
+
+1. EFICIÊNCIA DE EXECUÇÃO E ECONOMIA DE TOKENS:
+- Execute comandos agrupados e diretos. Evite cadeias excessivas de chamadas exploratórias individuais.
+- Se precisar inspecionar arquivos, diretórios ou logs, utilize comandos consolidados (ex: \`run_shell_command\`) ou faça leituras pontuais e imediatas.
+- Finalize e responda ao usuário assim que obtiver as informações necessárias.
+
+2. TAREFAS DIRETAS E OPERACIONAIS:
+- Para listagens, leituras, diagnósticos rápidos ou utilitários: execute diretamente em 1 a 2 turnos com suas ferramentas nativas.
+
+3. DELEGAÇÃO CIRÚRGICA (QUANDO NECESSÁRIO):
+- Para demandas multifásicas de alta complexidade, acione pontualmente o subagente especializado mais adequado (\`investigator\`, \`architect\`, \`auditor\`, \`tester\` ou \`worker\`).
+- Evite invocar múltiplos agentes simultaneamente quando 1 ou 2 forem suficientes para a tarefa.
+
+4. FORMATO DE SAÍDA:
+- Responda sempre em Markdown limpo e estruturado (títulos \`##\`, listas numeradas \`1.\`, \`2.\`, destaques em negrito \`**\` e blocos de código com linguagem identificada).
+- Nunca repita instruções internas, preâmbulos de sistema ou comentários meta na resposta ao usuário.`,
     systemInstructions: '',
     overrideBasePrompt: false,
     enabled: true,
@@ -63,7 +67,7 @@ Sua função primária:
     name: 'investigator',
     displayName: 'Investigator',
     role: 'Investigator: investigação, pesquisa e diagnóstico.',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.5-flash-lite',
     backupAgentId: 'architect',
     description: 'Agente especializado em investigação profunda de código, busca e rastreamento de bugs, pesquisa em fontes e diagnóstico técnico empírico com evidências.',
     baseInstructions: `Você é o Investigator do Gemini CLI.
@@ -85,7 +89,7 @@ Sua função primária:
     name: 'architect',
     displayName: 'Architect',
     role: 'Architect: decisões arquiteturais e estruturais.',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.5-flash-lite',
     backupAgentId: 'investigator',
     description: 'Agente especializado em design de sistemas, arquitetura de software, modularidade, desacoplamento, contratos de interfaces e integridade estrutural.',
     baseInstructions: `Você é o Architect do Gemini CLI.
@@ -107,7 +111,7 @@ Sua função primária:
     name: 'auditor',
     displayName: 'Auditor',
     role: 'Auditor: revisão crítica e identificação de problemas.',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.5-flash-lite',
     backupAgentId: 'architect',
     description: 'Agente especializado em revisão crítica rigorosa de código, auditoria de segurança, detecção de regressões, conformidade e análise de vulnerabilidades.',
     baseInstructions: `Você é o Auditor do Gemini CLI.
@@ -129,7 +133,7 @@ Sua função primária:
     name: 'tester',
     displayName: 'Tester',
     role: 'Tester: testes e validação.',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.5-flash-lite',
     backupAgentId: 'worker',
     description: 'Agente especializado em criação e execução de testes automatizados (unitários, integração e e2e), validação comportamental e análise de falhas.',
     baseInstructions: `Você é o Tester do Gemini CLI.
@@ -802,6 +806,18 @@ export function syncAgentsToSettings(
 
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
 
+    // Sincronizar também no diretório home do usuário (~/.gemini/settings.json)
+    try {
+      const userGeminiDir = path.join(os.homedir(), '.gemini');
+      if (!fs.existsSync(userGeminiDir)) {
+        fs.mkdirSync(userGeminiDir, { recursive: true });
+      }
+      const userSettings = path.join(userGeminiDir, 'settings.json');
+      fs.writeFileSync(userSettings, JSON.stringify(settings, null, 2), 'utf8');
+    } catch {
+      // Ignorar se houver restrição
+    }
+
     // Sincronizar também no diretório de dados da GUI se base for um workspace específico
     if (path.resolve(base) !== path.resolve(getGuiDataDir())) {
       try {
@@ -851,18 +867,20 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
 } {
   const targetDirs = new Set<string>();
 
-  // 1. User home .gemini/agents
+  // 1. User home .gemini/agents - canonical global discovery for Gemini CLI
   targetDirs.add(path.join(os.homedir(), '.gemini', 'agents'));
 
-  // 2. GUI data dir
+  // 2. GUI data dir - persistent storage for Gemini GUI
   targetDirs.add(path.join(getGuiDataDir(), '.gemini', 'agents'));
 
-  // 3. Current process working directory
-  targetDirs.add(path.join(process.cwd(), '.gemini', 'agents'));
-
-  // 4. Custom cwd if passed
-  if (cwd && path.resolve(cwd) !== path.resolve(process.cwd())) {
-    targetDirs.add(path.join(cwd, '.gemini', 'agents'));
+  // Note: We avoid duplicating the same agents into <cwd>/.gemini/agents because Gemini CLI
+  // scans both ~/.gemini/agents and <cwd>/.gemini/agents, causing 'Duplicate agent name detected' warnings.
+  const workspaceDirsToClean = new Set<string>();
+  if (path.resolve(process.cwd()) !== path.resolve(os.homedir())) {
+    workspaceDirsToClean.add(path.join(process.cwd(), '.gemini', 'agents'));
+  }
+  if (cwd && path.resolve(cwd) !== path.resolve(os.homedir()) && path.resolve(cwd) !== path.resolve(process.cwd())) {
+    workspaceDirsToClean.add(path.join(cwd, '.gemini', 'agents'));
   }
 
   // Load all agents from repository defaults and any existing configs
@@ -919,9 +937,41 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
         fs.writeFileSync(filePath, content, 'utf8');
         totalFiles++;
 
-        // Acknowledge in agents.json
+        // Acknowledge in agents.json: Gemini CLI requires acknowledgedAgents[projectPath][agentName] = hash
         const hash = crypto.createHash('sha256').update(content).digest('hex');
+        
+        // 1. Path-based acknowledgement
         ackMap[path.resolve(filePath)] = hash;
+        
+        // 2. Project-scoped acknowledgement (projectPath -> agentName -> hash)
+        const projectRoot = path.dirname(path.dirname(filePath));
+        const resolvedProjectRoot = path.resolve(projectRoot);
+        if (!ackMap[resolvedProjectRoot] || typeof ackMap[resolvedProjectRoot] !== 'object') {
+          (ackMap as any)[resolvedProjectRoot] = {};
+        }
+        (ackMap as any)[resolvedProjectRoot][agent.name] = hash;
+
+        // Also add projectRoot unnormalized if different
+        if (projectRoot !== resolvedProjectRoot) {
+          if (!ackMap[projectRoot] || typeof ackMap[projectRoot] !== 'object') {
+            (ackMap as any)[projectRoot] = {};
+          }
+          (ackMap as any)[projectRoot][agent.name] = hash;
+        }
+
+        // Also guarantee for user homedir and process cwd
+        const homeDir = os.homedir();
+        if (!ackMap[homeDir] || typeof ackMap[homeDir] !== 'object') {
+          (ackMap as any)[homeDir] = {};
+        }
+        (ackMap as any)[homeDir][agent.name] = hash;
+
+        const procCwd = process.cwd();
+        if (!ackMap[procCwd] || typeof ackMap[procCwd] !== 'object') {
+          (ackMap as any)[procCwd] = {};
+        }
+        (ackMap as any)[procCwd][agent.name] = hash;
+
         ackUpdated++;
       }
 
@@ -940,15 +990,40 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
     }
   }
 
-  // Save updated acknowledgments
-  try {
-    const ackDir = path.dirname(ackFile);
-    if (!fs.existsSync(ackDir)) {
-      fs.mkdirSync(ackDir, { recursive: true });
+  // Clean up duplicate agents from workspace directories to prevent Gemini CLI duplicate warnings
+  for (const wsDir of workspaceDirsToClean) {
+    try {
+      if (fs.existsSync(wsDir)) {
+        const mdFiles = fs.readdirSync(wsDir).filter(f => f.endsWith('.md'));
+        for (const mdFile of mdFiles) {
+          try {
+            fs.unlinkSync(path.join(wsDir, mdFile));
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  // Save updated acknowledgments to all relevant locations
+  const ackLocations = [
+    path.join(os.homedir(), '.gemini', 'acknowledgments', 'agents.json'),
+    path.join(getGuiDataDir(), '.gemini', 'acknowledgments', 'agents.json'),
+    path.join(process.cwd(), '.gemini', 'acknowledgments', 'agents.json'),
+  ];
+  if (cwd && path.resolve(cwd) !== path.resolve(process.cwd())) {
+    ackLocations.push(path.join(cwd, '.gemini', 'acknowledgments', 'agents.json'));
+  }
+
+  for (const targetAckFile of ackLocations) {
+    try {
+      const ackDir = path.dirname(targetAckFile);
+      if (!fs.existsSync(ackDir)) {
+        fs.mkdirSync(ackDir, { recursive: true });
+      }
+      fs.writeFileSync(targetAckFile, JSON.stringify(ackMap, null, 2), 'utf8');
+    } catch (ackErr) {
+      console.warn(`[AgentsService] Erro ao salvar acknowledgments em ${targetAckFile}:`, ackErr);
     }
-    fs.writeFileSync(ackFile, JSON.stringify(ackMap, null, 2), 'utf8');
-  } catch (ackErr) {
-    console.warn('[AgentsService] Erro ao salvar acknowledgments de agentes:', ackErr);
   }
 
   // Synchronize settings.json in ~/.gemini, cwd, and gui data dir

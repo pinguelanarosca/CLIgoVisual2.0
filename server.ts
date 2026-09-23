@@ -124,8 +124,9 @@ const HOST = process.env.HOST || '0.0.0.0';
 async function startServer() {
   const app = express();
 
-  // Generous limit for audio base64 uploads
-  app.use(express.json({ limit: '25mb' }));
+  // Generous limit for large file attachments, documents, and audio base64 uploads
+  app.use(express.json({ limit: '250mb' }));
+  app.use(express.urlencoded({ limit: '250mb', extended: true }));
 
   // Request logger middleware for API operations
   app.use((req, res, next) => {
@@ -169,14 +170,21 @@ async function startServer() {
 # This prevents tools from being blocked by default non-interactive / headless checks.
 
 [[rule]]
-toolName = [
-  "replace",
-  "run_shell_command",
-  "write_file",
-  "activate_skill",
-  "web_fetch",
-  "invoke_agent"
-]
+name = "Allow All MCP Tools"
+toolName = "mcp_*"
+decision = "allow"
+priority = 90
+
+[[rule]]
+name = "Allow All MCP Servers"
+toolName = "*"
+mcpName = "*"
+decision = "allow"
+priority = 90
+
+[[rule]]
+name = "Allow Essential Development Tools"
+toolName = "*"
 decision = "allow"
 priority = 90
 `;

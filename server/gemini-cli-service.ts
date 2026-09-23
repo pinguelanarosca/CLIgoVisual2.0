@@ -337,42 +337,40 @@ export function isExistingSession(sessionId?: string, workspaceDir?: string): bo
       }
     } catch {}
 
-    if (workspaceDir && workspaceDir !== os.homedir() && workspaceDir !== getGuiDataDir()) {
-      const wsTmp = path.join(workspaceDir, '.gemini', 'tmp');
-      candidateDirs.push(wsTmp);
+    if (workspaceDir) {
+      candidateDirs.push(path.join(workspaceDir, '.gemini', 'tmp'));
+      const wsName = path.basename(workspaceDir);
+      candidateDirs.push(path.join(os.homedir(), '.gemini', 'tmp', wsName, 'chats'));
+      candidateDirs.push(path.join(getGuiDataDir(), '.gemini', 'tmp', wsName, 'chats'));
     }
 
-    // Direct shallow checks first
-    for (const cDir of candidateDirs) {
-      if (fs.existsSync(cDir)) {
-        if (
-          fs.existsSync(path.join(cDir, `${normalizedId}.jsonl`)) ||
-          fs.existsSync(path.join(cDir, `${normalizedId}.json`)) ||
-          (sessionId && (fs.existsSync(path.join(cDir, `${sessionId}.jsonl`)) || fs.existsSync(path.join(cDir, `${sessionId}.json`))))
-        ) {
-          knownSessions.add(normalizedId);
-          if (sessionId) knownSessions.add(sessionId);
-          return true;
-        }
-      }
-    }
+    const shortId = normalizedId.slice(0, 8).toLowerCase();
+    const origShortId = sessionId.slice(0, 8).toLowerCase();
 
     const checkDirShallow = (dir: string, depth = 0): boolean => {
-      if (depth > 2) return false;
+      if (depth > 3) return false;
       if (!fs.existsSync(dir)) return false;
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          if (checkDirShallow(fullPath, depth + 1)) return true;
-        } else if (entry.isFile()) {
-          if (entry.name.startsWith(normalizedId) || (sessionId && entry.name.startsWith(sessionId))) {
-            knownSessions.add(normalizedId);
-            if (sessionId) knownSessions.add(sessionId);
-            return true;
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (checkDirShallow(fullPath, depth + 1)) return true;
+          } else if (entry.isFile()) {
+            const n = entry.name.toLowerCase();
+            if (
+              n.includes(shortId) ||
+              n.includes(origShortId) ||
+              n.includes(normalizedId.toLowerCase()) ||
+              n.includes(sessionId.toLowerCase())
+            ) {
+              knownSessions.add(normalizedId);
+              knownSessions.add(sessionId);
+              return true;
+            }
           }
         }
-      }
+      } catch {}
       return false;
     };
 
@@ -658,22 +656,23 @@ export interface CliExecutionParams {
 }
 
 export const AGENT_FALLBACK_CHAINS: Record<string, string[]> = {
-  architect: ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'],
-  auditor: ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'],
-  investigator: ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'],
-  principal: ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro'],
-  tester: ['gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-pro'],
-  worker: ['gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-pro'],
+  architect: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
+  auditor: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
+  investigator: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
+  principal: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
+  tester: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
+  worker: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
 };
 
 export function normalizeCliModelName(rawModel?: string): string {
   if (!rawModel || rawModel === 'auto') return 'gemini-3.5-flash-lite';
   const m = rawModel.trim().toLowerCase();
   
-  if (m.includes('pro')) return 'gemini-2.5-pro';
-  if (m.includes('preview')) return 'gemini-3-flash-preview';
+  if (m === 'gemini-2.5-flash' || m === 'gemini-2.5-flash-lite' || m === 'gemini-2.0-flash') return 'gemini-3.5-flash-lite';
+  if (m === 'gemini-2.5-pro' || m === 'gemini-1.5-pro') return 'gemini-3.5-flash';
   if (m.includes('3.5-flash-lite') || m.includes('3.1-flash-lite') || m.includes('flash-lite')) return 'gemini-3.5-flash-lite';
-  if (m.includes('2.5') || m.includes('3.6') || m.includes('3.7') || m.includes('3.8') || m.includes('flash')) return 'gemini-2.5-flash';
+  if (m.includes('3.6-flash') || m.includes('3.7-flash') || m.includes('3.8-flash') || m.includes('3.5-flash')) return m;
+  if (m.includes('pro')) return 'gemini-3.5-flash';
   
   return 'gemini-3.5-flash-lite';
 }
@@ -1191,13 +1190,10 @@ export function executeGeminiCli(
       const shouldResume = Boolean(effectiveSessionId && params.resume !== false);
       const tResume = performance.now();
       console.log(`[PERF] [${executionId}] resume_decision_done=${(tResume - t0).toFixed(1)}ms (resume: ${shouldResume})`);
-      let finalPrompt = params.prompt;
+      const finalPrompt = params.prompt;
 
-      // For new sessions, prepend explicit workspace and directory context so the model knows its working directory
-      if (!shouldResume) {
-        const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : cwd}.\nSempre inspecione e responda com base nos arquivos localizados neste diretório.\n---\n\n`;
-        finalPrompt = workspaceHeader + params.prompt;
-      }
+      // Workspace context header
+      const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : cwd}.\nSempre inspecione e responda com base nos arquivos localizados neste diretório.\n---\n`;
 
       // Determine model: respect the configured model for the agent/execution, default to 'gemini-3.5-flash-lite'
       let requestedModel = state?.currentModel || params.model;
@@ -1253,9 +1249,11 @@ export function executeGeminiCli(
       }
 
       const isDebug = process.env.GEMINI_GUI_DEBUG === '1';
+      // Se o prompt for muito grande (>8KB ou com anexos), enviar via stdin para evitar ARG_MAX / E2BIG do sistema operacional
+      const isPromptLarge = finalPrompt.length > 8192;
       const args: string[] = [
         ...(isDebug ? ['--debug'] : []),
-        '-p', finalPrompt,
+        ...(isPromptLarge ? [] : ['-p', finalPrompt]),
         '-o', 'stream-json',
         '--skip-trust',
       ];
@@ -1306,14 +1304,13 @@ export function executeGeminiCli(
 
       if (effectiveSessionId) {
         const sessionExists = isExistingSession(effectiveSessionId, cwd);
-        if (shouldResume || sessionExists) {
+        const shouldPassResumeFlag = params.resume === true || (shouldResume && sessionExists);
+        if (shouldPassResumeFlag) {
           args.push('-r', effectiveSessionId);
           knownSessions.add(effectiveSessionId);
           if (params.sessionId) knownSessions.add(params.sessionId);
         } else {
           args.push('--session-id', effectiveSessionId);
-          knownSessions.add(effectiveSessionId);
-          if (params.sessionId) knownSessions.add(params.sessionId);
         }
       }
 
@@ -1327,6 +1324,11 @@ export function executeGeminiCli(
         params.systemInstructions,
         params.overrideBasePrompt
       );
+
+      // Injetar contexto de workspace no system prompt de forma limpa
+      if (workspaceHeader && !params.overrideBasePrompt) {
+        effectiveSystemPrompt = workspaceHeader + (effectiveSystemPrompt ? '\n\n' + effectiveSystemPrompt : '');
+      }
 
       // Injetar Protocolo de Delegação de Subagentes para o Agente Principal / Orquestrador
       const isOrchestrator = !agentId || agentId === 'principal' || agentId.includes('orchestrator');
@@ -1445,6 +1447,15 @@ export function executeGeminiCli(
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 300000,
       });
+
+      if (isPromptLarge && child.stdin) {
+        try {
+          child.stdin.write(finalPrompt);
+          child.stdin.end();
+        } catch (stdinErr) {
+          sysLog.error('CLI', `Erro ao escrever prompt grande no stdin: ${stdinErr}`, { executionId });
+        }
+      }
 
       execState.childProcess = child;
       logSubagentEvent({
@@ -1828,6 +1839,21 @@ export function executeGeminiCli(
           return;
         }
 
+        // Se o Gemini CLI acusar que a sessão já existe, auto-recuperar retomando com -r
+        const isSessionAlreadyExistsError =
+          stderrText.includes('already exists. Use --resume to resume it') ||
+          stderrText.includes('already exists') ||
+          reportedErrorText.includes('already exists. Use --resume to resume it') ||
+          reportedErrorText.includes('already exists');
+
+        if (isSessionAlreadyExistsError && (params.sessionId || effectiveSessionId) && !isRetry) {
+          sysLog.warn('CLI', `Sessão já existe no disco (${params.sessionId || effectiveSessionId}). Retomando automaticamente com -r (--resume)...`);
+          if (params.sessionId) knownSessions.add(params.sessionId);
+          if (effectiveSessionId) knownSessions.add(effectiveSessionId);
+          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: true }, true, { executionId });
+          return;
+        }
+
         // Se o Gemini CLI falhar ao retomar a sessão, auto-recuperar iniciando sessão limpa
         const isSessionResumeError =
           stderrText.includes('Error resuming session') ||
@@ -1924,14 +1950,8 @@ export function executeGeminiCli(
         );
 
         const hasUnresolvedToolCalls = activeToolCalls.size > 0;
-        const hasFailed =
-          (code !== 0 && code !== null) ||
-          isQuotaError ||
-          isFetchFailed ||
-          isOverloadedError ||
-          isAuthError ||
-          hasUnresolvedToolCalls ||
-          Boolean(reportedErrorText);
+        const isProcessExitFailure = (code !== 0 && code !== null);
+        const hasFailed = isProcessExitFailure || (hasUnresolvedToolCalls && isProcessExitFailure);
 
         // Se houver chamadas de ferramentas/subagentes pendentes sem fechamento formal, emitir tool_result terminal
         if (hasUnresolvedToolCalls) {
@@ -1948,7 +1968,10 @@ export function executeGeminiCli(
               toolFailureReason = 'Serviço da API Gemini temporariamente sobrecarregado (Erro 503 / Model Overloaded) durante a execução do subagente.';
             } else if (isAuthError) {
               toolFailureReason = 'Falha de autenticação da chave de API (GEMINI_API_KEY) durante a execução do subagente.';
-            } else if (!toolFailureReason) {
+            }
+
+            const isSuccess = code === 0 && !isProcessExitFailure && !reportedErrorText && !isQuotaError && !isFetchFailed && !isOverloadedError && !isAuthError;
+            if (!isSuccess && !toolFailureReason) {
               toolFailureReason = `Execução do subagente/ferramenta finalizada sem retorno terminal formal (exitCode: ${code ?? 0}).`;
             }
 
@@ -1959,9 +1982,10 @@ export function executeGeminiCli(
                 tool_call_id: unres.toolId,
                 tool_id: unres.toolId,
                 tool_name: unres.toolName,
-                status: 'failed',
-                error: toolFailureReason,
-                output: toolFailureReason,
+                status: isSuccess ? 'completed' : 'failed',
+                error: isSuccess ? undefined : toolFailureReason,
+                output: isSuccess ? 'Execução concluída com sucesso.' : toolFailureReason,
+                result: isSuccess ? 'Execução concluída com sucesso.' : toolFailureReason,
                 executionId,
                 subagentSessionId: lastSubagentSessionId || effectiveSessionId || params.sessionId,
                 lastRequestId: lastSubagentRequestId,

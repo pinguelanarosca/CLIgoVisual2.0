@@ -616,26 +616,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
             return (
               <div
                 key={msg.id}
-                className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}
+                className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'} my-1 sm:my-1.5`}
               >
                 <div
-                  className={`group relative py-0.5 select-text ${
+                  className={`group relative select-text transition-all ${
                     isUser
-                      ? 'ml-auto w-fit max-w-[88%] sm:max-w-[78%] md:max-w-2xl flex flex-col items-end'
-                      : 'mr-auto w-full max-w-4xl flex flex-col items-start'
+                      ? 'ml-auto max-w-[88%] sm:max-w-[78%] md:max-w-2xl rounded-2xl rounded-tr-xs bg-zinc-800/80 hover:bg-zinc-800/95 border border-zinc-700/60 p-3 shadow-sm backdrop-blur-xs text-zinc-100 flex flex-col items-end'
+                      : 'w-full max-w-4xl rounded-2xl rounded-tl-xs bg-zinc-900/70 hover:bg-zinc-900/85 border border-zinc-800/80 p-3.5 shadow-sm backdrop-blur-xs text-zinc-200 flex flex-col items-start'
                   }`}
                 >
                   {/* Header da Mensagem: Autor com Ícone Criativo Gemini na Frente + Data + Model Badge */}
-                  <div className={`flex items-center gap-1.5 mb-0.5 text-xs w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`flex items-center gap-1.5 mb-1.5 text-xs w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
                     {isUser ? (
                       <>
-                        <span className="text-[10px] text-zinc-500 font-mono">
+                        <span className="text-[10px] text-zinc-400 font-mono">
                           {new Date(msg.timestamp).toLocaleTimeString([], {
                             hour: '2-digit',
                             minute: '2-digit',
                           })}
                         </span>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1">
                           <GeminiCreativeIcon state="usuario" size="sm" tooltipText="Você (Usuário)" />
                           <span className="font-semibold text-xs tracking-tight text-zinc-200 font-mono">
                             Você
@@ -663,7 +663,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         </span>
 
                         <div
-                          className="flex items-center font-mono text-[9px] px-1.5 py-0.5 rounded bg-zinc-900/90 text-zinc-400 border border-zinc-800/90 hover:border-zinc-700 transition select-none"
+                          className="flex items-center font-mono text-[9px] px-1.5 py-0.5 rounded bg-zinc-950/80 text-zinc-400 border border-zinc-800/90 select-none"
                         >
                           <span className="text-zinc-300 font-medium">
                             {msg.model || 'gemini'}
@@ -679,7 +679,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     (msg.toolCalls && msg.toolCalls.length > 0) ||
                     (msg.rawPayloadReceived?.rawEvents && msg.rawPayloadReceived.rawEvents.length > 0)
                   ) && (
-                    <div className="w-full">
+                    <div className="w-full mb-1.5">
                       <AgentProcessAccordion
                         toolCalls={msg.toolCalls}
                         activities={msg.activities}
@@ -692,8 +692,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     </div>
                   )}
 
-                  {/* Conteúdo da Mensagem — Flutua Livremente sem caixas ou contornos */}
-                  <div className={`w-fit max-w-full ${isUser ? 'text-zinc-100 font-medium text-left' : 'text-zinc-300 font-normal text-left'} leading-tight`}>
+                  {/* Conteúdo da Mensagem */}
+                  <div className={`w-full ${isUser ? 'text-zinc-100 font-medium text-left' : 'text-zinc-200 font-normal text-left'} leading-snug`}>
                     <MessageRenderer
                       content={msg.content}
                       isStreaming={msg.isStreaming}
@@ -704,100 +704,101 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     />
                   </div>
 
-                  {/* Barra de Ações Compacta: Alinhada e ajustada sem excesso de separação */}
-                  <div className="flex items-center justify-start gap-0.5 mt-0.5 pt-0.5 text-[9.5px] text-zinc-500 opacity-60 group-hover:opacity-100 transition-opacity w-full flex-wrap">
-                    {/* Copiar */}
-                    <button
-                      type="button"
-                      onClick={() => handleCopy(msg.content, msg.id)}
-                      title="Copiar mensagem"
-                      className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/80 transition cursor-pointer leading-none"
-                    >
-                      {copiedMessageId === msg.id ? (
-                        <>
-                          <Check className="w-2.5 h-2.5 text-emerald-400" />
-                          <span className="text-emerald-400 font-medium">Copiado</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-2.5 h-2.5" />
-                          <span>Copiar</span>
-                        </>
+                  {/* Barra de Ações Compacta e Empilhada: Linha 1 [Copiar, Narrar, Payload] | Linha 2 [Bifurcar Chat, Bifurcar Mensagem] */}
+                  <div className="flex flex-col gap-1 mt-2 pt-1.5 border-t border-zinc-800/60 text-[10px] text-zinc-400 w-full items-start">
+                    {/* Linha 1: Copiar, Narrar, Payload */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(msg.content, msg.id)}
+                        title="Copiar mensagem"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-750/40 transition cursor-pointer leading-none"
+                      >
+                        {copiedMessageId === msg.id ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-400" />
+                            <span className="text-emerald-400 font-medium">Copiado</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            <span>Copiar</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isNarrating) {
+                            onStopTts();
+                          } else {
+                            onPlayTts(msg.content, msg.id);
+                          }
+                        }}
+                        title={isNarrating ? 'Pausar narração' : 'Ler em voz alta (TTS)'}
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-zinc-750/40 transition cursor-pointer leading-none ${
+                          isNarrating
+                            ? 'text-blue-400 bg-blue-500/15 border-blue-500/30'
+                            : 'bg-zinc-800/60 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                        }`}
+                      >
+                        {isNarrating ? (
+                          <>
+                            <div className="flex items-end gap-0.5 h-2.5">
+                              <span className="w-0.5 bg-blue-400 rounded-full animate-equalizer-1 h-2.5" />
+                              <span className="w-0.5 bg-blue-400 rounded-full animate-equalizer-2 h-2.5" />
+                              <span className="w-0.5 bg-blue-400 rounded-full animate-equalizer-3 h-2.5" />
+                            </div>
+                            <span>Narrando</span>
+                          </>
+                        ) : (
+                          <>
+                            <Volume2 className="w-3 h-3" />
+                            <span>Narrar</span>
+                          </>
+                        )}
+                      </button>
+
+                      {onOpenSources && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenSources(msg)}
+                          title="Auditoria e Payload da API"
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-amber-400 border border-zinc-750/40 transition cursor-pointer leading-none"
+                        >
+                          <Code2 className="w-3 h-3 text-amber-400" />
+                          <span>Payload</span>
+                        </button>
                       )}
-                    </button>
+                    </div>
 
-                    {/* Narrar (Ler em voz alta) */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (isNarrating) {
-                          onStopTts();
-                        } else {
-                          onPlayTts(msg.content, msg.id);
-                        }
-                      }}
-                      title={isNarrating ? 'Pausar narração' : 'Ler em voz alta (TTS)'}
-                      className={`inline-flex items-center gap-0.5 px-1 py-0.2 rounded transition cursor-pointer leading-none ${
-                        isNarrating
-                          ? 'text-blue-400 bg-blue-500/10'
-                          : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/80'
-                      }`}
-                    >
-                      {isNarrating ? (
-                        <>
-                          <div className="flex items-end gap-0.5 h-2">
-                            <span className="w-0.5 bg-blue-400 rounded-full animate-equalizer-1 h-2" />
-                            <span className="w-0.5 bg-blue-400 rounded-full animate-equalizer-2 h-2" />
-                            <span className="w-0.5 bg-blue-400 rounded-full animate-equalizer-3 h-2" />
-                          </div>
-                          <span>Narrando</span>
-                        </>
-                      ) : (
-                        <>
-                          <Volume2 className="w-2.5 h-2.5" />
-                          <span>Narrar</span>
-                        </>
+                    {/* Linha 2: Bifurcar Chat e Bifurcar Mensagem - Alinhadas verticalmente e horizontalmente com os botões superiores */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {onDeriveChat && (
+                        <button
+                          type="button"
+                          onClick={() => onDeriveChat(index)}
+                          title="Bifurcar Chat: Criar nova conversa preservando o histórico acumulado até esta mensagem"
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-emerald-400 border border-zinc-750/40 transition cursor-pointer leading-none"
+                        >
+                          <GitFork className="w-3 h-3 text-emerald-400" />
+                          <span>Bifurcar Chat</span>
+                        </button>
                       )}
-                    </button>
 
-                    {/* Payload / Fontes */}
-                    {onOpenSources && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenSources(msg)}
-                        title="Auditoria e Payload da API"
-                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-zinc-400 hover:text-amber-400 hover:bg-zinc-800/80 transition cursor-pointer leading-none"
-                      >
-                        <Code2 className="w-2.5 h-2.5 text-amber-400" />
-                        <span>Payload</span>
-                      </button>
-                    )}
-
-                    {/* Bifurcar Chat (Histórico até esta mensagem) */}
-                    {onDeriveChat && (
-                      <button
-                        type="button"
-                        onClick={() => onDeriveChat(index)}
-                        title="Bifurcar Chat: Criar nova conversa preservando o histórico acumulado até esta mensagem"
-                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800/80 transition cursor-pointer leading-none"
-                      >
-                        <GitFork className="w-2.5 h-2.5 text-emerald-400" />
-                        <span>Bifurcar Chat</span>
-                      </button>
-                    )}
-
-                    {/* Bifurcar Mensagem (Somente esta mensagem) */}
-                    {onDeriveMessage && (
-                      <button
-                        type="button"
-                        onClick={() => onDeriveMessage(msg)}
-                        title="Bifurcar Mensagem: Criar nova conversa transportando apenas esta mensagem"
-                        className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-zinc-400 hover:text-purple-400 hover:bg-zinc-800/80 transition cursor-pointer leading-none"
-                      >
-                        <MessageSquareShare className="w-2.5 h-2.5 text-purple-400" />
-                        <span>Bifurcar Mensagem</span>
-                      </button>
-                    )}
+                      {onDeriveMessage && (
+                        <button
+                          type="button"
+                          onClick={() => onDeriveMessage(msg)}
+                          title="Bifurcar Mensagem: Criar nova conversa transportando apenas esta mensagem"
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-purple-400 border border-zinc-750/40 transition cursor-pointer leading-none"
+                        >
+                          <MessageSquareShare className="w-3 h-3 text-purple-400" />
+                          <span>Bifurcar Mensagem</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -836,9 +837,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
         )}
 
         <div className="max-w-4xl mx-auto flex flex-col gap-1 pr-1.5">
-          {/* Attached Files Chips Grid */}
+          {/* Attached Files Chips Grid - Compact Squares */}
           {attachedFiles.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 p-1.5 bg-zinc-950/90 rounded-lg border border-zinc-800/80 mb-0.5">
+            <div className="flex flex-wrap items-center gap-2 p-1.5 bg-zinc-950/80 rounded-lg border border-zinc-800/80 mb-1">
               {attachedFiles.map((file) => {
                 const ext = file.extension || '.txt';
                 const isJson = ext === '.json' || ext === '.yaml' || ext === '.yml';
@@ -848,8 +849,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 return (
                   <div
                     key={file.id}
-                    className="flex items-center gap-2 px-2.5 py-1.5 bg-zinc-900 border border-zinc-700/80 rounded-lg text-xs shadow-xs hover:border-zinc-600 transition"
+                    className="relative w-16 h-16 sm:w-18 sm:h-18 p-1.5 bg-zinc-900 border border-zinc-700/80 rounded-lg shadow-xs hover:border-zinc-500 transition flex flex-col items-center justify-between text-center group select-none shrink-0"
+                    title={file.name}
                   >
+                    {/* Close / Remove Attachment Button */}
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveAttachment(file.id)}
+                      title="Cancelar envio do anexo"
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-zinc-850 border border-zinc-600 text-zinc-400 hover:text-rose-400 hover:bg-rose-950 flex items-center justify-center transition cursor-pointer z-10 shadow-xs"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+
                     {/* File Extension Icon */}
                     <div
                       className={`p-1 rounded flex items-center justify-center shrink-0 ${
@@ -863,39 +875,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       }`}
                     >
                       {isJson ? (
-                        <FileJson className="w-3.5 h-3.5" />
+                        <FileJson className="w-3 h-3" />
                       ) : isMd ? (
-                        <FileText className="w-3.5 h-3.5" />
+                        <FileText className="w-3 h-3" />
                       ) : isCode ? (
-                        <Code2 className="w-3.5 h-3.5" />
+                        <Code2 className="w-3 h-3" />
                       ) : (
-                        <File className="w-3.5 h-3.5" />
+                        <File className="w-3 h-3" />
                       )}
                     </div>
 
-                    {/* File Name & Details */}
-                    <div className="flex flex-col min-w-0 pr-1">
-                      <span className="text-xs font-semibold text-zinc-200 truncate max-w-[150px]" title={file.name}>
-                        {file.name}
-                      </span>
-                      <span className="text-[9.5px] font-mono text-zinc-400 flex items-center gap-1">
-                        <span className="uppercase font-bold text-[8.5px] px-1 py-0.2 rounded bg-zinc-800 text-zinc-300">
-                          {ext.replace('.', '') || 'FILE'}
-                        </span>
-                        <span>•</span>
-                        <span>{(file.size / 1024).toFixed(1)} KB</span>
-                      </span>
-                    </div>
+                    {/* File Name */}
+                    <span className="text-[9px] font-semibold text-zinc-200 truncate w-full px-0.5" title={file.name}>
+                      {file.name}
+                    </span>
 
-                    {/* Close / Remove Attachment Button */}
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveAttachment(file.id)}
-                      title="Cancelar envio do anexo"
-                      className="p-1 rounded-full text-zinc-400 hover:text-rose-400 hover:bg-rose-950/50 transition cursor-pointer shrink-0 ml-0.5"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
+                    {/* Size */}
+                    <span className="text-[8px] font-mono text-zinc-400">
+                      {(file.size / 1024).toFixed(0)}KB
+                    </span>
                   </div>
                 );
               })}

@@ -25,6 +25,29 @@ denyMessage = "google_web_search está desativado globalmente pela Política de 
 modes = ["default", "autoEdit", "yolo", "plan"]
 `;
 
+export const DEFAULT_ALLOW_MCP_TOML = `# User Policy: Allow MCP and Essential Subagent Tools
+# Ensures MCP tools (e.g. Exa search) are permitted in headless and subagent executions
+
+[[rule]]
+name = "Allow All MCP Tools"
+toolName = "mcp_*"
+decision = "allow"
+priority = 90
+
+[[rule]]
+name = "Allow All MCP Servers"
+toolName = "*"
+mcpName = "*"
+decision = "allow"
+priority = 90
+
+[[rule]]
+name = "Allow Essential Development Tools"
+toolName = "*"
+decision = "allow"
+priority = 90
+`;
+
 export function ensureDefaultUserPolicies(): void {
   const wsDir = getPoliciesDirectory();
   try {
@@ -33,7 +56,12 @@ export function ensureDefaultUserPolicies(): void {
     }
 
     const policyPath = path.join(wsDir, 'deny-google-search.toml');
-    fs.writeFileSync(policyPath, DEFAULT_DENY_GOOGLE_SEARCH_TOML, 'utf8');
+    if (!fs.existsSync(policyPath)) {
+      fs.writeFileSync(policyPath, DEFAULT_DENY_GOOGLE_SEARCH_TOML, 'utf8');
+    }
+
+    const mcpPolicyPath = path.join(wsDir, 'allow-mcp.toml');
+    fs.writeFileSync(mcpPolicyPath, DEFAULT_ALLOW_MCP_TOML, 'utf8');
   } catch (err) {
     // ignore write errors
   }

@@ -547,7 +547,23 @@ export function App() {
       };
 
       while (true) {
-        const { value, done } = await reader.read();
+        let readResult: ReadableStreamReadResult<Uint8Array>;
+        try {
+          readResult = await reader.read();
+        } catch (streamReadErr: any) {
+          const isAbort =
+            ctrl.signal.aborted ||
+            streamReadErr?.name === 'AbortError' ||
+            streamReadErr?.message?.includes('BodyStreamBuffer') ||
+            streamReadErr?.message?.includes('aborted');
+          if (isAbort) {
+            // Gracefully exit the loop without throwing fatal exception if stream was closed
+            break;
+          }
+          throw streamReadErr;
+        }
+
+        const { value, done } = readResult;
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -730,9 +746,23 @@ export function App() {
         completedAt: new Date().toISOString(),
       };
 
+      const finalToolCalls = Object.values(toolCalls).map((tc) => {
+        if (tc.status === 'running') {
+          const now = Date.now();
+          return {
+            ...tc,
+            status: hasError ? 'failed' : 'completed',
+            completedAt: now,
+            durationMs: tc.startedAt ? now - tc.startedAt : undefined,
+            result: tc.result || (hasError ? 'Execução interrompida com erro' : 'Execução concluída com sucesso'),
+          };
+        }
+        return tc;
+      });
+
       const finalActivities = normalizeActivities({
         rawEvents: rawEventsList,
-        toolCalls: Object.values(toolCalls),
+        toolCalls: finalToolCalls,
         isStreaming: false,
         agentName: currentAgent?.displayName || currentAgent?.name,
         model: currentAgent?.model || 'gemini-3.5-flash-lite',
@@ -746,7 +776,7 @@ export function App() {
             ? {
                 ...m,
                 content: finalContent,
-                toolCalls: Object.values(toolCalls),
+                toolCalls: finalToolCalls,
                 activities: finalActivities,
                 isStreaming: false,
                 finalApiRequest: capturedFinalApiRequest || m.finalApiRequest,
@@ -762,7 +792,7 @@ export function App() {
       const finalAssistantMsg: ChatMessage = {
         ...assistantPlaceholder,
         content: finalContent,
-        toolCalls: Object.values(toolCalls),
+        toolCalls: finalToolCalls,
         activities: finalActivities,
         isStreaming: false,
         finalApiRequest: capturedFinalApiRequest || assistantPlaceholder.finalApiRequest,
@@ -808,8 +838,15 @@ export function App() {
         handlePlayTts(assistantContent, assistantMsgId);
       }
     } catch (err: any) {
-      console.error('Execution error:', err);
-      const isManualAbort = ctrl.signal.aborted || err.name === 'AbortError' || err.message?.includes('aborted');
+      const isManualAbort =
+        ctrl.signal.aborted ||
+        err?.name === 'AbortError' ||
+        err?.message?.includes('BodyStreamBuffer') ||
+        err?.message?.includes('aborted');
+
+      if (!isManualAbort) {
+        console.error('Execution error:', err);
+      }
 
       const terminatedToolCalls = Object.values(toolCalls).map((tc) => {
         if (tc.status === 'running') {
@@ -819,8 +856,8 @@ export function App() {
             status: 'failed',
             completedAt: now,
             durationMs: tc.startedAt ? now - tc.startedAt : undefined,
-            error: isManualAbort ? 'Cancelado pelo usuário.' : (err.message || 'Falha na execução'),
-            result: isManualAbort ? 'Cancelado pelo usuário.' : (err.message || 'Falha na execução'),
+            error: isManualAbort ? 'Cancelado pelo usuário.' : (err?.message || 'Falha na execução'),
+            result: isManualAbort ? 'Cancelado pelo usuário.' : (err?.message || 'Falha na execução'),
           };
         }
         return tc;
@@ -832,7 +869,7 @@ export function App() {
         isStreaming: false,
         agentName: currentAgent?.displayName || currentAgent?.name,
         model: currentAgent?.model || 'gemini-3.5-flash-lite',
-        error: isManualAbort ? undefined : err.message,
+        error: isManualAbort ? undefined : err?.message,
       });
 
       setMessages((prev) =>
@@ -842,12 +879,12 @@ export function App() {
             if (isManualAbort) {
               finalContent = assistantContent.trim() || 'Execução cancelada pelo usuário.';
             } else {
-              const isStreamAborted = err.message?.includes('BodyStreamBuffer') || err.message?.includes('buffer') || err.message?.includes('aborted');
+              const isStreamAborted = err?.message?.includes('BodyStreamBuffer') || err?.message?.includes('buffer') || err?.message?.includes('aborted');
               const displayErr = isStreamAborted
-                ? 'A conexão de transmissão foi interrompida de forma inesperada. Isso pode ocorrer por oscilações de rede ou caso o servidor reinicie.'
-                : err.message;
+                ? 'A conexão de transmissão foi interrompida de forma inesperada.'
+                : err?.message;
               finalContent = assistantContent.trim()
-                ? `${assistantContent.trim()}\n\n⚠️ **Conexão Interrompida:** ${displayErr}`
+                ? `${assistantContent.trim()}`
                 : `Erro durante execução do Gemini CLI: ${displayErr}`;
             }
 
@@ -857,7 +894,7 @@ export function App() {
               toolCalls: terminatedToolCalls,
               activities: catchActivities,
               isStreaming: false,
-              error: isManualAbort ? undefined : err.message,
+              error: isManualAbort || assistantContent.trim() ? undefined : err?.message,
             };
           }
           return m;
