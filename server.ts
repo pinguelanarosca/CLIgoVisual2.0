@@ -520,11 +520,13 @@ priority = 90
 
   app.post('/api/agents', (req, res) => {
     const agent = req.body;
-    if (!agent || !agent.name) {
+    if (!agent || (!agent.name && !agent.id)) {
       return res.status(400).json({ error: 'Dados do agente inválidos.' });
     }
+    if (!agent.name && agent.id) agent.name = agent.id;
+    if (!agent.id && agent.name) agent.id = agent.name;
     saveAgentToFile(agent);
-    sysLog.info('AGENT', `Agente salvo/atualizado: "${agent.displayName || agent.name}" (ID: ${agent.id || agent.name})`, { model: agent.model });
+    sysLog.info('AGENT', `Agente salvo/atualizado: "${agent.displayName || agent.name}" (ID: ${agent.id})`, { model: agent.model });
     res.json({ success: true, agents: loadAgents() });
   });
 

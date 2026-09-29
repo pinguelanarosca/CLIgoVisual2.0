@@ -11,18 +11,7 @@ import { logSubagentEvent } from './subagent-logger.js';
 export { buildEffectiveSystemPrompt };
 
 export function sanitizeModelName(model?: string): string {
-  if (!model || typeof model !== 'string') return 'gemini-3.5-flash-lite';
-  const clean = model.trim().toLowerCase();
-  
-  if (clean === 'gemini-2.5-flash' || clean === 'gemini-2.5-flash-lite' || clean === 'gemini-2.0-flash' || clean === 'gemini-1.5-flash') {
-    return 'gemini-3.5-flash-lite';
-  }
-  if (clean === 'gemini-2.5-pro' || clean === 'gemini-1.5-pro') {
-    return 'gemini-3.5-flash';
-  }
-  if (clean === 'gemini-3.1-flash-lite' || clean === 'gemini-flash-lite' || clean === 'flash-lite') {
-    return 'gemini-3.5-flash-lite';
-  }
+  if (!model || typeof model !== 'string' || !model.trim()) return 'gemini-3.5-flash-lite';
   return model.trim();
 }
 
@@ -67,7 +56,7 @@ Princípio Fundamental: VELOCIDADE, ECONOMIA DE TOKENS, EXECUÇÃO DIRETA E RESP
     name: 'investigator',
     displayName: 'Investigator',
     role: 'Investigator: investigação, pesquisa e diagnóstico.',
-    model: 'gemini-3.5-flash-lite',
+    model: 'gemini-3.7-flash',
     backupAgentId: 'architect',
     description: 'Agente especializado em investigação profunda de código, busca e rastreamento de bugs, pesquisa em fontes e diagnóstico técnico empírico com evidências.',
     baseInstructions: `Você é o Investigator do Gemini CLI.
@@ -89,7 +78,7 @@ Sua função primária:
     name: 'architect',
     displayName: 'Architect',
     role: 'Architect: decisões arquiteturais e estruturais.',
-    model: 'gemini-3.5-flash-lite',
+    model: 'gemini-3.6-flash',
     backupAgentId: 'investigator',
     description: 'Agente especializado em design de sistemas, arquitetura de software, modularidade, desacoplamento, contratos de interfaces e integridade estrutural.',
     baseInstructions: `Você é o Architect do Gemini CLI.
@@ -111,7 +100,7 @@ Sua função primária:
     name: 'auditor',
     displayName: 'Auditor',
     role: 'Auditor: revisão crítica e identificação de problemas.',
-    model: 'gemini-3.5-flash-lite',
+    model: 'gemini-3.8-flash',
     backupAgentId: 'architect',
     description: 'Agente especializado em revisão crítica rigorosa de código, auditoria de segurança, detecção de regressões, conformidade e análise de vulnerabilidades.',
     baseInstructions: `Você é o Auditor do Gemini CLI.
@@ -133,7 +122,7 @@ Sua função primária:
     name: 'tester',
     displayName: 'Tester',
     role: 'Tester: testes e validação.',
-    model: 'gemini-3.5-flash-lite',
+    model: 'gemini-3-flash',
     backupAgentId: 'worker',
     description: 'Agente especializado em criação e execução de testes automatizados (unitários, integração e e2e), validação comportamental e análise de falhas.',
     baseInstructions: `Você é o Tester do Gemini CLI.
@@ -155,7 +144,7 @@ Sua função primária:
     name: 'worker',
     displayName: 'Worker',
     role: 'Worker: tarefas repetitivas e de alto volume.',
-    model: 'gemini-3.5-flash-lite',
+    model: 'gemini-3.1-flash-lite',
     backupAgentId: 'principal',
     description: 'Agente especializado em tarefas de alto volume, geração de código boilerplate, refatorações diretas, transformações em lote e implementação de rotina.',
     baseInstructions: `Você é o Worker do Gemini CLI.
@@ -322,10 +311,11 @@ export function migrateExistingAgents(targetDir?: string): { migratedCount: numb
         agentMeta.role = rawFields['role'];
       }
 
+      const currentModel = sanitizeModelName(rawFields['model'] || agentMeta.model || 'gemini-3.5-flash-lite');
+      agentMeta.model = currentModel;
       metadata[agentName] = agentMeta;
 
       // Se houver qualquer campo não reconhecido ou formatação antiga, reescrever no schema oficial
-      const currentModel = sanitizeModelName(rawFields['model'] || agentMeta.model || 'gemini-3.5-flash-lite');
       if (hasUnrecognizedKeys || (rawFields['model'] && rawFields['model'] !== currentModel)) {
         const name = rawFields['name'] || agentName;
         const model = currentModel;
@@ -452,6 +442,12 @@ export function saveAgentToFile(agent: AgentConfig, targetDir?: string) {
     fs.mkdirSync(agentsDir, { recursive: true });
   }
 
+  // Ensure normalized identifier
+  const normalizedName = (agent.name || agent.id || '').trim();
+  if (!normalizedName) return;
+  agent.name = normalizedName;
+  agent.id = normalizedName;
+
   const effectivePrompt = buildEffectiveSystemPrompt(
     agent.baseInstructions,
     agent.systemInstructions,
@@ -459,6 +455,8 @@ export function saveAgentToFile(agent: AgentConfig, targetDir?: string) {
   );
 
   const modelToSave = sanitizeModelName(agent.model || 'gemini-3.5-flash-lite');
+  agent.model = modelToSave;
+
   // Schema nativo do Gemini CLI: name, model, description, kind, tools, temperature, max_turns
   const fmLines = [
     '---',
@@ -488,6 +486,7 @@ export function saveAgentToFile(agent: AgentConfig, targetDir?: string) {
   metadata[agent.name] = {
     displayName: agent.displayName,
     role: agent.role,
+    model: modelToSave,
     baseInstructions: agent.baseInstructions,
     systemInstructions: agent.systemInstructions,
     overrideBasePrompt: agent.overrideBasePrompt,
@@ -504,6 +503,37 @@ export function saveAgentToFile(agent: AgentConfig, targetDir?: string) {
     enabled: agent.enabled !== false,
   };
   saveMetadata(metadata, targetDir);
+
+  // Sincronizar arquivos de alias para subagentes (ex: codebase_investigator -> investigator)
+  const defaultAliases: Record<string, string[]> = {
+    investigator: ['codebase_investigator', 'code_investigator', 'investigator_agent'],
+    principal: ['orquestrador', 'orchestrator', 'principal_orchestrator'],
+    architect: ['software_architect', 'architect_agent'],
+    auditor: ['security_auditor', 'auditor_agent'],
+    tester: ['qa_tester', 'tester_agent'],
+    worker: ['code_worker', 'worker_agent'],
+  };
+
+  const aliases = defaultAliases[agent.name.toLowerCase()] || [];
+  for (const aliasName of aliases) {
+    const aliasFmLines = [
+      '---',
+      `name: ${aliasName}`,
+      `model: ${modelToSave}`,
+      `description: "${(agent.description || '').replace(/"/g, '\\"')}"`,
+      `kind: ${agent.kind || 'local'}`,
+      `tools: ${JSON.stringify(agent.tools || ['*'])}`,
+    ];
+    if (typeof agent.temperature === 'number') aliasFmLines.push(`temperature: ${agent.temperature}`);
+    if (typeof agent.maxTurns === 'number') aliasFmLines.push(`max_turns: ${agent.maxTurns}`);
+    aliasFmLines.push('---');
+    aliasFmLines.push('');
+    aliasFmLines.push(effectivePrompt.trim());
+    const aliasFilePath = path.join(agentsDir, `${aliasName}.md`);
+    try {
+      fs.writeFileSync(aliasFilePath, aliasFmLines.join('\n'), 'utf8');
+    } catch {}
+  }
 
   // Sincronizar configurações do modelo no settings.json do Gemini CLI
   syncAgentsToSettings(targetDir, agent.name, agent);
@@ -576,12 +606,14 @@ function parseAgentMarkdown(content: string, fallbackName: string, metadata: any
     systemInstructions = '';
   }
 
+  const resolvedModel = sanitizeModelName(fields['model'] || metadata.model || 'gemini-3.5-flash-lite');
+
   return {
     id: name,
     name,
     displayName: metadata.displayName || fields['display_name'] || name,
     role: `${metadata.displayName || fields['display_name'] || name}: ${fields['description'] || ''}`,
-    model: sanitizeModelName(fields['model'] || 'gemini-3.5-flash-lite'),
+    model: resolvedModel,
     backupAgentId: metadata.backupAgentId || fields['backup_agent'] || fields['backup_agent_id'] || undefined,
     description: fields['description'] || '',
     baseInstructions,

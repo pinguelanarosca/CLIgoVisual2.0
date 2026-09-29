@@ -10,11 +10,14 @@ import {
   ShieldCheck,
   Radio,
   Bot,
+  Edit3,
+  Sliders,
 } from 'lucide-react';
 import { MODELS_CATALOG } from '../constants/modelsCatalog.js';
 import { AgentConfig, AudioSettings } from '../types.js';
 import { getSavedVoiceAgents, VoiceAgent } from '../services/voice/voiceAgentsStore.js';
 import { formatModelName } from '../utils/modelFormatter.js';
+import { ModelSelectorModal } from './ModelSelectorModal.js';
 
 interface ModelCatalogViewProps {
   agents: AgentConfig[];
@@ -25,6 +28,7 @@ interface ModelCatalogViewProps {
   isResetting?: boolean;
   audioSettings?: AudioSettings;
   onUpdateAudioSettings?: (updates: Partial<AudioSettings>) => void;
+  onOpenAgentsTab?: () => void;
 }
 
 export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
@@ -36,6 +40,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
   isResetting = false,
   audioSettings,
   onUpdateAudioSettings,
+  onOpenAgentsTab,
 }) => {
   const [activeCategoryTab, setActiveCategoryTab] = useState<string>('all');
   const [resetSuccess, setResetSuccess] = useState(false);
@@ -45,10 +50,38 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
   const [testResults, setTestResults] = useState<Record<string, { success: boolean; message: string }>>({});
   const [testErrorModal, setTestErrorModal] = useState<{ agentName: string; error: string } | null>(null);
 
+  const [assignedRoleMap, setAssignedRoleMap] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem('gemini_gui_assigned_roles');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      principal: 'principal',
+      investigator: 'investigator',
+      architect: 'architect',
+      auditor: 'auditor',
+      tester: 'tester',
+      worker: 'worker',
+    };
+  });
+  const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
+  const [agentForModelSelector, setAgentForModelSelector] = useState<AgentConfig | null>(null);
+
   useEffect(() => {
     const loaded = getSavedVoiceAgents();
     setVoiceAgents(loaded);
   }, []);
+
+  const handleAssignAgentToSlot = (slotId: string, targetAgentId: string) => {
+    setAssignedRoleMap((prev) => {
+      const updated = { ...prev, [slotId]: targetAgentId };
+      try {
+        localStorage.setItem('gemini_gui_assigned_roles', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+    handleSelectPrimary(targetAgentId);
+  };
 
   const handleTestAgent = async (agentId: string, model: string, type: 'programming' | 'voice', voiceName?: string, customInstructions?: string) => {
     setTestingAgentId(agentId);
@@ -137,7 +170,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
   ];
 
   const handleBackupChange = async (agentId: string, newBackupId: string) => {
-    const targetAgent = agents.find((a) => a.id.toLowerCase() === agentId.toLowerCase());
+    const targetAgent = agents.find((a) => a.id.toLowerCase() === agentId.toLowerCase() || a.name.toLowerCase() === agentId.toLowerCase());
     if (targetAgent && onSaveAgent) {
       await onSaveAgent({
         ...targetAgent,
@@ -150,7 +183,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
 
   const handleSelectPrimary = (agentId: string) => {
     if (onSelectAgent) {
-      const match = agents.find((a) => a.id.toLowerCase() === agentId.toLowerCase());
+      const match = agents.find((a) => a.id.toLowerCase() === agentId.toLowerCase() || a.name.toLowerCase() === agentId.toLowerCase());
       if (match) {
         onSelectAgent(match.id);
       } else {
@@ -161,6 +194,18 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
 
   const handleReset = async () => {
     await onResetDefaultAgentsConfig();
+    const defaults = {
+      principal: 'principal',
+      investigator: 'investigator',
+      architect: 'architect',
+      auditor: 'auditor',
+      tester: 'tester',
+      worker: 'worker',
+    };
+    setAssignedRoleMap(defaults);
+    try {
+      localStorage.setItem('gemini_gui_assigned_roles', JSON.stringify(defaults));
+    } catch {}
     setResetSuccess(true);
     setTimeout(() => setResetSuccess(false), 3000);
   };
@@ -231,13 +276,15 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
           {/* 6 Cards de Agentes de Programação */}
           {defaultProgrammingPairs.map((item) => {
-            const currentAgent = agents.find(
-              (a) => a.id.toLowerCase() === item.id.toLowerCase() || a.name.toLowerCase() === item.id.toLowerCase()
-            );
+            const assignedId = assignedRoleMap[item.id] || item.id;
+            const currentAgent =
+              agents.find((a) => a.id.toLowerCase() === assignedId.toLowerCase() || a.name.toLowerCase() === assignedId.toLowerCase()) ||
+              agents.find((a) => a.id.toLowerCase() === item.id.toLowerCase() || a.name.toLowerCase() === item.id.toLowerCase()) ||
+              agents[0];
             const activeBackupId = currentAgent?.backupAgentId || item.defaultBackupId;
             const isCurrentActive =
-              selectedAgentId?.toLowerCase() === item.id.toLowerCase() ||
-              selectedAgentId?.toLowerCase() === currentAgent?.id?.toLowerCase();
+              selectedAgentId?.toLowerCase() === (currentAgent?.id || item.id).toLowerCase() ||
+              selectedAgentId?.toLowerCase() === (currentAgent?.name || '').toLowerCase();
 
             // Find dynamic quota from catalog in real-time
             const matchedModel = MODELS_CATALOG.find(
@@ -256,7 +303,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                     : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800'
                 }`}
               >
-                {savedAgentId === item.id && (
+                {(savedAgentId === item.id || savedAgentId === currentAgent?.id) && (
                   <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 text-[9px] font-bold flex items-center gap-1 shadow-2xs z-10">
                     <CheckCircle2 className="w-2.5 h-2.5" />
                     <span>Salvo</span>
@@ -268,7 +315,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                     <div className="flex items-center gap-1.5 min-w-0">
                       <button
                         type="button"
-                        onClick={() => handleSelectPrimary(item.id)}
+                        onClick={() => handleSelectPrimary(currentAgent?.id || item.id)}
                         className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 transition cursor-pointer shrink-0 ${
                           isCurrentActive
                             ? 'bg-blue-600 text-white shadow-2xs'
@@ -286,7 +333,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                     </span>
                   </div>
 
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-[10px]">
                       <span className="text-zinc-500 dark:text-zinc-400 font-semibold">Agente Atribuído:</span>
                     </div>
@@ -296,7 +343,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                       value={currentAgent?.id || item.id}
                       onChange={(e) => {
                         const targetId = e.target.value;
-                        handleSelectPrimary(targetId);
+                        handleAssignAgentToSlot(item.id, targetId);
                       }}
                     >
                       {agents.map((ag) => (
@@ -305,6 +352,53 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                         </option>
                       ))}
                     </select>
+
+                    <div className="flex items-center justify-between text-[10.5px] py-1 px-2 rounded-lg bg-zinc-100/70 dark:bg-zinc-800/60 border border-zinc-200/50 dark:border-zinc-700/50">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <Cpu className="w-3 h-3 text-blue-500 shrink-0" />
+                        <span className="text-zinc-500 dark:text-zinc-400 font-medium">Modelo:</span>
+                        <span className="font-mono text-blue-600 dark:text-blue-300 font-bold truncate">
+                          {formatModelName(currentAgent?.model || item.primaryModel)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0 ml-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (currentAgent) {
+                              setAgentForModelSelector(currentAgent);
+                              setIsModelSelectorOpen(true);
+                            }
+                          }}
+                          title={`Trocar modelo do agente "${currentAgent?.displayName || currentAgent?.name}"`}
+                          className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-200 hover:underline flex items-center gap-1 cursor-pointer px-1.5 py-0.5 rounded bg-blue-100/70 dark:bg-blue-900/40 border border-blue-200/60 dark:border-blue-800/60"
+                        >
+                          <Edit3 className="w-2.5 h-2.5" />
+                          <span>Trocar</span>
+                        </button>
+                        {onOpenAgentsTab && (
+                          <button
+                            type="button"
+                            onClick={onOpenAgentsTab}
+                            title="Editar todas as configurações deste agente na aba Agentes"
+                            className="text-[10px] font-bold text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-zinc-100 hover:underline flex items-center gap-1 cursor-pointer px-1.5 py-0.5 rounded bg-zinc-200/60 dark:bg-zinc-700/60 border border-zinc-300/60 dark:border-zinc-600/60"
+                          >
+                            <Sliders className="w-2.5 h-2.5 text-zinc-500" />
+                            <span>Editar</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="text-[10px] text-zinc-500 dark:text-zinc-400 space-y-1">
+                      <p className="line-clamp-2 leading-snug">
+                        {currentAgent?.description || 'Agente especializado em tarefas técnicas do sistema.'}
+                      </p>
+                      <div className="flex items-center gap-1 text-[9.5px] font-mono text-blue-700/90 dark:text-blue-300/90">
+                        <span className="font-semibold">Modelo em uso:</span>
+                        <span className="font-bold underline">{formatModelName(currentAgent?.model || item.primaryModel)}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -317,10 +411,10 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                   <select
                     className="w-full bg-white dark:bg-zinc-900 border border-amber-300/60 dark:border-amber-800/50 rounded-md py-1 px-1.5 text-[10px] font-medium text-zinc-800 dark:text-zinc-200 outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
                     value={activeBackupId}
-                    onChange={(e) => handleBackupChange(item.id, e.target.value)}
+                    onChange={(e) => handleBackupChange(currentAgent?.id || item.id, e.target.value)}
                   >
                     {agents
-                      .filter((ag) => ag.id.toLowerCase() !== item.id.toLowerCase())
+                      .filter((ag) => ag.id.toLowerCase() !== (currentAgent?.id || item.id).toLowerCase())
                       .map((ag) => (
                         <option key={ag.id} value={ag.id}>
                           {ag.displayName || ag.name} ({formatModelName(ag.model)})
@@ -397,7 +491,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                       {voiceAgents.length > 0 ? (
                         voiceAgents.map((v) => (
                           <option key={v.id} value={v.id}>
-                            🎤 {v.name} ({v.config.baseGeminiVoice || 'Kore'})
+                            🎤 {v.name} ({formatModelName(v.config.model)} - {v.config.baseGeminiVoice || 'Kore'})
                           </option>
                         ))
                       ) : (
@@ -421,7 +515,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                     {voiceAgents.length > 0 ? (
                       voiceAgents.map((v) => (
                         <option key={v.id} value={v.id}>
-                          🎤 {v.name} ({v.config.baseGeminiVoice || 'Kore'})
+                          🎤 {v.name} ({formatModelName(v.config.model)} - {v.config.baseGeminiVoice || 'Kore'})
                         </option>
                       ))
                     ) : (
@@ -500,7 +594,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                       {displayTtsAgents.length > 0 ? (
                         displayTtsAgents.map((v) => (
                           <option key={v.id} value={v.id}>
-                            🎭 {v.name} ({v.config.baseGeminiVoice || 'Kore'})
+                            🎭 {v.name} ({formatModelName(v.config.model)} - {v.config.baseGeminiVoice || 'Kore'})
                           </option>
                         ))
                       ) : (
@@ -524,7 +618,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                     {displayTtsAgents.length > 0 ? (
                       displayTtsAgents.map((v) => (
                         <option key={v.id} value={v.id}>
-                          🎭 {v.name} ({v.config.baseGeminiVoice || 'Kore'})
+                          🎭 {v.name} ({formatModelName(v.config.model)} - {v.config.baseGeminiVoice || 'Kore'})
                         </option>
                       ))
                     ) : (
@@ -741,6 +835,29 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Modal de seleção rápida de modelo para o agente clicado no card */}
+      <ModelSelectorModal
+        isOpen={isModelSelectorOpen}
+        onClose={() => {
+          setIsModelSelectorOpen(false);
+          setAgentForModelSelector(null);
+        }}
+        currentModel={agentForModelSelector?.model || 'gemini-3.5-flash-lite'}
+        agentName={agentForModelSelector?.displayName || agentForModelSelector?.name}
+        onSelectModel={async (modelId) => {
+          if (agentForModelSelector && onSaveAgent) {
+            await onSaveAgent({
+              ...agentForModelSelector,
+              model: modelId,
+            });
+            setSavedAgentId(agentForModelSelector.id);
+            setTimeout(() => setSavedAgentId(null), 2500);
+          }
+          setIsModelSelectorOpen(false);
+          setAgentForModelSelector(null);
+        }}
+      />
     </div>
   );
 };

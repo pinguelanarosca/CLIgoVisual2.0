@@ -454,6 +454,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   onSaveAgent={onSaveAgent}
                   audioSettings={audioSettings}
                   onUpdateAudioSettings={onUpdateAudioSettings}
+                  onOpenAgentsTab={() => setActiveTab('agents')}
                 />
               </div>
             )}

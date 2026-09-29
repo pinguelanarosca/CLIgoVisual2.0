@@ -18,11 +18,17 @@ export function formatModelName(modelRaw?: string | null): string {
 
   // Explicit mappings for known models
   const MAPPINGS: Record<string, string> = {
+    'gemini-3.8-flash': 'Gemini 3.8 Flash',
+    'gemini-3.7-flash': 'Gemini 3.7 Flash',
+    'gemini-3.6-flash': 'Gemini 3.6 Flash',
+    'gemini-3.5-flash': 'Gemini 3.5 Flash',
+    'gemini-3-flash': 'Gemini 3 Flash',
     'gemini-3.5-flash-lite': 'Gemini 3.5 Flash LITE',
     'gemini-3.1-flash-lite': 'Gemini 3.1 Flash LITE',
-    'gemini-3.5-flash': 'Gemini 3.5 Flash',
     'gemini-2.5-flash': 'Gemini 2.5 Flash',
+    'gemini-2.5-flash-lite': 'Gemini 2.5 Flash LITE',
     'gemini-2.5-pro': 'Gemini 2.5 Pro',
+    'gemini-2.0-flash': 'Gemini 2.0 Flash',
     'gemini-2.0-flash-exp': 'Gemini 2.0 Flash EXP',
     'gemini-1.5-pro': 'Gemini 1.5 Pro',
     'gemini-1.5-flash': 'Gemini 1.5 Flash',

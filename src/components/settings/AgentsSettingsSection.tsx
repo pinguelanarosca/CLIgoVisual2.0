@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
-import { Plus, Sparkles, Trash2, Cpu, Radio, Bot, X, Sliders, ShieldAlert, ShieldCheck, Save } from 'lucide-react';
+import { Plus, Sparkles, Trash2, Cpu, Radio, Bot, X, Sliders, ShieldAlert, ShieldCheck, Save, CheckCircle2 } from 'lucide-react';
 import { AgentConfig } from '../../types.js';
 import { formatModelName } from '../../utils/modelFormatter.js';
+import { ModelSelectorModal } from '../ModelSelectorModal.js';
+import { MODELS_CATALOG } from '../../constants/modelsCatalog.js';
 
 interface AgentsSettingsSectionProps {
   agents: AgentConfig[];
@@ -24,6 +26,9 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
 }) => {
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null);
   const [isNewAgent, setIsNewAgent] = useState(false);
+  const [isModelSelectorModalOpen, setIsModelSelectorModalOpen] = useState(false);
+  const [targetAgentForModelSelector, setTargetAgentForModelSelector] = useState<AgentConfig | 'editing' | null>(null);
+  const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
 
   return (
     <div className="space-y-6">
@@ -84,6 +89,13 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
         </div>
       </div>
 
+      {saveSuccessMessage && (
+        <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs flex items-center gap-2 animate-in fade-in">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+          <span>{saveSuccessMessage}</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {agents.map((agent) => (
           <div
@@ -109,16 +121,25 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
                 </span>
                 <button
                   type="button"
-                  onClick={() => onOpenModelSelectorForAgent && onOpenModelSelectorForAgent(agent)}
+                  onClick={() => {
+                    setTargetAgentForModelSelector(agent);
+                    setIsModelSelectorModalOpen(true);
+                  }}
                   title="Clique para trocar de modelo pelo catálogo"
-                  className="font-mono text-[11px] px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/60 transition cursor-pointer flex items-center gap-1"
+                  className="font-mono text-[11px] px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/60 transition cursor-pointer flex items-center gap-1 font-bold"
                 >
                   <Cpu className="w-3 h-3" />
                   <span>{formatModelName(agent.model)}</span>
                 </button>
               </div>
-              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1.5 line-clamp-2">
-                {agent.description}
+
+              <div className="mt-1 flex items-center gap-1.5 text-[11px]">
+                <span className="text-zinc-500 dark:text-zinc-400 font-medium">Modelo Vinculado:</span>
+                <span className="font-mono text-blue-600 dark:text-blue-400 font-bold">{formatModelName(agent.model)}</span>
+              </div>
+
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-2">
+                {agent.description || 'Sem descrição cadastrada.'}
               </p>
             </div>
 
@@ -157,10 +178,14 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
                 )}
                 <button
                   type="button"
-                  onClick={() => onOpenModelSelectorForAgent && onOpenModelSelectorForAgent(agent)}
-                  className="px-2 py-1 text-xs font-medium rounded-lg bg-zinc-200 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-300 dark:hover:bg-zinc-600 transition cursor-pointer"
+                  onClick={() => {
+                    setTargetAgentForModelSelector(agent);
+                    setIsModelSelectorModalOpen(true);
+                  }}
+                  className="px-2 py-1 text-xs font-medium rounded-lg bg-zinc-200 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-300 dark:hover:bg-zinc-600 transition cursor-pointer flex items-center gap-1"
                 >
-                  Modelo
+                  <Cpu className="w-3 h-3 text-blue-500" />
+                  <span>Modelo</span>
                 </button>
                 <button
                   type="button"
@@ -265,21 +290,54 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-500">2. Configuração de Modelo</label>
                     <button
                       type="button"
-                      onClick={() => onOpenModelSelectorForAgent && onOpenModelSelectorForAgent(editingAgent)}
+                      onClick={() => {
+                        setTargetAgentForModelSelector('editing');
+                        setIsModelSelectorModalOpen(true);
+                      }}
                       className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
                     >
                       <Cpu className="w-3 h-3" />
-                      Abrir Catálogo
+                      Abrir Catálogo Completo
                     </button>
                   </div>
-                  <div className="space-y-3">
-                    <input
-                      type="text"
-                      value={editingAgent.model}
-                      onChange={(e) => setEditingAgent({ ...editingAgent, model: e.target.value })}
-                      className="w-full px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 font-mono text-xs text-blue-600 dark:text-blue-400 font-bold"
-                      placeholder="ex: gemini-3.7-flash"
-                    />
+                  <div className="space-y-2.5">
+                    <div>
+                      <label className="block text-[10px] text-zinc-400 mb-1">Catálogo Oficial de Modelos</label>
+                      <select
+                        value={editingAgent.model}
+                        onChange={(e) => setEditingAgent({ ...editingAgent, model: e.target.value })}
+                        className="w-full px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 text-xs font-semibold text-blue-600 dark:text-blue-400 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                      >
+                        {MODELS_CATALOG.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} ({m.rpm} RPM / {m.rpd} RPD)
+                          </option>
+                        ))}
+                        {!MODELS_CATALOG.some((m) => m.id === editingAgent.model) && (
+                          <option value={editingAgent.model}>
+                            {editingAgent.model} (Personalizado)
+                          </option>
+                        )}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] text-zinc-400 mb-1">Identificador Técnico (ID)</label>
+                      <input
+                        type="text"
+                        value={editingAgent.model}
+                        onChange={(e) => setEditingAgent({ ...editingAgent, model: e.target.value })}
+                        className="w-full px-3 py-1.5 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 font-mono text-xs text-blue-600 dark:text-blue-400 font-bold"
+                        placeholder="ex: gemini-3.7-flash"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between text-[11px] pt-1 border-t border-zinc-200/50 dark:border-zinc-700/50">
+                      <span className="text-zinc-500">Exibição formatada:</span>
+                      <span className="font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded font-mono">
+                        {formatModelName(editingAgent.model)}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -424,7 +482,7 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
                       .filter((ag) => ag.id.toLowerCase() !== editingAgent.id?.toLowerCase() && ag.name.toLowerCase() !== editingAgent.name?.toLowerCase())
                       .map((ag) => (
                         <option key={ag.id} value={ag.id}>
-                          {ag.displayName || ag.name} ({ag.model})
+                          {ag.displayName || ag.name} ({formatModelName(ag.model)})
                         </option>
                       ))}
                   </select>
@@ -446,6 +504,8 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
                     return;
                   }
                   await onSaveAgent(editingAgent);
+                  setSaveSuccessMessage(`Agente "${editingAgent.displayName || editingAgent.name}" salvo com sucesso usando o modelo ${formatModelName(editingAgent.model)}!`);
+                  setTimeout(() => setSaveSuccessMessage(null), 3500);
                   setEditingAgent(null);
                 }}
                 className="px-6 py-2 text-xs font-bold rounded-xl bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-600/20 transition-all flex items-center gap-2 cursor-pointer"
@@ -457,6 +517,36 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
           </div>
         </div>
       )}
+
+      {/* Model Selector Modal */}
+      <ModelSelectorModal
+        isOpen={isModelSelectorModalOpen}
+        onClose={() => {
+          setIsModelSelectorModalOpen(false);
+          setTargetAgentForModelSelector(null);
+        }}
+        currentModel={
+          targetAgentForModelSelector === 'editing'
+            ? editingAgent?.model || 'gemini-3.5-flash-lite'
+            : targetAgentForModelSelector?.model || 'gemini-3.5-flash-lite'
+        }
+        agentName={
+          targetAgentForModelSelector === 'editing'
+            ? editingAgent?.displayName || editingAgent?.name
+            : targetAgentForModelSelector?.displayName || targetAgentForModelSelector?.name
+        }
+        onSelectModel={async (modelId) => {
+          if (targetAgentForModelSelector === 'editing' && editingAgent) {
+            setEditingAgent({ ...editingAgent, model: modelId });
+          } else if (targetAgentForModelSelector && typeof targetAgentForModelSelector === 'object') {
+            await onSaveAgent({ ...targetAgentForModelSelector, model: modelId });
+            setSaveSuccessMessage(`Modelo atualizado para ${formatModelName(modelId)} no agente "${targetAgentForModelSelector.displayName || targetAgentForModelSelector.name}"!`);
+            setTimeout(() => setSaveSuccessMessage(null), 3500);
+          }
+          setIsModelSelectorModalOpen(false);
+          setTargetAgentForModelSelector(null);
+        }}
+      />
     </div>
   );
 };

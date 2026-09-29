@@ -401,8 +401,13 @@ export function App() {
     }
 
     const currentAgent =
-      (agents && agents.length > 0 ? (agents.find((a) => a.id === selectedAgentId) || agents[0]) : null) ||
-      DEFAULT_AGENTS[0];
+      (agents && agents.length > 0
+        ? (agents.find(
+            (a) =>
+              a.id.toLowerCase() === selectedAgentId.toLowerCase() ||
+              a.name.toLowerCase() === selectedAgentId.toLowerCase()
+          ) || agents[0])
+        : null) || DEFAULT_AGENTS[0];
 
     const startTime = Date.now();
     const workDir = activeProject?.associatedDirs[0] || authorizedDirs[0]?.path || '/workspace';
@@ -1671,7 +1676,13 @@ export function App() {
                 isOpen={true}
                 onClose={() => setRightPanelMode(null)}
                 message={inspectionMessage || (messages.length > 0 ? messages[messages.length - 1] : null)}
-                agent={agents.find((a) => a.id === selectedAgentId) || agents[0] || DEFAULT_AGENTS[0]}
+                agent={
+                  agents.find(
+                    (a) =>
+                      a.id.toLowerCase() === selectedAgentId.toLowerCase() ||
+                      a.name.toLowerCase() === selectedAgentId.toLowerCase()
+                  ) || agents[0] || DEFAULT_AGENTS[0]
+                }
                 project={activeProject}
                 authorizedDirs={authorizedDirs}
                 skills={skills}
@@ -1759,7 +1770,13 @@ export function App() {
                 onUpdateSessionMessages={handleUpdateSessionMessages}
                 messages={messages}
                 onUpdateMessages={(newMsgs) => setMessages(newMsgs)}
-                agent={agents.find((a) => a.id === selectedAgentId) || agents[0]}
+                agent={
+                  agents.find(
+                    (a) =>
+                      a.id.toLowerCase() === selectedAgentId.toLowerCase() ||
+                      a.name.toLowerCase() === selectedAgentId.toLowerCase()
+                  ) || agents[0] || DEFAULT_AGENTS[0]
+                }
                 activeProject={activeProject}
                 projects={projects}
                 authorizedDirs={authorizedDirs}

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { SharedMemoryItem, ProjectItem, AgentConfig } from '../types.js';
 import { fetchJsonSafely } from '../utils/apiUtils';
+import { formatModelName } from '../utils/modelFormatter.js';
 
 interface SharedMemorySidebarProps {
   isOpen: boolean;
@@ -402,14 +403,15 @@ export const SharedMemorySidebar: React.FC<SharedMemorySidebarProps> = ({
               className="flex-1 min-w-0 bg-zinc-900 border border-zinc-800 rounded px-2 py-0.5 text-xs text-zinc-200 outline-hidden cursor-pointer truncate font-mono text-[11px]"
             >
               {(agents && agents.length > 0 ? agents : [
-                { id: 'principal', name: 'Principal Orchestrator' },
-                { id: 'architect', name: 'Software Architect' },
-                { id: 'investigator', name: 'Code Investigator' },
-                { id: 'auditor', name: 'Security Auditor' },
-                { id: 'worker', name: 'Task Worker' },
+                { id: 'principal', name: 'Principal Orchestrator', model: 'gemini-3.5-flash-lite' },
+                { id: 'architect', name: 'Software Architect', model: 'gemini-3.6-flash' },
+                { id: 'investigator', name: 'Code Investigator', model: 'gemini-3.7-flash' },
+                { id: 'auditor', name: 'Security Auditor', model: 'gemini-3.8-flash' },
+                { id: 'tester', name: 'QA Tester', model: 'gemini-3-flash' },
+                { id: 'worker', name: 'Task Worker', model: 'gemini-3.1-flash-lite' },
               ]).map((a: any) => (
                 <option key={a.id} value={a.id} className="bg-zinc-950 text-zinc-200">
-                  {a.displayName || a.name} ({a.model || 'Gemini'})
+                  {a.displayName || a.name} ({formatModelName(a.model)})
                 </option>
               ))}
             </select>

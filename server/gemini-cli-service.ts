@@ -656,25 +656,17 @@ export interface CliExecutionParams {
 }
 
 export const AGENT_FALLBACK_CHAINS: Record<string, string[]> = {
-  architect: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
-  auditor: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
-  investigator: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
-  principal: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
-  tester: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
-  worker: ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'],
+  auditor: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite'],
+  investigator: ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'],
+  architect: ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'],
+  principal: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'],
+  tester: ['gemini-3-flash', 'gemini-3.5-flash-lite'],
+  worker: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'],
 };
 
 export function normalizeCliModelName(rawModel?: string): string {
-  if (!rawModel || rawModel === 'auto') return 'gemini-3.5-flash-lite';
-  const m = rawModel.trim().toLowerCase();
-  
-  if (m === 'gemini-2.5-flash' || m === 'gemini-2.5-flash-lite' || m === 'gemini-2.0-flash') return 'gemini-3.5-flash-lite';
-  if (m === 'gemini-2.5-pro' || m === 'gemini-1.5-pro') return 'gemini-3.5-flash';
-  if (m.includes('3.5-flash-lite') || m.includes('3.1-flash-lite') || m.includes('flash-lite')) return 'gemini-3.5-flash-lite';
-  if (m.includes('3.6-flash') || m.includes('3.7-flash') || m.includes('3.8-flash') || m.includes('3.5-flash')) return m;
-  if (m.includes('pro')) return 'gemini-3.5-flash';
-  
-  return 'gemini-3.5-flash-lite';
+  if (!rawModel || rawModel === 'auto' || !rawModel.trim()) return 'gemini-3.5-flash-lite';
+  return rawModel.trim();
 }
 
 export function getApiErrorCode(code: number | null, stderrText: string, reportedErrorText: string): number | null {
@@ -1195,12 +1187,20 @@ export function executeGeminiCli(
       // Workspace context header
       const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : cwd}.\nSempre inspecione e responda com base nos arquivos localizados neste diretório.\n---\n`;
 
-      // Determine model: respect the configured model for the agent/execution, default to 'gemini-3.5-flash-lite'
-      let requestedModel = state?.currentModel || params.model;
+      // Resolve agent and factual configured model from disk
+      let agentId = (params.agentId || '').toLowerCase().trim();
+      const allDiscoveredAgents = loadAgents(cwd);
+      const configuredAgent = allDiscoveredAgents.find(
+        (a) => a.id.toLowerCase() === agentId || a.name.toLowerCase() === agentId
+      );
+
+      // Determine model:
+      // When retrying/falling back within this execution, respect state.currentModel.
+      // Otherwise, the agent strictly uses its factual configured model from settings/disk, or params.model as fallback.
+      let requestedModel = state?.currentModel || configuredAgent?.model || params.model || 'gemini-3.5-flash-lite';
       const chosenModel = normalizeCliModelName(requestedModel);
 
       // Infer agentId if not explicitly provided
-      let agentId = params.agentId?.toLowerCase() || '';
       if (!agentId && requestedModel) {
         if (requestedModel.includes('auditor') || requestedModel.includes('3.8')) agentId = 'auditor';
         else if (requestedModel.includes('investigator') || requestedModel.includes('3.7')) agentId = 'investigator';
@@ -1218,7 +1218,6 @@ export function executeGeminiCli(
         sysLog.warn('AGENT', `Aviso durante sincronização de agentes: ${syncErr}`);
       }
 
-      const allDiscoveredAgents = loadAgents(cwd);
       const availableSubagents = allDiscoveredAgents.filter(
         (a) => a.name.toLowerCase() !== (agentId || 'principal').toLowerCase()
       );

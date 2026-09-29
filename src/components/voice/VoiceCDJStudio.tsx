@@ -48,6 +48,7 @@ import {
 } from '../../services/voice/voiceEngine.js';
 
 import { AudioOutputVisualizer } from './AudioOutputVisualizer.js';
+import { formatModelName } from '../../utils/modelFormatter.js';
 
 interface VoiceCDJStudioProps {
   audioSettings: AudioSettings;
@@ -391,7 +392,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
                 {sttAgents.length > 0 ? (
                   sttAgents.map((ag) => (
                     <option key={ag.id} value={ag.id}>
-                      🎤 {ag.name} ({ag.config.baseGeminiVoice})
+                      🎤 {ag.name} ({formatModelName(ag.config.model)} - {ag.config.baseGeminiVoice || 'Kore'})
                     </option>
                   ))
                 ) : (
@@ -410,7 +411,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
                 {sttAgents.length > 0 ? (
                   sttAgents.map((ag) => (
                     <option key={ag.id} value={ag.id}>
-                      🛡️ {ag.name} ({ag.config.baseGeminiVoice})
+                      🛡️ {ag.name} ({formatModelName(ag.config.model)} - {ag.config.baseGeminiVoice || 'Kore'})
                     </option>
                   ))
                 ) : (
@@ -444,7 +445,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
                 {ttsAgents.length > 0 ? (
                   ttsAgents.map((ag) => (
                     <option key={ag.id} value={ag.id}>
-                      🎭 {ag.name} ({ag.config.baseGeminiVoice})
+                      🎭 {ag.name} ({formatModelName(ag.config.model)} - {ag.config.baseGeminiVoice || 'Kore'})
                     </option>
                   ))
                 ) : (
@@ -463,7 +464,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
                 {ttsAgents.length > 0 ? (
                   ttsAgents.map((ag) => (
                     <option key={ag.id} value={ag.id}>
-                      🛡️ {ag.name} ({ag.config.baseGeminiVoice})
+                      🛡️ {ag.name} ({formatModelName(ag.config.model)} - {ag.config.baseGeminiVoice || 'Kore'})
                     </option>
                   ))
                 ) : (
@@ -645,7 +646,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
                   {ag.description || 'Sem descrição cadastrada.'}
                 </p>
                 <div className="flex items-center gap-2 text-[10px] text-zinc-400 font-mono">
-                  <span>Modelo: {ag.config.model || 'gemini-2.5-flash'}</span>
+                  <span>Modelo: {formatModelName(ag.config.model || 'gemini-2.5-flash')}</span>
                   <span>•</span>
                   <span>{ag.config.speed}x</span>
                 </div>

@@ -53,6 +53,7 @@ import { AgentProcessAccordion } from './AgentProcessAccordion.js';
 import { ContentViewerSidebar, ContentViewerItem } from './ContentViewerSidebar.js';
 import { classifyToolActivity, generateActivityTitle } from '../utils/activityTraceUtils.js';
 import { GeminiCreativeIcon, GeminiActionState } from './GeminiCreativeIcon.js';
+import { formatModelName } from '../utils/modelFormatter.js';
 
 export const isThinkingSupported = (model?: string): boolean => {
   if (!model) return true;
@@ -1163,11 +1164,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 >
                   {(agents && agents.length > 0 ? agents : DEFAULT_AGENTS).map((agent) => (
                     <option key={agent.id} value={agent.id} className="bg-zinc-950 text-zinc-200">
-                      {agent.displayName || agent.name}
+                      {agent.displayName || agent.name} ({formatModelName(agent.model)})
                     </option>
                   ))}
                 </select>
               </div>
+
+              {/* Active Model Indicator Chip */}
+              {currentAgent && (
+                <div
+                  className="flex items-center gap-1 bg-blue-950/40 border border-blue-800/50 rounded px-1.5 py-0.5 text-blue-300 text-[10px] font-mono font-semibold"
+                  title={`Modelo operacional do agente ${currentAgent.displayName || currentAgent.name}: ${currentAgent.model}`}
+                >
+                  <Cpu className="w-2.5 h-2.5 text-blue-400" />
+                  <span>{formatModelName(currentAgent.model)}</span>
+                </div>
+              )}
             </div>
 
             {/* Approval Mode & Context Compression */}

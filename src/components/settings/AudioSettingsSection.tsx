@@ -120,7 +120,7 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
           >
             {savedAgents.map((ag) => (
               <option key={ag.id} value={ag.id}>
-                🎭 {ag.name} — [{ag.config.baseGeminiVoice || 'Kore'}] ({ag.description || 'Perfil de Voz'})
+                🎭 {ag.name} — [{ag.config.baseGeminiVoice || 'Kore'}] ({formatModelName(ag.config.model)})
               </option>
             ))}
           </select>
