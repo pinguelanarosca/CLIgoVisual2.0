@@ -13,6 +13,7 @@ import {
   getResolvedCliPath,
   getExaAuditTools
 } from './gemini-cli-service.js';
+import { getBestEligibleKey } from './key-pool-service.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -145,7 +146,8 @@ export class AcpSession {
     args.push('--skip-trust');
 
     const cliPath = getResolvedCliPath();
-    const activeApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
+    const candidate = getBestEligibleKey(this.model || 'gemini-3.5-flash-lite');
+    const activeApiKey = candidate?.key;
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,

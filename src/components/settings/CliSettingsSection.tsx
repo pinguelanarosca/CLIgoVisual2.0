@@ -14,6 +14,7 @@ interface CliSettingsSectionProps {
 export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
   cliStatus,
   onRefreshStatus,
+  onNavigateToTab,
 }) => {
   const [isValidatingApi, setIsValidatingApi] = useState(false);
   const [apiValidationResult, setApiValidationResult] = useState<{
@@ -99,17 +100,28 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
         </div>
 
         <div className="flex justify-between items-center pt-2 border-t border-zinc-200/80 dark:border-zinc-700/60">
-          <span className="text-zinc-600 dark:text-zinc-400">Chave GEMINI_API_KEY (Ambiente):</span>
-          {cliStatus?.authConfigured ? (
-            <span className="font-mono text-[11px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-              <Check className="w-3.5 h-3.5" />
-              {cliStatus.maskedApiKey || 'Ativa no ambiente'}
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 font-semibold text-rose-500">
-              <AlertCircle className="w-3.5 h-3.5" /> Ausente
-            </span>
-          )}
+          <span className="text-zinc-600 dark:text-zinc-400">Chave GEMINI_API_KEY / Key Pool:</span>
+          <div className="flex items-center gap-2">
+            {cliStatus?.authConfigured ? (
+              <span className="font-mono text-[11px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                <Check className="w-3.5 h-3.5" />
+                {cliStatus.maskedApiKey || 'Ativa no ambiente'}
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 font-semibold text-rose-500 text-[11px]">
+                <AlertCircle className="w-3.5 h-3.5" /> Ausente
+              </span>
+            )}
+            {onNavigateToTab && (
+              <button
+                type="button"
+                onClick={() => onNavigateToTab('key_pool')}
+                className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 cursor-pointer"
+              >
+                Gerenciar Pool (K1..K9) →
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

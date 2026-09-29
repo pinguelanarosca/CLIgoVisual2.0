@@ -133,9 +133,16 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
                 </button>
               </div>
 
-              <div className="mt-1 flex items-center gap-1.5 text-[11px]">
-                <span className="text-zinc-500 dark:text-zinc-400 font-medium">Modelo Vinculado:</span>
-                <span className="font-mono text-blue-600 dark:text-blue-400 font-bold">{formatModelName(agent.model)}</span>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+                <div className="flex items-center gap-1">
+                  <span className="text-zinc-500 dark:text-zinc-400 font-medium">Titular:</span>
+                  <span className="font-mono text-blue-600 dark:text-blue-400 font-bold">{formatModelName(agent.model)}</span>
+                </div>
+                <span className="text-zinc-300 dark:text-zinc-700">•</span>
+                <div className="flex items-center gap-1">
+                  <span className="text-zinc-500 dark:text-zinc-400 font-medium">Fallback:</span>
+                  <span className="font-mono text-amber-600 dark:text-amber-400 font-bold">{formatModelName(agent.fallbackModel || 'gemini-3.5-flash-lite')}</span>
+                </div>
               </div>
 
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-2">
@@ -456,35 +463,37 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
                   />
                 </div>
 
-                {/* 5. AGENTE RESERVA (FALLBACK POR COTAS OU SOBRECARGA) */}
-                <div className="p-4 rounded-2xl bg-blue-50/40 dark:bg-blue-950/10 border border-blue-200 dark:border-blue-900/30">
+                {/* 5. MODELO DE FALLBACK (CONTINGÊNCIA POR COTAS OU SOBRECARGA) */}
+                <div className="p-4 rounded-2xl bg-amber-50/40 dark:bg-amber-950/10 border border-amber-200 dark:border-amber-900/30">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                      <span className="text-[11px] font-bold uppercase tracking-wider text-blue-900 dark:text-blue-300">
-                        5. Agente Reserva (Fallback por Cotas / Sobrecarga)
+                      <ShieldCheck className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-amber-900 dark:text-amber-300">
+                        5. Modelo de Fallback (Contingência)
                       </span>
                     </div>
-                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">
-                      Auto-Failover
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300">
+                      Auto-Failover de Modelo
                     </span>
                   </div>
-                  <p className="text-[10px] text-blue-700/80 dark:text-blue-400/80 mb-2 leading-relaxed">
-                    Agente que assumirá automaticamente a solicitação em caso de erro 429 (Cotas Esgotadas) ou 500/503 (Servidor Sobrecarregado).
+                  <p className="text-[10px] text-amber-700/80 dark:text-amber-400/80 mb-2 leading-relaxed">
+                    Modelo que este agente assumirá automaticamente em caso de erro 429 (Cotas Esgotadas) ou 500/503 (Servidor Sobrecarregado), preservando 100% das instruções, ferramentas, memória e identidade do agente.
                   </p>
                   <select
-                    value={editingAgent.backupAgentId || ''}
-                    onChange={(e) => setEditingAgent({ ...editingAgent, backupAgentId: e.target.value || undefined })}
-                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-blue-200 dark:border-blue-800/50 text-xs text-zinc-800 dark:text-zinc-200 outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                    value={editingAgent.fallbackModel || 'gemini-3.5-flash-lite'}
+                    onChange={(e) => setEditingAgent({ ...editingAgent, fallbackModel: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-amber-200 dark:border-amber-800/50 text-xs font-semibold text-zinc-800 dark:text-zinc-200 outline-none focus:ring-2 focus:ring-amber-500/20 cursor-pointer"
                   >
-                    <option value="">Nenhum (usar padrão do sistema)</option>
-                    {agents
-                      .filter((ag) => ag.id.toLowerCase() !== editingAgent.id?.toLowerCase() && ag.name.toLowerCase() !== editingAgent.name?.toLowerCase())
-                      .map((ag) => (
-                        <option key={ag.id} value={ag.id}>
-                          {ag.displayName || ag.name} ({formatModelName(ag.model)})
-                        </option>
-                      ))}
+                    {MODELS_CATALOG.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} ({m.rpm} RPM / {m.rpd} RPD)
+                      </option>
+                    ))}
+                    {!MODELS_CATALOG.some((m) => m.id === editingAgent.fallbackModel) && editingAgent.fallbackModel && (
+                      <option value={editingAgent.fallbackModel}>
+                        {editingAgent.fallbackModel}
+                      </option>
+                    )}
                   </select>
                 </div>
               </div>

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { GoogleGenAI } from '@google/genai';
 import { getGuiGeminiDir } from './paths-service.js';
 import { loadAgents } from './agents-service.js';
+import { getBestEligibleKey } from './key-pool-service.js';
 
 export interface MemoryVersionEntry {
   version: number;
@@ -337,29 +338,30 @@ export async function refactorMemoryWithAgent(
     return { success: false, error: 'Memória não encontrada' };
   }
 
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
+  // Resolver modelo baseado no agente selecionado se fornecido
+  let targetModel = customModel || mem.agentConfig?.model || 'gemini-2.5-flash';
+  let agentDisplayName = 'Agente Recluso';
+
+  if (selectedAgentId) {
+    const allAgents = loadAgents();
+    const matched = allAgents.find((a) => a.id === selectedAgentId || a.name === selectedAgentId);
+    if (matched) {
+      if (matched.model) targetModel = matched.model;
+      agentDisplayName = matched.displayName || matched.name;
+    }
+  }
+
+  const candidate = getBestEligibleKey(targetModel);
+  const apiKey = candidate?.key;
   if (!apiKey) {
     return {
       success: false,
-      error: 'GEMINI_API_KEY não configurada no ambiente para o Agente da Memória.',
+      error: 'Nenhuma chave Gemini cadastrada no Key Pool para o Agente da Memória.',
     };
   }
 
   try {
     const ai = new GoogleGenAI({ apiKey });
-
-    // Resolver modelo baseado no agente selecionado se fornecido
-    let targetModel = customModel || mem.agentConfig?.model || 'gemini-2.5-flash';
-    let agentDisplayName = 'Agente Recluso';
-
-    if (selectedAgentId) {
-      const allAgents = loadAgents();
-      const matched = allAgents.find((a) => a.id === selectedAgentId || a.name === selectedAgentId);
-      if (matched) {
-        if (matched.model) targetModel = matched.model;
-        agentDisplayName = matched.displayName || matched.name;
-      }
-    }
 
     const systemPrompt = mem.agentConfig?.systemInstructions || DEFAULT_MEMORY_AGENT_INSTRUCTIONS;
     const prompt = `[CONTEXTO DA MEMÓRIA COMPARTILHADA]\n${mem.content}\n\n[INSTRUÇÃO DO USUÁRIO PARA O AGENTE RECLUSO]\n${userInstruction}\n\nRetorne exclusivamente o conteúdo completo, refatorado e atualizado da memória mantendo o padrão técnico:`;

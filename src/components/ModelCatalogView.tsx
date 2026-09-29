@@ -129,52 +129,52 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
       role: 'Principal / Orchestrator',
       id: 'principal',
       primaryModel: 'gemini-3.5-flash-lite',
+      defaultFallbackModel: 'gemini-3.1-flash-lite',
       quota: '1.5k RPM / 500 RPD',
-      defaultBackupId: 'worker',
     },
     {
       role: 'Investigator',
       id: 'investigator',
       primaryModel: 'gemini-3.7-flash',
+      defaultFallbackModel: 'gemini-3.6-flash',
       quota: '50 RPM / 20 RPD',
-      defaultBackupId: 'architect',
     },
     {
       role: 'Architect',
       id: 'architect',
       primaryModel: 'gemini-3.6-flash',
+      defaultFallbackModel: 'gemini-3.7-flash',
       quota: '50 RPM / 20 RPD',
-      defaultBackupId: 'investigator',
     },
     {
       role: 'Auditor',
       id: 'auditor',
       primaryModel: 'gemini-3.8-flash',
+      defaultFallbackModel: 'gemini-3.6-flash',
       quota: '50 RPM / 20 RPD',
-      defaultBackupId: 'architect',
     },
     {
       role: 'Tester',
       id: 'tester',
       primaryModel: 'gemini-3-flash',
+      defaultFallbackModel: 'gemini-3.1-flash-lite',
       quota: '50 RPM / 20 RPD',
-      defaultBackupId: 'worker',
     },
     {
       role: 'Worker',
       id: 'worker',
       primaryModel: 'gemini-3.1-flash-lite',
+      defaultFallbackModel: 'gemini-3.5-flash-lite',
       quota: '150 RPM / 500 RPD',
-      defaultBackupId: 'principal',
     },
   ];
 
-  const handleBackupChange = async (agentId: string, newBackupId: string) => {
+  const handleFallbackModelChange = async (agentId: string, newFallbackModel: string) => {
     const targetAgent = agents.find((a) => a.id.toLowerCase() === agentId.toLowerCase() || a.name.toLowerCase() === agentId.toLowerCase());
     if (targetAgent && onSaveAgent) {
       await onSaveAgent({
         ...targetAgent,
-        backupAgentId: newBackupId,
+        fallbackModel: newFallbackModel,
       });
       setSavedAgentId(agentId);
       setTimeout(() => setSavedAgentId(null), 2500);
@@ -239,17 +239,17 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Painel Superior: Atribuição de Agentes Titulares e Reservas */}
+      {/* Painel Superior: Atribuição de Agentes Titulares e Modelos de Fallback */}
       <div className="p-4 rounded-2xl border border-blue-200/80 dark:border-blue-900/50 bg-blue-50/40 dark:bg-blue-950/20 space-y-4 shadow-2xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
             <div>
               <h4 className="text-xs font-bold text-blue-900 dark:text-blue-200">
-                Mapeamento de Agentes Titulares & Reservas (Programação e Voz)
+                Mapeamento de Agentes Titulares & Modelos de Fallback (Programação e Voz)
               </h4>
               <p className="text-[11px] text-blue-700/80 dark:text-blue-300/70">
-                Selecione os agentes responsáveis e seus respectivos backups para cada função do sistema.
+                Configure os modelos titulares e seus respectivos modelos de contingência (fallback) para cada agente do sistema.
               </p>
             </div>
           </div>
@@ -281,7 +281,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
               agents.find((a) => a.id.toLowerCase() === assignedId.toLowerCase() || a.name.toLowerCase() === assignedId.toLowerCase()) ||
               agents.find((a) => a.id.toLowerCase() === item.id.toLowerCase() || a.name.toLowerCase() === item.id.toLowerCase()) ||
               agents[0];
-            const activeBackupId = currentAgent?.backupAgentId || item.defaultBackupId;
+            const activeFallbackModel = currentAgent?.fallbackModel || item.defaultFallbackModel;
             const isCurrentActive =
               selectedAgentId?.toLowerCase() === (currentAgent?.id || item.id).toLowerCase() ||
               selectedAgentId?.toLowerCase() === (currentAgent?.name || '').toLowerCase();
@@ -405,21 +405,24 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                 <div className="p-2 rounded-lg bg-amber-50/40 dark:bg-amber-950/25 border border-amber-200/50 dark:border-amber-900/30 space-y-1">
                   <div className="flex items-center gap-1 text-amber-800 dark:text-amber-300 text-[10px] font-bold">
                     <ShieldCheck className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
-                    <span>Agente Reserva (Auto-Fallback)</span>
+                    <span>Modelo de Fallback (Contingência)</span>
                   </div>
 
                   <select
                     className="w-full bg-white dark:bg-zinc-900 border border-amber-300/60 dark:border-amber-800/50 rounded-md py-1 px-1.5 text-[10px] font-medium text-zinc-800 dark:text-zinc-200 outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer"
-                    value={activeBackupId}
-                    onChange={(e) => handleBackupChange(currentAgent?.id || item.id, e.target.value)}
+                    value={activeFallbackModel}
+                    onChange={(e) => handleFallbackModelChange(currentAgent?.id || item.id, e.target.value)}
                   >
-                    {agents
-                      .filter((ag) => ag.id.toLowerCase() !== (currentAgent?.id || item.id).toLowerCase())
-                      .map((ag) => (
-                        <option key={ag.id} value={ag.id}>
-                          {ag.displayName || ag.name} ({formatModelName(ag.model)})
-                        </option>
-                      ))}
+                    {MODELS_CATALOG.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} ({m.rpm} RPM / {m.rpd} RPD)
+                      </option>
+                    ))}
+                    {!MODELS_CATALOG.some((m) => m.id === activeFallbackModel) && (
+                      <option value={activeFallbackModel}>
+                        {activeFallbackModel}
+                      </option>
+                    )}
                   </select>
                 </div>
 
@@ -504,7 +507,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                 <div className="p-2.5 rounded-lg bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 space-y-1">
                   <div className="flex items-center gap-1 text-amber-800 dark:text-amber-300 text-[10px] font-bold">
                     <ShieldCheck className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
-                    <span>Agente Reserva (Auto-Fallback)</span>
+                    <span>Modelo de Fallback (Transcritor)</span>
                   </div>
 
                   <select
@@ -607,7 +610,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                 <div className="p-2.5 rounded-lg bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 space-y-1">
                   <div className="flex items-center gap-1 text-amber-800 dark:text-amber-300 text-[10px] font-bold">
                     <ShieldCheck className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
-                    <span>Agente Reserva (Auto-Fallback)</span>
+                    <span>Modelo de Fallback (Narrador)</span>
                   </div>
 
                   <select

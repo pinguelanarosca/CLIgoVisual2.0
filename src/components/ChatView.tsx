@@ -472,16 +472,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
             <span className="text-[10.5px]">
               {!cliStatus.authConfigured
-                ? 'GEMINI_API_KEY ausente: defina a chave para habilitar requisições.'
+                ? 'Nenhuma chave Gemini cadastrada no Key Pool: cadastre em Configurações > Key Pool.'
                 : cliStatus.apiError || 'Erro na validação da chave API.'}
             </span>
           </div>
           {onOpenSettings && (
             <button
-              onClick={() => onOpenSettings('cli')}
+              onClick={() => onOpenSettings('key_pool')}
               className="px-1.5 py-0.5 bg-amber-600 hover:bg-amber-500 text-white text-[10.5px] font-medium rounded transition cursor-pointer"
             >
-              Configurações
+              Configurar Key Pool
             </button>
           )}
         </div>

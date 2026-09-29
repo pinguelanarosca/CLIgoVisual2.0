@@ -491,7 +491,7 @@ export function App() {
           resume: messages.length > 0,
           workDir,
           agentId: currentAgent?.id || currentAgent?.name,
-          backupAgentId: currentAgent?.backupAgentId,
+          fallbackModel: currentAgent?.fallbackModel,
           temperature: currentAgent?.temperature,
           topP: currentAgent?.topP,
           topK: currentAgent?.topK,
@@ -740,14 +740,14 @@ export function App() {
         } else if (errLower.includes('429') || errLower.includes('quota') || errLower.includes('resource_exhausted')) {
           finalContent = `⚠️ **Limite de Cota Atingido na API (Erro 429 - Quota Exceeded)**\n\n${errorMessage || 'A cota de requisições por minuto ou limite diário foi atingida para este modelo.'}\n\n💡 **Recomendações:**\n- Aguarde a renovação da cota de requisições;\n- Alterne para outro modelo disponível com limites maiores (ex: Flash Lite).`;
         } else if (
-          (errLower.includes('gemini_api_key') && (errLower.includes('missing') || errLower.includes('not set') || errLower.includes('não foi encontrada') || errLower.includes('invalid') || errLower.includes('required'))) ||
+          (errLower.includes('gemini_api_key') && (errLower.includes('missing') || errLower.includes('not set') || errLower.includes('não foi encontrada') || errLower.includes('invalid') || errLower.includes('required') || errLower.includes('cadastrada no key pool'))) ||
           errLower.includes('unauthorized') ||
           errLower.includes('invalid api key') ||
           errLower.includes('api_key_invalid') ||
           errLower.includes('authentication failed') ||
           errLower.includes('401')
         ) {
-          finalContent = `⚠️ **Falha de Autenticação da Chave API**\n\n${errorMessage || 'A chave de API do Gemini não foi encontrada ou não possui permissão.'}\n\n💡 **Verificação:**\n- Verifique se a variável \`GEMINI_API_KEY\` está definida no ambiente;\n- Teste a conectividade em tempo real em **Configurações ⚙️ > Testar Conexão com a API**.`;
+          finalContent = `⚠️ **Falha de Autenticação da Chave API**\n\n${errorMessage || 'Nenhuma chave Gemini cadastrada no Key Pool ou a chave atual não possui permissão.'}\n\n💡 **Verificação:**\n- Acesse **Configurações ⚙️ > Key Pool (K1..K9)** para cadastrar ou gerenciar suas chaves Gemini;\n- Execute a bateria diária de testes de integridade para calibrar o ranking por modelo.`;
         } else {
           finalContent = `⚠️ **Falha na Execução do Gemini CLI**\n\n${errorMessage || 'O processo do Gemini CLI foi encerrado com falha.'}`;
         }

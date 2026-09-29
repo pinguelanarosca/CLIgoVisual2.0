@@ -1,10 +1,11 @@
 import { GoogleGenAI, Modality } from '@google/genai';
 import { sysLog } from './logger-service.js';
+import { getBestEligibleKey } from './key-pool-service.js';
 
 let geminiClient: GoogleGenAI | null = null;
 
 function getGenAiClient(customApiKey?: string, customApiUrl?: string): GoogleGenAI | null {
-  const apiKey = customApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY;
+  const apiKey = customApiKey || getBestEligibleKey('gemini-2.5-flash')?.key;
   if (!apiKey) {
     return null;
   }

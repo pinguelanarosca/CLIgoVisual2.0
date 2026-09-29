@@ -1,7 +1,3 @@
-import 'dotenv/config';
-import { discoverApiKeyFromLoginEnv } from './server/env-discovery.js';
-discoverApiKeyFromLoginEnv();
-
 import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -10,6 +6,16 @@ import { exec, execSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer as createViteServer } from 'vite';
 import { getGuiDataDir } from './server/paths-service.js';
+import {
+  saveConfiguredKeys,
+  getConfiguredKeysPublicInfo,
+  loadKeyPoolState,
+  runDailyTestBattery,
+  getRankedKeys,
+  getPublicExternalKeyStatus,
+  migrateExternalApiKeyToK1,
+  OFFICIAL_POOL_MODELS,
+} from './server/key-pool-service.js';
 
 // Garantir que os patches de confiabilidade da CLI e subagentes estejam aplicados
 try {
@@ -624,6 +630,75 @@ priority = 90
     const agents = resetAllAgentsToDefault();
     sysLog.info('AGENT', 'Todos os agentes foram restaurados para o padrão de fábrica.', { count: agents.length });
     res.json({ success: true, agents });
+  });
+
+  // 3.1. Key Pool Management & Dynamic Model Ranking
+  app.get('/api/key-pool', (req, res) => {
+    const configuredKeys = getConfiguredKeysPublicInfo();
+    const state = loadKeyPoolState();
+    const rankingsByModel: Record<string, any[]> = {};
+    for (const model of OFFICIAL_POOL_MODELS) {
+      rankingsByModel[model] = getRankedKeys(model);
+    }
+    res.json({
+      configuredKeys,
+      state,
+      rankingsByModel,
+      models: OFFICIAL_POOL_MODELS,
+      lastCycleDate: state.lastCycleDate,
+    });
+  });
+
+  app.post('/api/key-pool/keys', (req, res) => {
+    const { keys } = req.body || {};
+    if (!keys || typeof keys !== 'object') {
+      return res.status(400).json({ error: 'Formato de chaves inválido.' });
+    }
+    const result = saveConfiguredKeys(keys);
+    const configuredKeys = getConfiguredKeysPublicInfo();
+    res.json({ success: true, count: result.count, configuredKeys });
+  });
+
+  app.delete('/api/key-pool/keys/:keyId', (req, res) => {
+    const { keyId } = req.params;
+    if (!keyId || !/^K[1-9]$/i.test(keyId)) {
+      return res.status(400).json({ error: 'Identificador de chave inválido (esperado K1..K9).' });
+    }
+    saveConfiguredKeys({ [keyId.toUpperCase()]: null });
+    res.json({ success: true, configuredKeys: getConfiguredKeysPublicInfo() });
+  });
+
+  app.post('/api/key-pool/test-battery', async (req, res) => {
+    try {
+      const results = await runDailyTestBattery(true);
+      const state = loadKeyPoolState();
+      const rankingsByModel: Record<string, any[]> = {};
+      for (const model of OFFICIAL_POOL_MODELS) {
+        rankingsByModel[model] = getRankedKeys(model);
+      }
+      res.json({ success: true, results, state, rankingsByModel });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.get('/api/key-pool/external-status', (req, res) => {
+    try {
+      const status = getPublicExternalKeyStatus();
+      res.json({ success: true, ...status });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post('/api/key-pool/migrate-external-key', (req, res) => {
+    try {
+      const result = migrateExternalApiKeyToK1();
+      const configuredKeys = getConfiguredKeysPublicInfo();
+      res.json({ success: true, ...result, configuredKeys });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message });
+    }
   });
 
   // 4. Skills

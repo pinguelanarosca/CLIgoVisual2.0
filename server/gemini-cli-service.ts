@@ -1,7 +1,5 @@
 import { spawn, execSync, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
-import { discoverApiKeyFromLoginEnv } from './env-discovery.js';
-discoverApiKeyFromLoginEnv();
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,6 +13,13 @@ import { syncPoliciesToSettings } from './policies-service.js';
 import { getGuiDataDir } from './paths-service.js';
 import { loadMcpSettings } from './mcp-service.js';
 import { acpManager } from './acp-client.js';
+import {
+  getBestEligibleKey,
+  loadConfiguredKeys,
+  maskApiKey,
+  recordRuntimeExecutionResult,
+  runDailyTestBattery,
+} from './key-pool-service.js';
 
 const persistentProcesses = new Map<string, ChildProcess>();
 
@@ -132,15 +137,13 @@ export async function validateGeminiApiKey(
   modelTested?: string;
   latencyMs?: number;
 }> {
-  if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY) {
-    discoverApiKeyFromLoginEnv(true);
-  }
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
+  const candidate = getBestEligibleKey(targetModel);
+  const apiKey = candidate?.key;
   if (!apiKey) {
     return {
       configured: false,
       valid: false,
-      message: 'A variável de ambiente GEMINI_API_KEY não foi encontrada.',
+      message: 'Nenhuma chave Gemini cadastrada no Key Pool. Configure as chaves K1..K9 na aba Key Pool.',
     };
   }
 
@@ -406,24 +409,15 @@ export async function detectCliStatus(
   forceFresh = false,
   targetModel = 'gemini-3.1-flash-lite'
 ): Promise<CliStatus> {
-  if (forceFresh || (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY)) {
-    discoverApiKeyFromLoginEnv(forceFresh);
-  }
-
   const cliPath = getResolvedCliPath();
   const localCliPath = getLocalCliPath();
   const globalCliPath = getGlobalCliPath();
 
-  const rawApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY || '';
-  const authConfigured = Boolean(rawApiKey);
-  let maskedApiKey = undefined;
-  if (rawApiKey) {
-    if (rawApiKey.length > 8) {
-      maskedApiKey = `${rawApiKey.substring(0, 4)}...${rawApiKey.substring(rawApiKey.length - 4)}`;
-    } else {
-      maskedApiKey = '***';
-    }
-  }
+  const configuredKeys = loadConfiguredKeys();
+  const activeKeysCount = Object.keys(configuredKeys).length;
+  const bestCandidate = getBestEligibleKey(targetModel);
+  const authConfigured = activeKeysCount > 0;
+  const maskedApiKey = bestCandidate ? maskApiKey(bestCandidate.key) : undefined;
 
   const rawExaKey = process.env.EXA_API_KEY || '';
   const exaConfigured = Boolean(rawExaKey);
@@ -636,6 +630,8 @@ export interface CliExecutionParams {
   resume?: boolean;
   workDir?: string;
   agentId?: string;
+  fallbackModel?: string;
+  isFallbackExecution?: boolean;
   backupAgentId?: string;
   isBackupExecution?: boolean;
   temperature?: number;
@@ -1100,6 +1096,7 @@ export function executeGeminiCli(
     fallbackIndex?: number;
     fallbackChain?: string[];
     executionId?: string;
+    triedKeyIds?: string[];
   }
 ): { cancel: () => void; executionId: string } {
   const t0 = performance.now();
@@ -1151,14 +1148,7 @@ export function executeGeminiCli(
     try {
       if (execState.cancelled) return;
 
-      // 1. API key discovery (usando cache / verificação não-bloqueante)
-      if (!process.env.GEMINI_API_KEY && !process.env.GOOGLE_GENAI_API_KEY && !process.env.GOOGLE_API_KEY) {
-        discoverApiKeyFromLoginEnv(false);
-      }
-      const tApiKey = performance.now();
-      console.log(`[PERF] [${executionId}] api_key_discovery_done=${(tApiKey - t0).toFixed(1)}ms`);
-
-      // 2. Handshake e auditoria MCP Exa (em background / cache não-bloqueante)
+      // 1. Auditoria MCP Exa (em background / cache não-bloqueante)
       const { tools: mcpTools, discoverySource } = getExaAuditTools();
       const tExa = performance.now();
       console.log(`[PERF] [${executionId}] exa_done=${(tExa - t0).toFixed(1)}ms (source: ${discoverySource})`);
@@ -1303,14 +1293,20 @@ export function executeGeminiCli(
 
       if (effectiveSessionId) {
         const sessionExists = isExistingSession(effectiveSessionId, cwd);
-        const shouldPassResumeFlag = params.resume === true || (shouldResume && sessionExists);
+        const shouldPassResumeFlag =
+          params.resume === true ||
+          isRetry ||
+          knownSessions.has(effectiveSessionId) ||
+          (params.sessionId ? knownSessions.has(params.sessionId) : false) ||
+          (shouldResume && sessionExists);
+
         if (shouldPassResumeFlag) {
           args.push('-r', effectiveSessionId);
-          knownSessions.add(effectiveSessionId);
-          if (params.sessionId) knownSessions.add(params.sessionId);
         } else {
           args.push('--session-id', effectiveSessionId);
         }
+        knownSessions.add(effectiveSessionId);
+        if (params.sessionId) knownSessions.add(params.sessionId);
       }
 
       if (!cliPath || (cliPath !== 'gemini' && !fs.existsSync(cliPath))) {
@@ -1359,7 +1355,21 @@ export function executeGeminiCli(
         }
       }
 
-      const activeApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
+      // 4.1. Selecionar a melhor chave elegível do Key Pool para o modelo executado (Fonte Única Oficial)
+      const keyCandidate = getBestEligibleKey(chosenModel, state?.triedKeyIds || []);
+      const activeApiKey = keyCandidate?.key;
+      const activeKeyId = keyCandidate?.keyId || 'K1';
+
+      if (!activeApiKey) {
+        const noKeyMsg = 'Nenhuma chave Gemini cadastrada no Key Pool. Cadastre ao menos uma chave (K1..K9) em Configurações → Gemini API → Key Pool.';
+        sysLog.warn('KPOOL', `[KPOOL] Execução abortada: nenhuma chave elegível no Key Pool para o modelo ${chosenModel}.`);
+        params.onError(new Error(noKeyMsg));
+        params.onEvent({
+          type: 'error',
+          data: { message: noKeyMsg, code: 'NO_KEY_IN_POOL' },
+        });
+        return;
+      }
 
       const env: NodeJS.ProcessEnv = {
         ...process.env,
@@ -1370,9 +1380,9 @@ export function executeGeminiCli(
         MAX_RETRIES: '0',
         GEMINI_CLI_NO_RELAUNCH: '1',
         GEMINI_CLI_SYSTEM_SETTINGS_PATH: tempSettingsFile,
-        GEMINI_API_KEY: activeApiKey || '',
-        GOOGLE_API_KEY: activeApiKey || '',
-        GOOGLE_GENAI_API_KEY: activeApiKey || '',
+        GEMINI_API_KEY: activeApiKey,
+        GOOGLE_API_KEY: activeApiKey,
+        GOOGLE_GENAI_API_KEY: activeApiKey,
       };
 
       if (systemPromptFile) {
@@ -1845,11 +1855,11 @@ export function executeGeminiCli(
           reportedErrorText.includes('already exists. Use --resume to resume it') ||
           reportedErrorText.includes('already exists');
 
-        if (isSessionAlreadyExistsError && (params.sessionId || effectiveSessionId) && !isRetry) {
+        if (isSessionAlreadyExistsError && (params.sessionId || effectiveSessionId)) {
           sysLog.warn('CLI', `Sessão já existe no disco (${params.sessionId || effectiveSessionId}). Retomando automaticamente com -r (--resume)...`);
           if (params.sessionId) knownSessions.add(params.sessionId);
           if (effectiveSessionId) knownSessions.add(effectiveSessionId);
-          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: true }, true, { executionId });
+          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: true }, true, { ...state, executionId });
           return;
         }
 
@@ -1864,18 +1874,18 @@ export function executeGeminiCli(
           reportedErrorText.includes('Error resuming session') ||
           reportedErrorText.includes('Invalid session identifier');
 
-        if (isSessionResumeError && (params.sessionId || effectiveSessionId) && !isRetry) {
+        if (isSessionResumeError && (params.sessionId || effectiveSessionId)) {
           sysLog.warn('CLI', `Sessão anterior não encontrada no disco ou inválida (${params.sessionId || effectiveSessionId}). Reiniciando automaticamente em uma nova sessão...`);
           if (params.sessionId) knownSessions.delete(params.sessionId);
           if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { executionId });
+          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { ...state, executionId });
           return;
         }
 
         if (code === 42 && (params.sessionId || effectiveSessionId) && !isRetry) {
           if (params.sessionId) knownSessions.delete(params.sessionId);
           if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { executionId });
+          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { ...state, executionId });
           return;
         }
 
@@ -1894,7 +1904,27 @@ export function executeGeminiCli(
         const combinedErrText = (stderrText + ' ' + reportedErrorText).toLowerCase();
         const apiErrCode = getApiErrorCode(code, stderrText, reportedErrorText);
 
-        const isBadRequestError =
+        const isAuthNotice = stderrText.includes('Both GOOGLE_API_KEY and GEMINI_API_KEY are set');
+        const isAuthError = !isAuthNotice && (
+          stderrText.includes('Please set an Auth method') ||
+          combinedErrText.includes('api_key_invalid') ||
+          combinedErrText.includes('api key not valid') ||
+          combinedErrText.includes('invalid api key') ||
+          combinedErrText.includes('key not valid') ||
+          combinedErrText.includes('unauthenticated') ||
+          combinedErrText.includes('401') ||
+          combinedErrText.includes('403') ||
+          (stderrText.includes('GEMINI_API_KEY') && (
+            stderrText.includes('not set') ||
+            stderrText.includes('missing') ||
+            stderrText.includes('unauthorized') ||
+            stderrText.includes('invalid') ||
+            stderrText.includes('required') ||
+            stderrText.includes('não foi encontrada')
+          ))
+        );
+
+        const isBadRequestError = !isAuthError && (
           apiErrCode === 400 ||
           combinedErrText.includes('400') ||
           combinedErrText.includes('invalid argument') ||
@@ -1902,7 +1932,8 @@ export function executeGeminiCli(
           combinedErrText.includes('bad request') ||
           combinedErrText.includes('cannot set') ||
           combinedErrText.includes('oneof field') ||
-          combinedErrText.includes('_thinking_level');
+          combinedErrText.includes('_thinking_level')
+        );
 
         const isQuotaError = !isBadRequestError && (
           stderrText.includes('TerminalQuotaError') ||
@@ -1933,19 +1964,6 @@ export function executeGeminiCli(
           reportedErrorText.toLowerCase().includes('high demand') ||
           reportedErrorText.toLowerCase().includes('overloaded') ||
           reportedErrorText.toLowerCase().includes('service unavailable')
-        );
-
-        const isAuthNotice = stderrText.includes('Both GOOGLE_API_KEY and GEMINI_API_KEY are set');
-        const isAuthError = !isAuthNotice && (
-          stderrText.includes('Please set an Auth method') ||
-          (stderrText.includes('GEMINI_API_KEY') && (
-            stderrText.includes('not set') ||
-            stderrText.includes('missing') ||
-            stderrText.includes('unauthorized') ||
-            stderrText.includes('invalid') ||
-            stderrText.includes('required') ||
-            stderrText.includes('não foi encontrada')
-          ))
         );
 
         const hasUnresolvedToolCalls = activeToolCalls.size > 0;
@@ -1996,39 +2014,81 @@ export function executeGeminiCli(
         }
 
         if (hasFailed) {
-          // Verificação do Agente Reserva (Fallback por Cotas ou Servidor Sobrecarregado)
-          if (!isBadRequestError && (isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isBackupExecution && !execState.cancelled) {
+          // Registrar resultado no Key Pool para o modelo e chave atuais
+          recordRuntimeExecutionResult(chosenModel, activeKeyId, {
+            success: false,
+            httpStatus: apiErrCode,
+            errorText: stderrText || reportedErrorText,
+          });
+
+          // 1. Tentar próxima chave elegível no Key Pool para o MESMO modelo
+          const triedKeys = [...(state?.triedKeyIds || []), activeKeyId];
+          const nextKey = getBestEligibleKey(chosenModel, triedKeys);
+
+          if (nextKey && !execState.cancelled && !isBadRequestError) {
+            params.onEvent({
+              type: 'stream_event',
+              data: {
+                type: 'message',
+                role: 'assistant',
+                content: `\n🔑 **[Key Pool Failover]** Chave **${activeKeyId}** encontrou restrição no modelo \`${chosenModel}\` (${apiErrCode || 'Erro'}). Alternando para a próxima chave do ranking: **${nextKey.keyId}** (${nextKey.latencyRank})...\n\n`,
+              },
+            });
+
+            sysLog.info(
+              'KPOOL',
+              `[KPOOL] chave ${activeKeyId} falhou no modelo ${chosenModel} (${apiErrCode || 'erro'}). Próxima chave → ${nextKey.keyId}`
+            );
+
+            execState.retryTimeout = setTimeout(() => {
+              if (execState) execState.retryTimeout = null;
+              if (!execState?.cancelled) {
+                executeGeminiCli(
+                  params,
+                  true,
+                  {
+                    ...state,
+                    executionId,
+                    currentModel: chosenModel,
+                    triedKeyIds: triedKeys,
+                  }
+                );
+              } else {
+                executions.delete(executionId);
+              }
+            }, 800);
+            return;
+          }
+
+          // 2. Se todas as chaves do Key Pool para este modelo falharam: Verificação do Modelo de Fallback do Agente
+          if (!isBadRequestError && (isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isFallbackExecution && !params.isBackupExecution && !execState.cancelled) {
             try {
               const allAgents = loadAgents(cwd);
               const currentAgentObj = allAgents.find(
                 (a) => a.id.toLowerCase() === (agentId || '').toLowerCase() || a.name.toLowerCase() === (agentId || '').toLowerCase()
               );
-              const targetBackupId = params.backupAgentId || currentAgentObj?.backupAgentId;
-              const backupAgent = targetBackupId
-                ? allAgents.find(
-                    (a) => a.id.toLowerCase() === targetBackupId.toLowerCase() || a.name.toLowerCase() === targetBackupId.toLowerCase()
-                  )
-                : null;
+              
+              const configuredFallbackModel = params.fallbackModel || currentAgentObj?.fallbackModel;
+              const fallbackModelToUse = configuredFallbackModel ? normalizeCliModelName(configuredFallbackModel) : null;
 
-              if (backupAgent && backupAgent.id !== currentAgentObj?.id) {
+              if (fallbackModelToUse && fallbackModelToUse !== chosenModel) {
                 const reasonText = isQuotaError || apiErrCode === 429
                   ? 'Cotas de requisição esgotadas (Erro 429 / Quota Exceeded)'
                   : 'Servidor sobrecarregado / Alta demanda (Erro 503/500 / High Demand)';
-                const primaryName = currentAgentObj?.displayName || currentAgentObj?.name || agentId || 'Agente Titular';
-                const backupName = backupAgent.displayName || backupAgent.name;
+                const agentDisplayName = currentAgentObj?.displayName || currentAgentObj?.name || agentId || 'Agente';
 
                 params.onEvent({
                   type: 'stream_event',
                   data: {
                     type: 'message',
                     role: 'assistant',
-                    content: `\n🛡️ **[Agente Reserva Acionado]**\nO agente titular **${primaryName}** encontrou uma restrição de API: *${reasonText}*.\n\n🔄 **Acionando automaticamente o Agente Reserva: ${backupName}** (Modelo: \`${backupAgent.model}\`) para concluir sua solicitação com resiliência...\n\n`,
+                    content: `\n🛡️ **[Modelo de Fallback Acionado]**\nO agente titular **${agentDisplayName}** encontrou uma restrição no modelo \`${chosenModel}\`: *${reasonText}*.\n\n🔄 **Alternando automaticamente para o Modelo de Fallback: \`${fallbackModelToUse}\`** mantendo todas as instruções, contexto e identidade do agente intactos...\n\n`,
                   },
                 });
 
                 sysLog.warn(
                   'CLI',
-                  `Agente titular ${agentId} encontrou ${reasonText}. Acionando agente reserva ${backupAgent.name} (Modelo: ${backupAgent.model}).`
+                  `Agente ${agentDisplayName} encontrou ${reasonText} no modelo ${chosenModel}. Alternando para o Modelo de Fallback configurado: ${fallbackModelToUse}.`
                 );
 
                 execState.retryTimeout = setTimeout(() => {
@@ -2038,22 +2098,22 @@ export function executeGeminiCli(
                       {
                         ...params,
                         executionId,
-                        agentId: backupAgent.id || backupAgent.name,
-                        model: backupAgent.model,
-                        backupAgentId: undefined, // não recursivo
-                        isBackupExecution: true,
-                        systemInstructions: backupAgent.systemInstructions,
-                        baseInstructions: backupAgent.baseInstructions,
-                        overrideBasePrompt: backupAgent.overrideBasePrompt,
-                        temperature: backupAgent.temperature,
-                        topP: backupAgent.topP,
-                        topK: backupAgent.topK,
-                        maxOutputTokens: backupAgent.maxOutputTokens,
-                        thinking: backupAgent.thinking,
+                        agentId: params.agentId, // PRESERVA IDENTIDADE DO AGENTE
+                        model: fallbackModelToUse, // APENAS O MODELO MUDA
+                        fallbackModel: undefined, // não recursivo
+                        isFallbackExecution: true,
+                        systemInstructions: params.systemInstructions,
+                        baseInstructions: params.baseInstructions,
+                        overrideBasePrompt: params.overrideBasePrompt,
+                        temperature: params.temperature,
+                        topP: params.topP,
+                        topK: params.topK,
+                        maxOutputTokens: params.maxOutputTokens,
+                        thinking: params.thinking,
                         resume: true,
                       },
                       true,
-                      { executionId }
+                      { executionId, currentModel: fallbackModelToUse }
                     );
                   } else {
                     executions.delete(executionId);
@@ -2062,7 +2122,7 @@ export function executeGeminiCli(
                 return;
               }
             } catch (err: any) {
-              sysLog.warn('CLI', `Falha ao tentar acionar agente reserva: ${err.message}`);
+              sysLog.warn('CLI', `Falha ao tentar acionar modelo de fallback: ${err.message}`);
             }
           }
 
@@ -2209,6 +2269,12 @@ Você atingiu o limite de requisições.
           });
           tracker.trackFlowSummary(code ?? 1, finalMessage);
         } else {
+          // Gravar sucesso no Key Pool para o modelo e chave atuais
+          recordRuntimeExecutionResult(chosenModel, activeKeyId, {
+            success: true,
+            latencyMs: Math.round(performance.now() - tSpawn),
+          });
+
           logSubagentEvent({
             timestamp: new Date().toISOString(),
             executionId,

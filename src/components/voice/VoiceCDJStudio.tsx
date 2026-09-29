@@ -402,7 +402,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
             </div>
 
             <div className="space-y-1.5 pt-1">
-              <label className="block text-[10px] font-bold text-zinc-500">Agente Reserva (Auto-Fallback):</label>
+              <label className="block text-[10px] font-bold text-zinc-500">Modelo de Fallback (Transcritor):</label>
               <select
                 value={backupSttAgentId}
                 onChange={(e) => onUpdateAudioSettings({ backupSttAgentId: e.target.value })}
@@ -415,7 +415,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
                     </option>
                   ))
                 ) : (
-                  <option value="backup_stt">🛡️ Transcritor Reserva</option>
+                  <option value="backup_stt">🛡️ Transcritor Fallback</option>
                 )}
               </select>
             </div>
@@ -455,7 +455,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
             </div>
 
             <div className="space-y-1.5 pt-1">
-              <label className="block text-[10px] font-bold text-zinc-500">Agente Reserva (Auto-Fallback):</label>
+              <label className="block text-[10px] font-bold text-zinc-500">Modelo de Fallback (Narrador):</label>
               <select
                 value={backupTtsAgentId}
                 onChange={(e) => onUpdateAudioSettings({ backupTtsAgentId: e.target.value })}

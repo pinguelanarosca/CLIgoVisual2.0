@@ -36,6 +36,7 @@ export interface AgentConfig {
   displayName: string;
   role: string;
   model: string;
+  fallbackModel?: string;
   backupAgentId?: string;
   description: string;
   baseInstructions?: string;
@@ -53,6 +54,35 @@ export interface AgentConfig {
   conceptualProfile?: string;
   maxTurns?: number;
   statusGrade: StatusGrade;
+}
+
+export type KeyGroup = 'G1' | 'G2' | 'G3' | 'G4' | 'G5' | 'G6';
+
+export interface KeyModelStatus {
+  model: string;
+  keyId: string; // 'K1'..'K9'
+  dailyGroup: KeyGroup;
+  dailyLatency: number;
+  currentGroup: KeyGroup;
+  currentLatency: number;
+  latencyRank?: string; // 'L1', 'L2', 'L3'...
+  overallRank?: number;
+  lastError?: string;
+  lastErrorAt?: string;
+  lastSuccessAt?: string;
+  consecutiveErrors: number;
+  lastTestAt?: string;
+  cycleDate: string;
+  httpStatus?: number | null;
+  errorCode?: string;
+  errorType?: string;
+}
+
+export interface ConfiguredKeyInfo {
+  keyId: string;
+  maskedKey: string;
+  configured: boolean;
+  lastSavedAt?: string;
 }
 
 export interface SkillConfig {
@@ -461,6 +491,7 @@ export type SystemLogCategory =
   | 'PACKAGE'
   | 'CONFIG'
   | 'AUTH'
+  | 'KPOOL'
   | 'SQLITE'
   | 'SYSTEM';
 

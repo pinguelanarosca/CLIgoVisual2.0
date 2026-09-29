@@ -10,6 +10,7 @@ import { VoiceCDJStudio } from './voice/VoiceCDJStudio.js';
 import { PackagingSettingsSection } from './settings/PackagingSettingsSection.js';
 import { MemoryAgentSettingsSection } from './settings/MemoryAgentSettingsSection.js';
 import { BackupAndResetSection } from './BackupAndResetSection.js';
+import { KeyPoolSettingsSection } from './settings/KeyPoolSettingsSection.js';
 import { fetchJsonSafely } from '../utils/apiUtils.js';
 import {
   Settings,
@@ -387,6 +388,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="w-48 border-r border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-900/40 p-1.5 space-y-0.5 overflow-y-auto shrink-0">
             {[
               { id: 'cli', label: 'Gemini CLI', icon: Terminal },
+              { id: 'key_pool', label: 'Pool de Chaves (K1..K9)', icon: Key },
               { id: 'context', label: 'Contexto & Tokens', icon: Sparkles },
               { id: 'models', label: 'Modelos & Catálogo', icon: Cpu },
               { id: 'agents', label: 'Agentes (6)', icon: Bot },
@@ -433,6 +435,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onRefreshStatus={onRefreshStatus}
                 onNavigateToTab={setActiveTab}
               />
+            )}
+
+            {/* KEY POOL (K1..K9) */}
+            {activeTab === 'key_pool' && (
+              <KeyPoolSettingsSection onRefreshStatus={onRefreshStatus} />
             )}
 
             {/* 2. MODELOS */}
