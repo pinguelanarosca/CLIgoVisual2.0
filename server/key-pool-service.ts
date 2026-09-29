@@ -9,12 +9,13 @@ export type KeyGroup = 'G1' | 'G2' | 'G3' | 'G4' | 'G5' | 'G6';
 export interface KeyModelStatus {
   model: string;
   keyId: string; // 'K1'..'K9'
-  dailyGroup: KeyGroup;
-  dailyLatency: number;
-  currentGroup: KeyGroup;
-  currentLatency: number;
-  latencyRank?: string; // 'L1', 'L2', 'L3'...
+  dailyGroup: KeyGroup | null;
+  dailyLatency: number | null;
+  currentGroup: KeyGroup | null;
+  currentLatency: number | null;
+  latencyRank?: string | null; // 'L1', 'L2', 'L3'... ou null
   overallRank?: number;
+  isTested?: boolean;
   lastError?: string;
   lastErrorAt?: string;
   lastSuccessAt?: string;
@@ -617,7 +618,7 @@ export async function runDailyTestBattery(forceRefresh = false): Promise<{
 export function getRankedKeys(model: string): Array<{
   keyId: string;
   key: string;
-  group: KeyGroup;
+  group: KeyGroup | null;
   latency: number | null;
   latencyRank: string;
   overallRank: number;
@@ -633,7 +634,7 @@ export function getRankedKeys(model: string): Array<{
   const candidates: Array<{
     keyId: string;
     key: string;
-    group: KeyGroup;
+    group: KeyGroup | null;
     latency: number | null;
     isTested: boolean;
     status: KeyModelStatus;
@@ -651,26 +652,27 @@ export function getRankedKeys(model: string): Array<{
       candidates.push({
         keyId,
         key: rawKey,
-        group: savedStatus.currentGroup || savedStatus.dailyGroup || 'G1',
+        group: savedStatus.currentGroup || savedStatus.dailyGroup || null,
         latency: savedStatus.currentLatency ?? savedStatus.dailyLatency ?? null,
         isTested: true,
-        status: savedStatus,
+        status: { ...savedStatus, isTested: true },
       });
     } else {
       const unclassifiedStatus: KeyModelStatus = {
         model,
         keyId,
-        dailyGroup: 'G1',
-        dailyLatency: 0,
-        currentGroup: 'G1',
-        currentLatency: 0,
+        dailyGroup: null,
+        dailyLatency: null,
+        currentGroup: null,
+        currentLatency: null,
         consecutiveErrors: 0,
         cycleDate: state.lastCycleDate || new Date().toISOString().split('T')[0],
+        isTested: false,
       };
       candidates.push({
         keyId,
         key: rawKey,
-        group: 'G1',
+        group: null,
         latency: null,
         isTested: false,
         status: unclassifiedStatus,
@@ -686,7 +688,7 @@ export function getRankedKeys(model: string): Array<{
   // 5. Desempate / Ordem de não-testadas: Ordem numérica do slot K1 < K2 < K3 < ... < K9.
   candidates.sort((a, b) => {
     const priority = (item: typeof a) => {
-      if (!item.isTested) return 1.5; // Fica entre G1 (1.0) e G2 (2.0)
+      if (!item.isTested || !item.group) return 1.5; // Fica entre G1 (1.0) e G2 (2.0)
       return GROUP_PRIORITY[item.group] ?? 99;
     };
 
@@ -703,7 +705,7 @@ export function getRankedKeys(model: string): Array<{
 
   const groupCounts: Record<string, number> = {};
   return candidates.map((item, index) => {
-    if (item.isTested) {
+    if (item.isTested && item.group) {
       groupCounts[item.group] = (groupCounts[item.group] || 0) + 1;
       item.status.latencyRank = `L${groupCounts[item.group]}`;
     } else {
@@ -716,7 +718,7 @@ export function getRankedKeys(model: string): Array<{
       key: item.key,
       group: item.group,
       latency: item.latency,
-      latencyRank: item.status.latencyRank,
+      latencyRank: item.status.latencyRank || '-',
       overallRank: index + 1,
       status: item.status,
       isTested: item.isTested,
@@ -731,7 +733,7 @@ export function getBestEligibleKey(
 ): {
   keyId: string;
   key: string;
-  group: KeyGroup;
+  group: KeyGroup | null;
   latencyRank: string;
   status: KeyModelStatus;
 } | null {
@@ -763,21 +765,23 @@ export function recordRuntimeExecutionResult(
       model,
       keyId,
       dailyGroup: result.success ? 'G1' : 'G4',
-      dailyLatency: result.latencyMs || 0,
+      dailyLatency: result.latencyMs ?? null,
       currentGroup: result.success ? 'G1' : 'G4',
-      currentLatency: result.latencyMs || 0,
+      currentLatency: result.latencyMs ?? null,
       consecutiveErrors: 0,
       cycleDate: state.lastCycleDate || now.split('T')[0],
       lastTestAt: now,
+      isTested: true,
     };
   }
 
+  current.isTested = true;
   if (result.success) {
     current.currentGroup = 'G1';
     current.consecutiveErrors = 0;
     current.lastSuccessAt = now;
     current.lastTestAt = now;
-    if (result.latencyMs !== undefined) {
+    if (result.latencyMs !== undefined && result.latencyMs !== null) {
       current.currentLatency = result.latencyMs;
       if (!current.dailyLatency) current.dailyLatency = result.latencyMs;
     }
@@ -792,7 +796,7 @@ export function recordRuntimeExecutionResult(
     current.httpStatus = result.httpStatus;
     current.errorCode = classified.errorCode;
     current.errorType = classified.errorType;
-    if (result.latencyMs !== undefined) {
+    if (result.latencyMs !== undefined && result.latencyMs !== null) {
       current.currentLatency = result.latencyMs;
     }
 
