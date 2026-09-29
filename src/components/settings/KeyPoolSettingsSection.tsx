@@ -85,6 +85,12 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
 
   const keyIds = ['K1', 'K2', 'K3', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9'];
 
+  useEffect(() => {
+    console.log('[KPOOL_UI] selected_model', selectedModelFilter);
+    const count = (rankingsByModel[selectedModelFilter] || []).length;
+    console.log('[KPOOL_UI] ranking_count', { model: selectedModelFilter, count });
+  }, [selectedModelFilter, rankingsByModel]);
+
   const loadData = async () => {
     try {
       setIsLoading(true);
@@ -159,7 +165,7 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
         setConfiguredKeys(data.configuredKeys || {});
         setSuccessMessage(`Chave ${keyId} salva com sucesso em api-keys.env (chmod 600)!`);
         setTimeout(() => setSuccessMessage(null), 4000);
-        loadData();
+        await loadData();
         if (onRefreshStatus) onRefreshStatus();
       } else {
         setErrorMessage(data.error || 'Falha ao salvar chave.');
@@ -197,7 +203,7 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
         setConfiguredKeys(data.configuredKeys || {});
         setSuccessMessage(`${count} chave(s) salva(s) com sucesso em api-keys.env (chmod 600)!`);
         setTimeout(() => setSuccessMessage(null), 4000);
-        loadData();
+        await loadData();
         if (onRefreshStatus) onRefreshStatus();
       } else {
         setErrorMessage(data.error || 'Falha ao salvar chaves.');
@@ -220,7 +226,7 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
         setConfiguredKeys(data.configuredKeys || {});
         setSuccessMessage(`Chave ${keyId} removida com sucesso.`);
         setTimeout(() => setSuccessMessage(null), 4000);
-        loadData();
+        await loadData();
         if (onRefreshStatus) onRefreshStatus();
       } else {
         setErrorMessage(data.error || 'Falha ao remover chave.');
@@ -231,6 +237,7 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
   };
 
   const handleRunBattery = async () => {
+    console.log('[KPOOL_UI] battery_start');
     setIsTestingBattery(true);
     setErrorMessage(null);
     setSuccessMessage('Executando bateria completa de testes de saúde por modelo...');
@@ -238,13 +245,26 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
     try {
       const res = await fetch('/api/key-pool/test-battery', { method: 'POST' });
       const data = await res.json();
+
+      const testCount = Array.isArray(data.results)
+        ? data.results.length
+        : (data.totalTested ?? data.results?.totalTested ?? 0);
+
+      console.log('[KPOOL_UI] battery_response', {
+        success: Boolean(data.success),
+        testCount,
+      });
+
       if (res.ok && data.success) {
-        setRankingsByModel(data.rankingsByModel || {});
-        setLastCycleDate(data.state?.lastCycleDate || '');
         setSuccessMessage(
-          `Bateria diária concluída! ${data.results?.totalTested || 0} testes executados e ranking atualizado.`
+          `Bateria diária concluída! ${testCount} testes executados e ranking atualizado.`
         );
         setTimeout(() => setSuccessMessage(null), 5000);
+
+        // Fluxo obrigatório: POST bateria real -> persistência -> GET API -> ranking exibido
+        console.log('[KPOOL_UI] refresh_after_battery');
+        await loadData();
+        if (onRefreshStatus) onRefreshStatus();
       } else {
         setErrorMessage(data.error || 'Falha ao executar bateria de testes.');
       }
@@ -256,6 +276,7 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
   };
 
   const configuredCount = Object.values(configuredKeys).filter((k: ConfiguredKeyInfo) => k?.configured).length;
+  // Ranking direto sem qualquer sort, filter ou reordenação client-side
   const currentRankings = rankingsByModel[selectedModelFilter] || [];
 
   return (
@@ -503,7 +524,7 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
           })}
         </div>
 
-        {/* Tabela do Ranking para o Modelo Selecionado */}
+        {/* Tabela do Ranking para o Modelo Selecionado (Respeita estritamente a ordem do backend) */}
         {currentRankings.length === 0 ? (
           <div className="p-6 text-center text-xs text-zinc-500 dark:text-zinc-400 bg-zinc-50/50 dark:bg-zinc-900/30 rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800">
             Nenhuma chave avaliada ainda para o modelo <strong className="font-mono">{selectedModelFilter}</strong>.
@@ -534,17 +555,22 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800 font-mono">
                 {currentRankings.map((row, idx) => {
-                  const isTested = Boolean((row as any).isTested || row.lastTestAt || (row.status && row.status.lastTestAt));
-                  const groupInfo = isTested
-                    ? (GROUP_INFO[row.currentGroup || 'G1'] || GROUP_INFO.G1)
+                  const isTested = Boolean(row.isTested || row.status?.lastTestAt);
+                  const currentGroup = row.group || row.status?.currentGroup || null;
+                  const currentLatency = row.latency ?? row.status?.currentLatency ?? null;
+                  const latencyRank = row.latencyRank && row.latencyRank !== '-' ? row.latencyRank : '-';
+
+                  const groupInfo = (isTested && currentGroup)
+                    ? (GROUP_INFO[currentGroup] || GROUP_INFO.G1)
                     : {
-                        label: 'Sem classificação (Ordem K)',
+                        label: 'Sem classificação',
                         desc: 'Aguardando teste real do ciclo diário',
                         badgeClass: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 border-zinc-300 dark:border-zinc-700',
                         borderClass: 'border-zinc-500',
                       };
 
-                  const isTopRanked = idx === 0 && isTested && row.currentGroup === 'G1';
+                  const isTopRanked = idx === 0 && isTested && currentGroup === 'G1';
+                  const positionLabel = `#${row.overallRank || idx + 1}`;
 
                   return (
                     <tr
@@ -555,7 +581,7 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
                     >
                       <td className="py-2.5 px-3 font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
                         <span className="w-5 h-5 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center text-[10px]">
-                          #{idx + 1}
+                          {positionLabel}
                         </span>
                         {isTopRanked && (
                           <span className="text-[9px] font-sans px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300 font-bold">
@@ -570,34 +596,36 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
                         <span
                           className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${groupInfo.badgeClass}`}
                         >
-                          {isTested ? `${row.currentGroup || 'G1'} - ${groupInfo.label}` : groupInfo.label}
+                          {(isTested && currentGroup) ? `${currentGroup} - ${groupInfo.label}` : 'Sem classificação'}
                         </span>
                       </td>
                       <td className="py-2.5 px-3 font-semibold text-zinc-800 dark:text-zinc-200">
-                        <span className="text-blue-600 dark:text-blue-400 font-bold mr-1">
-                          {row.latencyRank && row.latencyRank !== '-' ? row.latencyRank : '-'}
+                        <span className="text-blue-600 dark:text-blue-400 font-bold mr-1.5">
+                          {isTested ? latencyRank : '-'}
                         </span>
-                        <span>{isTested && row.currentLatency ? `${row.currentLatency}ms` : '-'}</span>
+                        <span>{(isTested && currentLatency !== null) ? `${currentLatency} ms` : 'Sem teste'}</span>
                       </td>
                       <td className="py-2.5 px-3 text-zinc-600 dark:text-zinc-400 text-[11px]">
-                        {isTested ? (row.dailyGroup || 'G1') : '-'}
+                        {(isTested && row.status?.dailyGroup) ? row.status.dailyGroup : '-'}
                       </td>
                       <td className="py-2.5 px-3 text-zinc-600 dark:text-zinc-400 text-[11px]">
-                        {isTested && row.dailyLatency ? `${row.dailyLatency}ms` : '-'}
+                        {(isTested && row.status?.dailyLatency !== null && row.status?.dailyLatency !== undefined)
+                          ? `${row.status.dailyLatency} ms`
+                          : 'Sem teste'}
                       </td>
                       <td className="py-2.5 px-3 font-sans text-[11px] text-zinc-500 truncate max-w-xs">
                         {!isTested ? (
-                          <span className="text-zinc-400 font-normal">Aguardando bateria</span>
-                        ) : row.lastError ? (
-                          <span className="text-rose-600 dark:text-rose-400 font-medium truncate block" title={row.lastError}>
-                            ⚠️ {row.errorCode || ''}: {row.lastError}
+                          <span className="text-zinc-400 font-normal">Sem teste</span>
+                        ) : row.status?.lastError ? (
+                          <span className="text-rose-600 dark:text-rose-400 font-medium truncate block" title={row.status.lastError}>
+                            ⚠️ {row.status.errorCode || ''}: {row.status.lastError}
                           </span>
                         ) : (
                           <span className="text-emerald-600 dark:text-emerald-400 font-medium">✓ 200 OK</span>
                         )}
                       </td>
                       <td className="py-2.5 px-3 font-sans text-[10px] text-zinc-400">
-                        {isTested && row.lastSuccessAt ? new Date(row.lastSuccessAt).toLocaleTimeString() : '-'}
+                        {(isTested && row.status?.lastSuccessAt) ? new Date(row.status.lastSuccessAt).toLocaleTimeString() : '-'}
                       </td>
                     </tr>
                   );
@@ -626,3 +654,4 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
     </div>
   );
 };
+
