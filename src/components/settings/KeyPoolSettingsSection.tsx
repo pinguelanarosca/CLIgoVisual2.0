@@ -534,8 +534,17 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800 font-mono">
                 {currentRankings.map((row, idx) => {
-                  const groupInfo = GROUP_INFO[row.currentGroup || 'G1'] || GROUP_INFO.G1;
-                  const isTopRanked = idx === 0 && row.currentGroup === 'G1';
+                  const isTested = Boolean((row as any).isTested || row.lastTestAt || (row.status && row.status.lastTestAt));
+                  const groupInfo = isTested
+                    ? (GROUP_INFO[row.currentGroup || 'G1'] || GROUP_INFO.G1)
+                    : {
+                        label: 'Sem classificação (Ordem K)',
+                        desc: 'Aguardando teste real do ciclo diário',
+                        badgeClass: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 border-zinc-300 dark:border-zinc-700',
+                        borderClass: 'border-zinc-500',
+                      };
+
+                  const isTopRanked = idx === 0 && isTested && row.currentGroup === 'G1';
 
                   return (
                     <tr
@@ -561,23 +570,25 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
                         <span
                           className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${groupInfo.badgeClass}`}
                         >
-                          {row.currentGroup || 'G1'} - {groupInfo.label}
+                          {isTested ? `${row.currentGroup || 'G1'} - ${groupInfo.label}` : groupInfo.label}
                         </span>
                       </td>
                       <td className="py-2.5 px-3 font-semibold text-zinc-800 dark:text-zinc-200">
                         <span className="text-blue-600 dark:text-blue-400 font-bold mr-1">
-                          {row.latencyRank || `L${idx + 1}`}
+                          {row.latencyRank && row.latencyRank !== '-' ? row.latencyRank : '-'}
                         </span>
-                        <span>{row.currentLatency ? `${row.currentLatency}ms` : '-'}</span>
+                        <span>{isTested && row.currentLatency ? `${row.currentLatency}ms` : '-'}</span>
                       </td>
                       <td className="py-2.5 px-3 text-zinc-600 dark:text-zinc-400 text-[11px]">
-                        {row.dailyGroup || 'G1'}
+                        {isTested ? (row.dailyGroup || 'G1') : '-'}
                       </td>
                       <td className="py-2.5 px-3 text-zinc-600 dark:text-zinc-400 text-[11px]">
-                        {row.dailyLatency ? `${row.dailyLatency}ms` : '-'}
+                        {isTested && row.dailyLatency ? `${row.dailyLatency}ms` : '-'}
                       </td>
                       <td className="py-2.5 px-3 font-sans text-[11px] text-zinc-500 truncate max-w-xs">
-                        {row.lastError ? (
+                        {!isTested ? (
+                          <span className="text-zinc-400 font-normal">Aguardando bateria</span>
+                        ) : row.lastError ? (
                           <span className="text-rose-600 dark:text-rose-400 font-medium truncate block" title={row.lastError}>
                             ⚠️ {row.errorCode || ''}: {row.lastError}
                           </span>
@@ -586,7 +597,7 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
                         )}
                       </td>
                       <td className="py-2.5 px-3 font-sans text-[10px] text-zinc-400">
-                        {row.lastSuccessAt ? new Date(row.lastSuccessAt).toLocaleTimeString() : '-'}
+                        {isTested && row.lastSuccessAt ? new Date(row.lastSuccessAt).toLocaleTimeString() : '-'}
                       </td>
                     </tr>
                   );

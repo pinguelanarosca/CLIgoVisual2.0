@@ -50,7 +50,7 @@ export const OFFICIAL_POOL_MODELS = [
   'gemini-2.5-pro',
 ];
 
-const GROUP_PRIORITY: Record<KeyGroup, number> = {
+export const GROUP_PRIORITY: Record<KeyGroup, number> = {
   G1: 1, // Execução bem-sucedida
   G2: 2, // Indisponibilidade temporária / sobrecarga / 529
   G3: 3, // Rate limit / quota / demanda / 429
@@ -595,6 +595,7 @@ export async function runDailyTestBattery(forceRefresh = false): Promise<{
       const status = await testSingleKeyModel(model, keyId, rawKey, todayStr);
       state.items[itemKey] = status;
       testResults.push(status);
+      saveKeyPoolState(state);
     }
   }
 
@@ -761,12 +762,13 @@ export function recordRuntimeExecutionResult(
     current = {
       model,
       keyId,
-      dailyGroup: 'G1',
-      dailyLatency: result.latencyMs || 500,
-      currentGroup: 'G1',
-      currentLatency: result.latencyMs || 500,
+      dailyGroup: result.success ? 'G1' : 'G4',
+      dailyLatency: result.latencyMs || 0,
+      currentGroup: result.success ? 'G1' : 'G4',
+      currentLatency: result.latencyMs || 0,
       consecutiveErrors: 0,
       cycleDate: state.lastCycleDate || now.split('T')[0],
+      lastTestAt: now,
     };
   }
 
@@ -774,7 +776,11 @@ export function recordRuntimeExecutionResult(
     current.currentGroup = 'G1';
     current.consecutiveErrors = 0;
     current.lastSuccessAt = now;
-    if (result.latencyMs) current.currentLatency = result.latencyMs;
+    current.lastTestAt = now;
+    if (result.latencyMs !== undefined) {
+      current.currentLatency = result.latencyMs;
+      if (!current.dailyLatency) current.dailyLatency = result.latencyMs;
+    }
     current.httpStatus = 200;
   } else {
     const classified = classifyKeyResult(result.httpStatus, null, result.errorText);
@@ -782,9 +788,13 @@ export function recordRuntimeExecutionResult(
     current.consecutiveErrors = (current.consecutiveErrors || 0) + 1;
     current.lastError = result.errorText || classified.errorType;
     current.lastErrorAt = now;
+    current.lastTestAt = now;
     current.httpStatus = result.httpStatus;
     current.errorCode = classified.errorCode;
     current.errorType = classified.errorType;
+    if (result.latencyMs !== undefined) {
+      current.currentLatency = result.latencyMs;
+    }
 
     sysLog.warn(
       'KPOOL',

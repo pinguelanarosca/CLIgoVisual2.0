@@ -8,6 +8,7 @@ import { createServer as createViteServer } from 'vite';
 import { getGuiDataDir } from './server/paths-service.js';
 import {
   saveConfiguredKeys,
+  loadConfiguredKeys,
   getConfiguredKeysPublicInfo,
   loadKeyPoolState,
   runDailyTestBattery,
@@ -375,9 +376,10 @@ priority = 90
 
     if (apiKey && typeof apiKey === 'string' && apiKey.trim()) {
       const cleanKey = apiKey.trim();
-      process.env.GEMINI_API_KEY = cleanKey;
-      process.env.GOOGLE_GENAI_API_KEY = cleanKey;
-      process.env.GOOGLE_API_KEY = cleanKey;
+      saveConfiguredKeys({ K1: cleanKey });
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.GOOGLE_GENAI_API_KEY;
+      delete process.env.GOOGLE_API_KEY;
       hasUpdate = true;
     }
 
@@ -395,18 +397,16 @@ priority = 90
       fs.mkdirSync(guiDir, { recursive: true });
       const envPath = path.join(guiDir, '.env');
       const lines: string[] = [];
-      if (process.env.GEMINI_API_KEY) {
-        lines.push(`GEMINI_API_KEY=${process.env.GEMINI_API_KEY}`);
-      }
       if (process.env.EXA_API_KEY) {
         lines.push(`EXA_API_KEY=${process.env.EXA_API_KEY}`);
       }
       fs.writeFileSync(envPath, lines.join('\n') + '\n', { mode: 0o600 });
     } catch {}
 
+    const poolKeys = loadConfiguredKeys();
     res.json({
       success: true,
-      authConfigured: Boolean(process.env.GEMINI_API_KEY),
+      authConfigured: Object.keys(poolKeys).length > 0,
       exaConfigured: Boolean(process.env.EXA_API_KEY),
     });
   });
