@@ -6,6 +6,7 @@ import {
   loadKeyPoolState,
   runDailyTestBattery,
   getRankedKeys,
+  getPublicRankedKeys,
   getBestEligibleKey,
   getConfiguredKeysPublicInfo,
   OFFICIAL_POOL_MODELS,
@@ -24,7 +25,7 @@ async function runRealApiIntegrationTest() {
     const state = loadKeyPoolState();
     const rankingsByModel: Record<string, any[]> = {};
     for (const model of OFFICIAL_POOL_MODELS) {
-      rankingsByModel[model] = getRankedKeys(model);
+      rankingsByModel[model] = getPublicRankedKeys(model);
     }
     res.json({
       configuredKeys,

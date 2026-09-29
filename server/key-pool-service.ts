@@ -726,6 +726,21 @@ export function getRankedKeys(model: string): Array<{
   });
 }
 
+export interface PublicKeyRankItem {
+  keyId: string;
+  group: KeyGroup | null;
+  latency: number | null;
+  latencyRank: string;
+  overallRank: number;
+  status: KeyModelStatus;
+  isTested: boolean;
+}
+
+export function getPublicRankedKeys(model: string): PublicKeyRankItem[] {
+  const ranked = getRankedKeys(model);
+  return ranked.map(({ key, ...publicItem }) => publicItem);
+}
+
 // 7. Seleção da Melhor Chave Elegível (Key Pool)
 export function getBestEligibleKey(
   model: string,

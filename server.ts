@@ -12,7 +12,7 @@ import {
   getConfiguredKeysPublicInfo,
   loadKeyPoolState,
   runDailyTestBattery,
-  getRankedKeys,
+  getPublicRankedKeys,
   getPublicExternalKeyStatus,
   migrateExternalApiKeyToK1,
   OFFICIAL_POOL_MODELS,
@@ -638,7 +638,7 @@ priority = 90
     const state = loadKeyPoolState();
     const rankingsByModel: Record<string, any[]> = {};
     for (const model of OFFICIAL_POOL_MODELS) {
-      rankingsByModel[model] = getRankedKeys(model);
+      rankingsByModel[model] = getPublicRankedKeys(model);
     }
     res.json({
       configuredKeys,
@@ -674,7 +674,7 @@ priority = 90
       const state = loadKeyPoolState();
       const rankingsByModel: Record<string, any[]> = {};
       for (const model of OFFICIAL_POOL_MODELS) {
-        rankingsByModel[model] = getRankedKeys(model);
+        rankingsByModel[model] = getPublicRankedKeys(model);
       }
       res.json({ success: true, results, state, rankingsByModel });
     } catch (err: any) {
