@@ -28,6 +28,7 @@ import { SessionItem, ProjectItem } from '../types.js';
 import { calculateSessionTokens, formatTokenCount } from '../utils/tokenUtils.js';
 
 interface LeftSidebarProps {
+  width?: number;
   isExpanded: boolean;
   onToggleExpand: () => void;
   sessions: SessionItem[];
@@ -59,6 +60,7 @@ interface LeftSidebarProps {
 }
 
 export const LeftSidebar: React.FC<LeftSidebarProps> = ({
+  width,
   isExpanded,
   onToggleExpand,
   sessions,
@@ -427,8 +429,11 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
 
   return (
     <aside
-      className={`h-full bg-zinc-900 border-r border-zinc-800 flex flex-col transition-all duration-300 z-20 shrink-0 text-zinc-300 select-none ${
-        isExpanded ? 'w-56' : 'w-12'
+      style={{
+        width: isExpanded ? (width ? `${width}px` : undefined) : '48px',
+      }}
+      className={`h-full bg-zinc-900 border-r border-zinc-800 flex flex-col z-20 shrink-0 text-zinc-300 select-none overflow-hidden ${
+        isExpanded && !width ? 'w-56' : !isExpanded ? 'w-12' : ''
       }`}
     >
       {/* Sidebar Header & Brand */}

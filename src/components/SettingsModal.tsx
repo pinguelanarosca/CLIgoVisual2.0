@@ -390,7 +390,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               { id: 'context', label: 'Contexto & Tokens', icon: Sparkles },
               { id: 'models', label: 'Modelos & Catálogo', icon: Cpu },
               { id: 'agents', label: 'Agentes (6)', icon: Bot },
-              { id: 'memory_agent', label: 'Agente da Memória', icon: Brain },
               { id: 'skills', label: 'Skills (4)', icon: Sparkles },
               { id: 'commands', label: 'Comandos (6)', icon: Code2 },
               { id: 'mcp', label: 'MCP (GitHub)', icon: Layers },
@@ -434,11 +433,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onRefreshStatus={onRefreshStatus}
                 onNavigateToTab={setActiveTab}
               />
-            )}
-
-            {/* AGENTE DA MEMÓRIA (AGENTE RECLUSO) */}
-            {activeTab === 'memory_agent' && (
-              <MemoryAgentSettingsSection />
             )}
 
             {/* 2. MODELOS */}

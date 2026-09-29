@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Plus, Sparkles, Trash2, Cpu, Radio, Bot, X, Sliders, ShieldAlert, ShieldCheck, Save } from 'lucide-react';
 import { AgentConfig } from '../../types.js';
+import { formatModelName } from '../../utils/modelFormatter.js';
 
 interface AgentsSettingsSectionProps {
   agents: AgentConfig[];
@@ -113,7 +114,7 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
                   className="font-mono text-[11px] px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800/60 transition cursor-pointer flex items-center gap-1"
                 >
                   <Cpu className="w-3 h-3" />
-                  <span>{agent.model}</span>
+                  <span>{formatModelName(agent.model)}</span>
                 </button>
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1.5 line-clamp-2">

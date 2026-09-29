@@ -22,6 +22,7 @@ import {
   ContextSettings,
   DEFAULT_CONTEXT_SETTINGS,
   estimateTokens,
+  estimateParamsLength,
   calculateSessionTokens,
   compressContextMessages,
 } from './utils/tokenUtils.js';
@@ -53,8 +54,21 @@ export function App() {
   const [isCheckingStatus, setIsCheckingStatus] = useState(false);
   const [approvalMode, setApprovalMode] = useState<'default' | 'auto_edit' | 'yolo' | 'plan'>('default');
 
-  // Left Sidebar State
+  // Left Sidebar State & Resizing
   const [isSidebarExpanded, setIsSidebarExpanded] = useState<boolean>(true);
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('gemini_gui_left_sidebar_width');
+        if (saved) {
+          const num = parseInt(saved, 10);
+          if (!isNaN(num) && num >= 180 && num <= 500) return num;
+        }
+      } catch {}
+    }
+    return 224; // Default width (~224px)
+  });
+  const [isResizingLeftSidebar, setIsResizingLeftSidebar] = useState<boolean>(false);
 
   // Context & Token Compression Settings
   const [contextSettings, setContextSettings] = useState<ContextSettings>(DEFAULT_CONTEXT_SETTINGS);
@@ -193,21 +207,33 @@ export function App() {
   const [activeMemory, setActiveMemory] = useState<SharedMemoryItem | null>(null);
   const [activeMemoryVersion, setActiveMemoryVersion] = useState(1);
 
-  // Drag-to-resize listener for the right panel
+  // Drag-to-resize listener for Left Sidebar and Right Panel
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizingRightPanel) return;
-      const newWidth = window.innerWidth - e.clientX;
-      if (newWidth >= 260 && newWidth <= Math.min(950, window.innerWidth - 280)) {
-        setRightPanelWidth(newWidth);
+      if (isResizingLeftSidebar) {
+        const minW = 180;
+        const maxW = Math.min(520, window.innerWidth - 320);
+        const newWidth = Math.max(minW, Math.min(maxW, e.clientX));
+        setLeftSidebarWidth(newWidth);
+        try {
+          localStorage.setItem('gemini_gui_left_sidebar_width', newWidth.toString());
+        } catch {}
+      }
+
+      if (isResizingRightPanel) {
+        const newWidth = window.innerWidth - e.clientX;
+        if (newWidth >= 260 && newWidth <= Math.min(950, window.innerWidth - 280)) {
+          setRightPanelWidth(newWidth);
+        }
       }
     };
 
     const handleMouseUp = () => {
+      setIsResizingLeftSidebar(false);
       setIsResizingRightPanel(false);
     };
 
-    if (isResizingRightPanel) {
+    if (isResizingLeftSidebar || isResizingRightPanel) {
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
       window.addEventListener('mousemove', handleMouseMove);
@@ -221,7 +247,7 @@ export function App() {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isResizingRightPanel]);
+  }, [isResizingLeftSidebar, isResizingRightPanel]);
 
   // Load effective memory for current project / session scope
   const fetchEffectiveMemory = async () => {
@@ -725,12 +751,23 @@ export function App() {
       }
 
       const durationMs = Date.now() - startTime;
-      const inputTokens = Math.ceil((promptText.length + (currentAgent?.systemInstructions?.length || 0)) / 4);
-      const outputTokens = Math.ceil(finalContent.length / 4);
+      
+      // Calculate realistic input & output tokens for rate metrics (TPM / RPM / RPD)
+      let totalInputCharLength = promptText.length + (currentAgent?.systemInstructions?.length || 0);
+      let totalOutputCharLength = finalContent.length;
 
-      // Record output tokens in live rate metrics
-      if (outputTokens > 0) {
-        setRequestLog((prev) => [...prev, { timestamp: Date.now(), tokenCount: outputTokens }]);
+      for (const tc of Object.values(toolCalls)) {
+        totalInputCharLength += (tc.toolName?.length || 0) + estimateParamsLength(tc.parameters);
+        totalOutputCharLength += (tc.result?.length || 0) + (tc.error?.length || 0);
+      }
+
+      const inputTokens = Math.ceil(totalInputCharLength / 3.8);
+      const outputTokens = Math.ceil(totalOutputCharLength / 3.8);
+      const totalRequestTokens = inputTokens + outputTokens;
+
+      // Record request and total tokens in live rate metrics (TPM / RPM / RPD)
+      if (totalRequestTokens > 0) {
+        setRequestLog((prev) => [...prev, { timestamp: Date.now(), tokenCount: totalRequestTokens }]);
       }
 
       const rawPayloadReceived = {
@@ -1511,6 +1548,7 @@ export function App() {
       {/* Main Content Area: 3-Area System (Left Sidebar | Center Workspace | Resizable Right Panel) */}
       <main className="flex-1 flex overflow-hidden relative">
         <LeftSidebar
+          width={leftSidebarWidth}
           isExpanded={isSidebarExpanded}
           onToggleExpand={() => setIsSidebarExpanded(!isSidebarExpanded)}
           sessions={sessions}
@@ -1550,6 +1588,18 @@ export function App() {
           onArchiveMultipleSessions={handleArchiveMultipleSessions}
         />
 
+        {/* Resizable Divider Handle for Left Sidebar */}
+        {isSidebarExpanded && (
+          <div
+            onMouseDown={() => setIsResizingLeftSidebar(true)}
+            onDoubleClick={() => setLeftSidebarWidth(224)}
+            className="w-1.5 hover:w-2 bg-zinc-800/80 hover:bg-blue-500/50 active:bg-blue-500 cursor-col-resize shrink-0 z-30 transition-colors flex items-center justify-center select-none group"
+            title="Arraste para redimensionar a barra lateral esquerda (Duplo clique para 224px)"
+          >
+            <div className="w-0.5 h-6 rounded bg-zinc-700 group-hover:bg-blue-300 transition-colors" />
+          </div>
+        )}
+
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           {activeView === 'chat' ? (
             <ChatView
@@ -1585,6 +1635,7 @@ export function App() {
               onDeriveChat={handleDeriveChat}
               onOpenSharedMemory={() => setRightPanelMode((prev) => (prev === 'memory' ? null : 'memory'))}
               activeMemoryVersion={activeMemoryVersion}
+              onUpdateMessages={(newMsgs) => setMessages(newMsgs)}
             />
           ) : (
             <FilesAndDiffsView

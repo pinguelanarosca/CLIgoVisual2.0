@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Volume2, Mic, Check, Cpu, Sparkles, Sliders, ShieldCheck, UserCheck } from 'lucide-react';
 import { AudioSettings } from '../../types.js';
 import { getSavedVoiceAgents, VoiceAgent } from '../../services/voice/voiceAgentsStore.js';
+import { formatModelName } from '../../utils/modelFormatter.js';
 
 interface AudioSettingsSectionProps {
   audioSettings: AudioSettings;
@@ -150,7 +151,7 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
               <div className="flex items-center justify-between text-zinc-700 dark:text-zinc-300">
                 <span className="text-zinc-500">Modelo Selecionado:</span>
                 <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                  {audioSettings.ttsModel}
+                  {formatModelName(audioSettings.ttsModel)}
                 </span>
               </div>
               <div className="flex items-center justify-between text-zinc-700 dark:text-zinc-300">
@@ -162,8 +163,8 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
               <div className="text-[10px] text-zinc-500 pt-1.5 border-t border-zinc-200/60 dark:border-zinc-800">
                 <strong className="text-zinc-700 dark:text-zinc-300 block mb-0.5">Linha de Fallback (TTS):</strong>
                 <div className="font-mono text-[9.5px] text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/80 p-2 rounded-lg leading-relaxed">
-                  1. gemini-3.1-flash-tts (Principal)<br />
-                  2. gemini-3.5-flash-tts (Backup)<br />
+                  1. {formatModelName('gemini-3.1-flash-tts')} (Principal)<br />
+                  2. {formatModelName('gemini-3.5-flash-tts')} (Backup)<br />
                   3. SpeechSynthesis Nativo (Local)
                 </div>
               </div>
@@ -176,10 +177,10 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
           </div>
 
           {/* CARD 2: AGENTE TRANSCRITOR (STT) */}
-          <div className="p-4 rounded-2xl border border-blue-500/30 bg-gradient-to-br from-blue-500/5 via-zinc-50 to-white dark:from-blue-950/20 dark:via-zinc-900 dark:to-zinc-900 space-y-3 shadow-xs">
+          <div className="p-4 rounded-2xl border border-emerald-500/30 bg-gradient-to-br from-emerald-500/5 via-zinc-50 to-white dark:from-emerald-950/20 dark:via-zinc-900 dark:to-zinc-900 space-y-3 shadow-xs">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-lg bg-blue-500/10 text-blue-500">
+                <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500">
                   <Mic className="w-4 h-4" />
                 </div>
                 <div>
@@ -189,7 +190,7 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
                   <span className="text-[10px] text-zinc-500 block">Fala &rarr; Texto Multimodal</span>
                 </div>
               </div>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-blue-500/15 text-blue-600 dark:text-blue-400 font-semibold">
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-semibold">
                 Entrada Multimodal
               </span>
             </div>
@@ -197,8 +198,8 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
             <div className="space-y-1.5 text-[11px] pt-1">
               <div className="flex items-center justify-between text-zinc-700 dark:text-zinc-300">
                 <span className="text-zinc-500">Modelo Selecionado:</span>
-                <span className="font-mono font-bold text-blue-600 dark:text-blue-400">
-                  {audioSettings.sttModel}
+                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                  {formatModelName(audioSettings.sttModel)}
                 </span>
               </div>
               <div className="flex items-center justify-between text-zinc-700 dark:text-zinc-300">
@@ -210,14 +211,14 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
               <div className="text-[10px] text-zinc-500 pt-1.5 border-t border-zinc-200/60 dark:border-zinc-800">
                 <strong className="text-zinc-700 dark:text-zinc-300 block mb-0.5">Linha de Fallback (Transcritor):</strong>
                 <div className="font-mono text-[9.5px] text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800/80 p-2 rounded-lg leading-relaxed">
-                  1. gemini-3.1-flash-lite (Principal)<br />
-                  2. gemini-3.5-flash-lite (Backup 1)<br />
-                  3. gemini-3.5-flash &rarr; gemini-2.5-flash
+                  1. {formatModelName('gemini-3.1-flash-lite')} (Principal)<br />
+                  2. {formatModelName('gemini-3.5-flash-lite')} (Backup 1)<br />
+                  3. {formatModelName('gemini-3.5-flash')} &rarr; {formatModelName('gemini-2.5-flash')}
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 text-[10px] text-blue-600 dark:text-blue-400 bg-blue-500/10 p-2 rounded-xl">
+            <div className="flex items-center gap-1.5 text-[10px] text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 p-2 rounded-xl">
               <Cpu className="w-3.5 h-3.5 shrink-0" />
               <span>Todos os modelos multimodais Gemini suportam entrada de áudio estática/streaming.</span>
             </div>

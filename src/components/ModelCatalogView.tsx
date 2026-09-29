@@ -14,6 +14,7 @@ import {
 import { MODELS_CATALOG } from '../constants/modelsCatalog.js';
 import { AgentConfig, AudioSettings } from '../types.js';
 import { getSavedVoiceAgents, VoiceAgent } from '../services/voice/voiceAgentsStore.js';
+import { formatModelName } from '../utils/modelFormatter.js';
 
 interface ModelCatalogViewProps {
   agents: AgentConfig[];
@@ -300,7 +301,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                     >
                       {agents.map((ag) => (
                         <option key={ag.id} value={ag.id}>
-                          {ag.displayName || ag.name} ({ag.model})
+                          {ag.displayName || ag.name} ({formatModelName(ag.model)})
                         </option>
                       ))}
                     </select>
@@ -322,7 +323,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                       .filter((ag) => ag.id.toLowerCase() !== item.id.toLowerCase())
                       .map((ag) => (
                         <option key={ag.id} value={ag.id}>
-                          {ag.displayName || ag.name} ({ag.model})
+                          {ag.displayName || ag.name} ({formatModelName(ag.model)})
                         </option>
                       ))}
                   </select>
@@ -653,7 +654,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
                         <td className="py-2.5 px-3">
                           <div className="flex flex-col">
                             <span className="font-bold text-zinc-900 dark:text-zinc-100">
-                              {item.name}
+                              {formatModelName(item.name || item.id)}
                             </span>
                             <span className="font-mono text-[10px] text-zinc-400">
                               {item.id}

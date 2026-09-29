@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { CliStatus, ProjectItem, AgentConfig, ChatMessage, AuthorizedDir, SkillConfig, McpConfig } from '../types.js';
 import { TokenMonitorBar } from './TokenMonitorBar.js';
+import { formatModelName } from '../utils/modelFormatter.js';
 
 interface HeaderProps {
   cliStatus: CliStatus | null;
@@ -116,7 +117,7 @@ export const Header: React.FC<HeaderProps> = ({
                 cliStatus?.apiError
                   ? `Erro: ${cliStatus.apiError}`
                   : cliStatus?.apiValid
-                  ? `API conectada (${cliStatus.modelTested || 'gemini-3.1-flash-lite'})`
+                  ? `API conectada (${formatModelName(cliStatus.modelTested || 'gemini-3.1-flash-lite')})`
                   : 'Configurações da API'
               }
             >
@@ -195,7 +196,7 @@ export const Header: React.FC<HeaderProps> = ({
           className="flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 hover:opacity-90 transition shadow-2xs cursor-pointer"
         >
           <Settings className="w-3 h-3" />
-          <span className="hidden sm:inline">Ajustes</span>
+          <span className="hidden sm:inline">Configurações</span>
         </button>
       </div>
     </header>

@@ -1,16 +1,10 @@
 import React, { useState } from 'react';
 import {
   Sparkles,
-  Layers,
   Sliders,
   CheckCircle2,
   Minimize2,
-  Trash2,
-  RefreshCw,
-  Cpu,
   Info,
-  ShieldAlert,
-  Zap,
   BarChart2,
   FileText,
   FolderGit2,
@@ -28,7 +22,6 @@ import {
 } from '../types.js';
 import {
   ContextSettings,
-  DEFAULT_CONTEXT_SETTINGS,
   calculateContextBreakdown,
   compressContextMessages,
   formatTokenCount,
@@ -74,18 +67,14 @@ export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
   const [selectedSessionId, setSelectedSessionId] = useState<string>(
     currentSessionId || (sessions.length > 0 ? sessions[0].id : '')
   );
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(
-    activeProject?.id || ''
-  );
 
   const targetSession = sessions.find((s) => s.id === selectedSessionId);
   const targetMessages = targetSession?.messages || messages;
-  const targetProject = projects.find((p) => p.id === selectedProjectId) || activeProject;
 
   const breakdown = calculateContextBreakdown(
     targetMessages,
     agent,
-    targetProject,
+    activeProject,
     authorizedDirs,
     skills,
     mcpServers,
@@ -133,14 +122,6 @@ export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
     });
   };
 
-  const estimateProjectTokens = (proj: ProjectItem) => {
-    const nameT = Math.ceil((proj.name || '').length / 4);
-    const descT = Math.ceil((proj.description || '').length / 4);
-    const dirsT = Math.ceil(((proj.associatedDirs || []).join(', ').length) / 4);
-    const guideT = Math.ceil((proj.guidelines?.length || 0) / 4);
-    return { nameT, descT, dirsT, guideT, total: nameT + descT + dirsT + guideT };
-  };
-
   return (
     <div className="space-y-6 max-w-3xl">
       {/* Title & Intro */}
@@ -154,70 +135,41 @@ export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
               Gerenciamento & Compressão de Contexto
             </h3>
             <p className="text-[11px] text-zinc-500">
-              Métricas reais de tokens por chat e configurações globais de compressão.
+              Métricas dinâmicas reais de tokens por chat e configurações globais de compressão.
             </p>
           </div>
         </div>
 
-        {/* Target Scope Information Card */}
+        {/* Target Scope Selection */}
         <div className="p-3 rounded-xl bg-zinc-900/90 border border-amber-500/30 text-[11px] space-y-2 font-sans">
           <div className="flex items-center gap-1.5 text-amber-400 font-semibold">
             <Info className="w-3.5 h-3.5 shrink-0" />
-            <span>Origem do Contexto e Alvo de Compressão:</span>
+            <span>Sessão de Chat Alvo para Análise e Compressão:</span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-zinc-300 text-[11px]">
-            {/* Chat / Sessão Selection Dropdown */}
-            <div className="space-y-1">
-              <label className="text-zinc-400 font-medium block text-[10px] uppercase font-mono">
-                Sessão / Chat Alvo:
-              </label>
-              <select
-                value={selectedSessionId}
-                onChange={(e) => setSelectedSessionId(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700/80 rounded-lg px-2 py-1 text-[11px] text-amber-300 font-semibold outline-none focus:border-amber-500 cursor-pointer truncate"
-              >
-                {sessions.length > 0 ? (
-                  sessions.map((sess) => (
-                    <option key={sess.id} value={sess.id}>
-                      {sess.title || 'Nova Conversa'} ({sess.messages?.length || 0} msgs)
-                    </option>
-                  ))
-                ) : (
-                  <option value="">Chat Atual</option>
-                )}
-              </select>
-            </div>
-
-            {/* Projeto Selection Dropdown */}
-            <div className="space-y-1">
-              <label className="text-zinc-400 font-medium block text-[10px] uppercase font-mono">
-                Projeto Vinculado:
-              </label>
-              <select
-                value={selectedProjectId}
-                onChange={(e) => setSelectedProjectId(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700/80 rounded-lg px-2 py-1 text-[11px] text-emerald-400 font-semibold outline-none focus:border-emerald-500 cursor-pointer truncate"
-              >
-                <option value="">Nenhum (Chat Livre)</option>
-                {projects.map((proj) => (
-                  <option key={proj.id} value={proj.id}>
-                    📁 {proj.name}
+          <div className="space-y-1">
+            <select
+              value={selectedSessionId}
+              onChange={(e) => setSelectedSessionId(e.target.value)}
+              className="w-full bg-zinc-800 border border-zinc-700/80 rounded-lg px-2.5 py-1.5 text-[11px] text-amber-300 font-semibold outline-none focus:border-amber-500 cursor-pointer truncate"
+            >
+              {sessions.length > 0 ? (
+                sessions.map((sess) => (
+                  <option key={sess.id} value={sess.id}>
+                    {sess.title || 'Nova Conversa'} ({sess.messages?.length || 0} mensagens)
                   </option>
-                ))}
-              </select>
-            </div>
+                ))
+              ) : (
+                <option value="">Chat Atual</option>
+              )}
+            </select>
           </div>
-
-          <p className="text-[10px] text-zinc-400 pt-1 border-t border-zinc-800 leading-tight">
-            * Selecione o chat e o projeto para inspecionar os tokens em tempo real e aplicar a compressão manual.
-          </p>
         </div>
       </div>
 
       {/* Live Context Inspector */}
       <div className="bg-zinc-50 dark:bg-zinc-800/50 p-4 rounded-2xl border border-zinc-200/80 dark:border-zinc-700/60 space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <h4 className="text-xs font-bold uppercase font-mono tracking-wider text-zinc-700 dark:text-zinc-300 flex items-center gap-1.5">
             <BarChart2 className="w-4 h-4 text-blue-500" />
             Estrutura do Contexto Atual Enviado ao Agente
@@ -262,7 +214,7 @@ export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
 
           <div className="flex items-center justify-between text-[11px] text-zinc-500 font-mono pt-1">
             <span>Uso da Janela: {breakdown.utilizationPercent}%</span>
-            <span>Janela Máxima: 1.000.000 tokens (Gemini 1.5/3.5/3.6)</span>
+            <span>Janela Máxima: 1.000.000 tokens</span>
           </div>
         </div>
 
@@ -310,67 +262,8 @@ export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
         </div>
       </div>
 
-      {/* Statistics by Project */}
-      <div className="space-y-4">
-        <h4 className="text-xs font-bold uppercase font-mono tracking-wider text-zinc-700 dark:text-zinc-300 flex items-center gap-1.5">
-          <Layers className="w-4 h-4 text-emerald-500" />
-          Estatísticas de Contexto por Projeto
-        </h4>
-        
-        <div className="grid grid-cols-1 gap-3">
-          {projects.map((proj) => {
-            const stats = estimateProjectTokens(proj);
-            const isActive = activeProject?.id === proj.id;
-            
-            return (
-              <div 
-                key={proj.id} 
-                className={`p-4 rounded-2xl border transition-all ${
-                  isActive 
-                    ? 'bg-emerald-500/5 border-emerald-500/40 shadow-sm' 
-                    : 'bg-zinc-50/50 dark:bg-zinc-800/30 border-zinc-200 dark:border-zinc-800'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-sm text-zinc-900 dark:text-zinc-100">{proj.name}</span>
-                    {isActive && (
-                      <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                        Ativo
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-xs font-mono font-bold text-zinc-500">
-                    Total Estimado: {formatTokenCount(stats.total)} tokens
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[10px] font-mono">
-                  <div className="flex flex-col">
-                    <span className="text-zinc-500 uppercase mb-0.5 text-[9px]">Nome/Desc</span>
-                    <span className="text-zinc-800 dark:text-zinc-200">{formatTokenCount(stats.nameT + stats.descT)} tokens</span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-zinc-500 uppercase mb-0.5 text-[9px]">Diretórios</span>
-                    <span className="text-zinc-800 dark:text-zinc-200">{formatTokenCount(stats.dirsT)} tokens</span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-zinc-500 uppercase mb-0.5 text-[9px]">Guidelines</span>
-                    <span className="text-zinc-800 dark:text-zinc-200">{formatTokenCount(stats.guideT)} tokens</span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-zinc-500 uppercase mb-0.5 text-[9px]">Mensagem Média</span>
-                    <span className="text-zinc-800 dark:text-zinc-200">~150 tokens</span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
       {/* Manual Compression Action */}
-      <div className="bg-amber-500/10 border border-amber-500/30 p-3 rounded-xl flex flex-col gap-2.5">
+      <div className="bg-amber-500/10 border border-amber-500/30 p-3.5 rounded-xl flex flex-col gap-2.5">
         <div>
           <h4 className="text-xs font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
             <Minimize2 className="w-3.5 h-3.5 shrink-0" />

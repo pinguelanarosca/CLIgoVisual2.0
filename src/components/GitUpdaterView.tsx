@@ -14,12 +14,9 @@ import {
   Clock,
   ArrowUpCircle,
   Check,
-  RotateCcw,
   Hammer,
-  Sparkles,
   Layers,
   Power,
-  Server,
   Loader2,
 } from 'lucide-react';
 import {
@@ -27,8 +24,7 @@ import {
   GitUpdateCheckResult,
   GitUpdateResult,
   SystemRebuildResult,
-} from '../types';
-import { BackupAndResetSection } from './BackupAndResetSection';
+} from '../types.js';
 
 interface GitUpdaterViewProps {
   onRefreshGlobalStatus?: () => void;
@@ -72,54 +68,6 @@ export const GitUpdaterView: React.FC<GitUpdaterViewProps> = ({ onRefreshGlobalS
     globalNotice?: string;
   } | null>(null);
   const [copiedCliCmd, setCopiedCliCmd] = useState(false);
-
-  const handleUpdateCli = async () => {
-    setIsUpdatingCli(true);
-    setUpdateCliResult(null);
-    try {
-      const res = await fetch('/api/cli/update', { method: 'POST' });
-      const contentType = res.headers.get('content-type');
-      if (res.ok && contentType && contentType.includes('application/json')) {
-        const data = await res.json();
-        if (data.success) {
-          setUpdateCliResult({
-            success: true,
-            message: data.message || `Gemini CLI atualizado com sucesso para v${data.version}!`,
-            version: data.version,
-            globalNotice: data.globalNotice,
-          });
-          if (onRefreshGlobalStatus) {
-            onRefreshGlobalStatus();
-          }
-        } else {
-          setUpdateCliResult({
-            success: false,
-            message: data.error || 'Falha ao atualizar o Gemini CLI',
-          });
-        }
-      } else {
-        setUpdateCliResult({
-          success: false,
-          message: `O servidor retornou um erro HTTP ${res.status}. Tente novamente.`,
-        });
-      }
-    } catch (err: any) {
-      setUpdateCliResult({
-        success: false,
-        message: err.message || 'Erro de conexão ao tentar atualizar o CLI',
-      });
-    } finally {
-      setIsUpdatingCli(false);
-    }
-  };
-
-  const copyCliToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedCliCmd(true);
-    setTimeout(() => setCopiedCliCmd(false), 2500);
-  };
-
-  // Copy helper
   const [copiedManual, setCopiedManual] = useState(false);
 
   const pollIntervalRef = useRef<any>(null);
@@ -179,7 +127,6 @@ export const GitUpdaterView: React.FC<GitUpdaterViewProps> = ({ onRefreshGlobalS
       setReconnectCountdown(count > 0 ? count : 0);
       if (count <= 0) {
         clearInterval(countTimer);
-        // Start pinging /api/health
         pollIntervalRef.current = setInterval(async () => {
           try {
             const res = await fetch('/api/health', { cache: 'no-store' });
@@ -196,6 +143,52 @@ export const GitUpdaterView: React.FC<GitUpdaterViewProps> = ({ onRefreshGlobalS
         }, 1500);
       }
     }, 1000);
+  };
+
+  const handleUpdateCli = async () => {
+    setIsUpdatingCli(true);
+    setUpdateCliResult(null);
+    try {
+      const res = await fetch('/api/cli/update', { method: 'POST' });
+      const contentType = res.headers.get('content-type');
+      if (res.ok && contentType && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.success) {
+          setUpdateCliResult({
+            success: true,
+            message: data.message || `Gemini CLI atualizado com sucesso para v${data.version}!`,
+            version: data.version,
+            globalNotice: data.globalNotice,
+          });
+          if (onRefreshGlobalStatus) {
+            onRefreshGlobalStatus();
+          }
+        } else {
+          setUpdateCliResult({
+            success: false,
+            message: data.error || 'Falha ao atualizar o Gemini CLI',
+          });
+        }
+      } else {
+        setUpdateCliResult({
+          success: false,
+          message: `O servidor retornou um erro HTTP ${res.status}. Tente novamente.`,
+        });
+      }
+    } catch (err: any) {
+      setUpdateCliResult({
+        success: false,
+        message: err.message || 'Erro de conexão ao tentar atualizar o CLI',
+      });
+    } finally {
+      setIsUpdatingCli(false);
+    }
+  };
+
+  const copyCliToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedCliCmd(true);
+    setTimeout(() => setCopiedCliCmd(false), 2500);
   };
 
   const handleCheckUpdates = async () => {
@@ -309,7 +302,6 @@ export const GitUpdaterView: React.FC<GitUpdaterViewProps> = ({ onRefreshGlobalS
       });
       startHealthPolling(3);
     } catch (err) {
-      // If server dies immediately, still start polling
       startHealthPolling(3);
     }
   };
@@ -325,9 +317,8 @@ git reset --hard origin/${branch || 'main'}
 npm install
 npm run build
 
-# 4. Reiniciar o serviço ou processo (se usar PM2 / Systemd / Node):
-npm start
-# Ou: pm2 restart gemini-gui || sudo systemctl restart gemini-gui`;
+# 4. Reiniciar o serviço ou processo:
+npm start`;
 
   const copyManualCmds = () => {
     navigator.clipboard.writeText(manualCommands);
@@ -336,121 +327,21 @@ npm start
   };
 
   return (
-    <div className="space-y-6 max-w-4xl">
+    <div className="space-y-6 max-w-4xl text-xs">
       {/* Header */}
       <div>
-        <h4 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+        <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
           <GitPullRequest className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-          <span>Atualização & Manutenção do Aplicativo (Gemini CLI / Git / Build)</span>
+          <span>Atualização & Manutenção da Aplicação</span>
         </h4>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 leading-relaxed">
-          Gerencie e atualize os componentes do sistema: atualize o binário do Gemini CLI para a versão oficial mais recente ou sincronize commits do repositório Git.
+        <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 leading-relaxed">
+          Sincronize alterações do repositório Git ou atualize a biblioteca do Gemini CLI.
         </p>
-      </div>
-
-      {/* CLI Reinstall & Update Card */}
-      <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/90 shadow-xs space-y-3">
-        <div>
-          <h5 className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
-            <RefreshCw className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-            <span>Remover Versão Anterior e Instalar Versão Mais Recente (Gemini CLI)</span>
-          </h5>
-          <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-            Desinstala a versão anterior e instala limpa a versão oficial mais recente publicada do pacote <code className="font-mono text-zinc-700 dark:text-zinc-300">@google/gemini-cli</code>.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2 pt-1">
-          <button
-            type="button"
-            onClick={handleUpdateCli}
-            disabled={isUpdatingCli}
-            className="px-3.5 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition flex items-center gap-1.5 cursor-pointer shadow-xs"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isUpdatingCli ? 'animate-spin' : ''}`} />
-            {isUpdatingCli ? 'Atualizando Gemini CLI...' : 'Instalar Versão Mais Recente Agora'}
-          </button>
-        </div>
-
-        {updateCliResult && (
-          <div className="space-y-2">
-            <div
-              className={`p-3 rounded-lg text-xs flex items-start gap-2.5 ${
-                updateCliResult.success
-                  ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
-                  : 'bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
-              }`}
-            >
-              {updateCliResult.success ? (
-                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 mt-0.5" />
-              ) : (
-                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
-              )}
-              <div className="space-y-1">
-                <p className="font-semibold">{updateCliResult.message}</p>
-                {updateCliResult.version && (
-                  <p className="text-[11px] font-mono">Versão ativa do CLI: v{updateCliResult.version}</p>
-                )}
-              </div>
-            </div>
-
-            {updateCliResult.globalNotice && (
-              <div className="p-3 rounded-lg text-xs bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 space-y-2">
-                <div className="flex items-center gap-1.5 font-semibold">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
-                  <span>Atualização do CLI Global do Sistema (Ubuntu / Linux)</span>
-                </div>
-                <p className="text-[11px] leading-relaxed">{updateCliResult.globalNotice}</p>
-                <div className="pt-1 flex items-center justify-between">
-                  <code className="font-mono text-[10px] bg-amber-100 dark:bg-amber-900/50 px-2 py-1 rounded text-amber-900 dark:text-amber-200">
-                    sudo npm install -g @google/gemini-cli@latest
-                  </code>
-                  <button
-                    type="button"
-                    onClick={() => copyCliToClipboard('sudo npm install -g @google/gemini-cli@latest')}
-                    className="text-[10px] text-amber-700 dark:text-amber-300 hover:underline flex items-center gap-1 cursor-pointer font-semibold"
-                  >
-                    <Copy className="w-3 h-3" />
-                    {copiedCliCmd ? 'Copiado!' : 'Copiar Sudo'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800/60">
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[11px] font-medium text-zinc-700 dark:text-zinc-300">
-              Comandos para executar no Terminal (Ubuntu / Linux / Mac):
-            </span>
-            <button
-              type="button"
-              onClick={() =>
-                copyCliToClipboard(
-                  'npm uninstall -g @google/gemini-cli && npm install -g @google/gemini-cli@latest'
-                )
-              }
-              className="text-[10px] flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-            >
-              <Copy className="w-3 h-3" />
-              {copiedCliCmd ? 'Copiado!' : 'Copiar Comandos'}
-            </button>
-          </div>
-          <div className="p-3 rounded-lg bg-zinc-900 text-zinc-200 font-mono text-[11px] overflow-x-auto space-y-1.5">
-            <p className="text-zinc-500"># 1. Remover versão anterior globalmente:</p>
-            <p className="text-amber-400">npm uninstall -g @google/gemini-cli</p>
-            <p className="text-zinc-500 pt-1"># 2. Instalar a versão mais recente oficial:</p>
-            <p className="text-emerald-400">npm install -g @google/gemini-cli@latest</p>
-            <p className="text-zinc-500 pt-1"># 3. Confirmar a versão instalada no sistema:</p>
-            <p className="text-blue-400">gemini --version</p>
-          </div>
-        </div>
       </div>
 
       {/* Restarting / Auto-reconnection Banner */}
       {isRestarting && (
-        <div className="p-4 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 shadow-sm flex items-center justify-between gap-3 animate-pulse">
+        <div className="p-3.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 shadow-xs flex items-center justify-between gap-3 animate-pulse">
           <div className="flex items-center gap-3">
             <Loader2 className="w-5 h-5 text-amber-600 dark:text-amber-400 animate-spin shrink-0" />
             <div>
@@ -476,12 +367,12 @@ npm start
         </div>
       )}
 
-      {/* Repository & Branch Configuration Card */}
+      {/* 1. ATUALIZAÇÃO VIA REPOSITÓRIO GIT (NO INÍCIO DA PÁGINA) */}
       <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/90 shadow-xs space-y-4">
         <div className="flex items-center justify-between">
           <h5 className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
-            <GitBranch className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-            <span>Repositório Git e Ramo Alvo</span>
+            <GitBranch className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            <span>Atualização Via Repositório Git (GitHub)</span>
           </h5>
           <a
             href={repoUrl}
@@ -516,7 +407,7 @@ npm start
               type="text"
               value={branch}
               onChange={(e) => setBranch(e.target.value)}
-              placeholder="Update"
+              placeholder="main"
               className="w-full px-3 py-2 text-xs font-mono rounded-lg bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-900 dark:text-zinc-100 outline-none focus:border-blue-500 transition"
             />
           </div>
@@ -616,9 +507,249 @@ npm start
             <span>Reiniciar Servidor</span>
           </button>
         </div>
+
+        {/* Check Result Banner */}
+        {updateCheckResult && (
+          <div
+            className={`p-3.5 rounded-xl border text-xs space-y-2.5 ${
+              updateCheckResult.error
+                ? 'bg-rose-50/70 dark:bg-rose-950/20 border-rose-200 dark:border-rose-900/50 text-rose-800 dark:text-rose-300'
+                : updateCheckResult.hasUpdate
+                ? 'bg-blue-50/70 dark:bg-blue-950/20 border-blue-200 dark:border-blue-900/50 text-blue-800 dark:text-blue-300'
+                : 'bg-emerald-50/70 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-300'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {updateCheckResult.error ? (
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+              ) : updateCheckResult.hasUpdate ? (
+                <ArrowUpCircle className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              )}
+              <span className="font-semibold">{updateCheckResult.message}</span>
+            </div>
+
+            {updateCheckResult.remoteCommitInfo && (
+              <div className="p-2.5 rounded-lg bg-white/80 dark:bg-zinc-900/80 border border-zinc-200/60 dark:border-zinc-800 space-y-1.5 text-zinc-800 dark:text-zinc-200">
+                <div className="flex justify-between items-center text-[11px]">
+                  <span className="font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1">
+                    <GitCommit className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                    Commit Remoto: {updateCheckResult.remoteCommitInfo.shortSha}
+                  </span>
+                  <span className="text-zinc-500 dark:text-zinc-400">
+                    {updateCheckResult.remoteCommitInfo.date}
+                  </span>
+                </div>
+                <p className="text-xs font-mono bg-zinc-50 dark:bg-zinc-800 p-2 rounded border border-zinc-200/50 dark:border-zinc-700/50">
+                  {updateCheckResult.remoteCommitInfo.message}
+                </p>
+                <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                  Autor: <span className="font-medium text-zinc-700 dark:text-zinc-300">{updateCheckResult.remoteCommitInfo.author}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Pull / Update Result Output Box */}
+        {updateResult && (
+          <div
+            className={`p-3.5 rounded-xl border text-xs space-y-3 ${
+              updateResult.success
+                ? 'bg-emerald-50/80 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
+                : 'bg-rose-50/80 dark:bg-rose-950/20 border-rose-300 dark:border-rose-800'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {updateResult.success ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+              )}
+              <span
+                className={`font-semibold ${
+                  updateResult.success ? 'text-emerald-900 dark:text-emerald-200' : 'text-rose-900 dark:text-rose-200'
+                }`}
+              >
+                {updateResult.message}
+              </span>
+            </div>
+
+            {/* Execution steps badge row */}
+            {updateResult.success && (
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700">
+                  1. Git Sync Concluído
+                </span>
+                {updateResult.installedDeps && (
+                  <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700">
+                    2. Dependências NPM Atualizadas
+                  </span>
+                )}
+                {updateResult.rebuilt && (
+                  <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700">
+                    3. Recompilação (Build) Concluída
+                  </span>
+                )}
+                {updateResult.restarting && (
+                  <span className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-700 animate-pulse">
+                    4. Reinício do Servidor em Andamento...
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Logs container */}
+            {updateResult.logs && updateResult.logs.length > 0 && (
+              <div className="space-y-1">
+                <span className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-400 block">
+                  Relatório de Execução Completo:
+                </span>
+                <div className="p-3 rounded-lg bg-zinc-900 text-zinc-200 font-mono text-[11px] max-h-56 overflow-y-auto space-y-1 border border-zinc-800 select-text">
+                  {updateResult.logs.map((log, idx) => (
+                    <div key={idx} className="leading-relaxed">
+                      {log}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Rebuild Result Output Box */}
+        {rebuildResult && (
+          <div
+            className={`p-3.5 rounded-xl border text-xs space-y-2.5 ${
+              rebuildResult.success
+                ? 'bg-emerald-50/80 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
+                : 'bg-rose-50/80 dark:bg-rose-950/20 border-rose-300 dark:border-rose-800'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {rebuildResult.success ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+              )}
+              <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                {rebuildResult.message}
+              </span>
+            </div>
+
+            {rebuildResult.logs && (
+              <div className="p-3 rounded-lg bg-zinc-900 text-zinc-200 font-mono text-[11px] max-h-40 overflow-y-auto space-y-1 border border-zinc-800 select-text">
+                {rebuildResult.logs.map((l, i) => (
+                  <div key={i}>{l}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Current Local Environment Status */}
+      {/* 2. ATUALIZAÇÃO DO PACOTE GEMINI CLI (@google/gemini-cli) */}
+      <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/90 shadow-xs space-y-3">
+        <div>
+          <h5 className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+            <RefreshCw className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+            <span>Remover Versão Anterior e Instalar Versão Mais Recente (Gemini CLI)</span>
+          </h5>
+          <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+            Desinstala a versão anterior e instala limpa a versão oficial mais recente do pacote <code className="font-mono text-zinc-700 dark:text-zinc-300">@google/gemini-cli</code> no ambiente do servidor Node.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={handleUpdateCli}
+            disabled={isUpdatingCli}
+            className="px-3.5 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isUpdatingCli ? 'animate-spin' : ''}`} />
+            {isUpdatingCli ? 'Atualizando Gemini CLI...' : 'Instalar Versão Mais Recente Agora'}
+          </button>
+        </div>
+
+        {updateCliResult && (
+          <div className="space-y-2">
+            <div
+              className={`p-3 rounded-lg text-xs flex items-start gap-2.5 ${
+                updateCliResult.success
+                  ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                  : 'bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+              }`}
+            >
+              {updateCliResult.success ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
+              )}
+              <div className="space-y-1">
+                <p className="font-semibold">{updateCliResult.message}</p>
+                {updateCliResult.version && (
+                  <p className="text-[11px] font-mono">Versão ativa do CLI: v{updateCliResult.version}</p>
+                )}
+              </div>
+            </div>
+
+            {updateCliResult.globalNotice && (
+              <div className="p-3 rounded-lg text-xs bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 space-y-2">
+                <div className="flex items-center gap-1.5 font-semibold">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+                  <span>Atualização do CLI Global do Sistema (Ubuntu / Linux)</span>
+                </div>
+                <p className="text-[11px] leading-relaxed">{updateCliResult.globalNotice}</p>
+                <div className="pt-1 flex items-center justify-between">
+                  <code className="font-mono text-[10px] bg-amber-100 dark:bg-amber-900/50 px-2 py-1 rounded text-amber-900 dark:text-amber-200">
+                    sudo npm install -g @google/gemini-cli@latest
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => copyCliToClipboard('sudo npm install -g @google/gemini-cli@latest')}
+                    className="text-[10px] text-amber-700 dark:text-amber-300 hover:underline flex items-center gap-1 cursor-pointer font-semibold"
+                  >
+                    <Copy className="w-3 h-3" />
+                    {copiedCliCmd ? 'Copiado!' : 'Copiar Sudo'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800/60">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[11px] font-medium text-zinc-700 dark:text-zinc-300">
+              Comandos de instalação no Terminal (Ubuntu / Linux):
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                copyCliToClipboard(
+                  'npm uninstall -g @google/gemini-cli && npm install -g @google/gemini-cli@latest'
+                )
+              }
+              className="text-[10px] flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+            >
+              <Copy className="w-3 h-3" />
+              {copiedCliCmd ? 'Copiado!' : 'Copiar Comandos'}
+            </button>
+          </div>
+          <div className="p-3 rounded-lg bg-zinc-900 text-zinc-200 font-mono text-[11px] overflow-x-auto space-y-1.5">
+            <p className="text-zinc-500"># 1. Remover versão anterior globalmente:</p>
+            <p className="text-amber-400">npm uninstall -g @google/gemini-cli</p>
+            <p className="text-zinc-500 pt-1"># 2. Instalar a versão mais recente oficial:</p>
+            <p className="text-emerald-400">npm install -g @google/gemini-cli@latest</p>
+            <p className="text-zinc-500 pt-1"># 3. Confirmar a versão instalada no sistema:</p>
+            <p className="text-blue-400">gemini --version</p>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. ESTADO ATUAL DO AMBIENTE LOCAL */}
       <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-800/30 space-y-2.5 text-xs">
         <div className="flex justify-between items-center pb-1 border-b border-zinc-200/60 dark:border-zinc-700/60">
           <span className="font-semibold text-zinc-800 dark:text-zinc-200 flex items-center gap-1.5">
@@ -626,6 +757,7 @@ npm start
             <span>Estado Atual do Ambiente Local</span>
           </span>
           <button
+            type="button"
             onClick={loadStatus}
             disabled={isLoadingStatus}
             title="Recarregar status do Git"
@@ -689,150 +821,7 @@ npm start
         )}
       </div>
 
-      {/* Check Result Banner */}
-      {updateCheckResult && (
-        <div
-          className={`p-4 rounded-xl border text-xs space-y-2.5 ${
-            updateCheckResult.error
-              ? 'bg-rose-50/70 dark:bg-rose-950/20 border-rose-200 dark:border-rose-900/50 text-rose-800 dark:text-rose-300'
-              : updateCheckResult.hasUpdate
-              ? 'bg-blue-50/70 dark:bg-blue-950/20 border-blue-200 dark:border-blue-900/50 text-blue-800 dark:text-blue-300'
-              : 'bg-emerald-50/70 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-300'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            {updateCheckResult.error ? (
-              <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
-            ) : updateCheckResult.hasUpdate ? (
-              <ArrowUpCircle className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
-            ) : (
-              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-            )}
-            <span className="font-semibold">{updateCheckResult.message}</span>
-          </div>
-
-          {updateCheckResult.remoteCommitInfo && (
-            <div className="p-3 rounded-lg bg-white/80 dark:bg-zinc-900/80 border border-zinc-200/60 dark:border-zinc-800 space-y-1.5 text-zinc-800 dark:text-zinc-200">
-              <div className="flex justify-between items-center text-[11px]">
-                <span className="font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1">
-                  <GitCommit className="w-3 h-3 text-blue-600 dark:text-blue-400" />
-                  Commit Remoto: {updateCheckResult.remoteCommitInfo.shortSha}
-                </span>
-                <span className="text-zinc-500 dark:text-zinc-400">
-                  {updateCheckResult.remoteCommitInfo.date}
-                </span>
-              </div>
-              <p className="text-xs font-mono bg-zinc-50 dark:bg-zinc-800 p-2 rounded border border-zinc-200/50 dark:border-zinc-700/50">
-                {updateCheckResult.remoteCommitInfo.message}
-              </p>
-              <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                Autor: <span className="font-medium text-zinc-700 dark:text-zinc-300">{updateCheckResult.remoteCommitInfo.author}</span>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Pull / Update Result Output Box */}
-      {updateResult && (
-        <div
-          className={`p-4 rounded-xl border text-xs space-y-3 ${
-            updateResult.success
-              ? 'bg-emerald-50/80 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
-              : 'bg-rose-50/80 dark:bg-rose-950/20 border-rose-300 dark:border-rose-800'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            {updateResult.success ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            ) : (
-              <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
-            )}
-            <span
-              className={`font-semibold ${
-                updateResult.success ? 'text-emerald-900 dark:text-emerald-200' : 'text-rose-900 dark:text-rose-200'
-              }`}
-            >
-              {updateResult.message}
-            </span>
-          </div>
-
-          {/* Execution steps badge row */}
-          {updateResult.success && (
-            <div className="flex flex-wrap items-center gap-2 text-[11px]">
-              <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700">
-                1. Git Sync Concluído
-              </span>
-              {updateResult.installedDeps && (
-                <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700">
-                  2. Dependências NPM Atualizadas
-                </span>
-              )}
-              {updateResult.rebuilt && (
-                <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700">
-                  3. Recompilação (Build) Concluída
-                </span>
-              )}
-              {updateResult.restarting && (
-                <span className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-700 animate-pulse">
-                  4. Reinício do Servidor em Andamento...
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Logs container */}
-          {updateResult.logs && updateResult.logs.length > 0 && (
-            <div className="space-y-1">
-              <span className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-400 block">
-                Relatório de Execução Completo:
-              </span>
-              <div className="p-3 rounded-lg bg-zinc-900 text-zinc-200 font-mono text-[11px] max-h-56 overflow-y-auto space-y-1 border border-zinc-800 select-text">
-                {updateResult.logs.map((log, idx) => (
-                  <div key={idx} className="leading-relaxed">
-                    {log}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Rebuild Result Output Box */}
-      {rebuildResult && (
-        <div
-          className={`p-4 rounded-xl border text-xs space-y-2.5 ${
-            rebuildResult.success
-              ? 'bg-emerald-50/80 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
-              : 'bg-rose-50/80 dark:bg-rose-950/20 border-rose-300 dark:border-rose-800'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            {rebuildResult.success ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            ) : (
-              <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
-            )}
-            <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-              {rebuildResult.message}
-            </span>
-          </div>
-
-          {rebuildResult.logs && (
-            <div className="p-3 rounded-lg bg-zinc-900 text-zinc-200 font-mono text-[11px] max-h-40 overflow-y-auto space-y-1 border border-zinc-800 select-text">
-              {rebuildResult.logs.map((l, i) => (
-                <div key={i}>{l}</div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Backup, Restore and Factory Reset Section */}
-      <BackupAndResetSection onRefreshGlobalStatus={onRefreshGlobalStatus} />
-
-      {/* Manual Terminal Commands for Ubuntu */}
+      {/* 4. EXECUÇÃO MANUAL NO TERMINAL (UBUNTU / LINUX) */}
       <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/90 shadow-xs space-y-2.5">
         <div className="flex items-center justify-between">
           <h5 className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
@@ -859,12 +848,12 @@ npm start
         </div>
 
         <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
-          Se você preferir executar o ciclo de atualização manualmente via SSH / Terminal no seu servidor Ubuntu:
+          Instruções de comando para executar manualmente o ciclo de atualização via SSH / Terminal no seu servidor Ubuntu:
         </p>
 
         <div className="p-3 rounded-lg bg-zinc-900 text-zinc-200 font-mono text-[11px] overflow-x-auto space-y-1 select-all">
           <p className="text-zinc-500"># 1. Sincronizar código do repositório:</p>
-          <p className="text-blue-400">git fetch origin {branch || 'Update'} && git reset --hard origin/{branch || 'Update'}</p>
+          <p className="text-blue-400">git fetch origin {branch || 'main'} && git reset --hard origin/{branch || 'main'}</p>
           <p className="text-zinc-500 pt-1"># 2. Instalar dependências e compilar frontend/backend:</p>
           <p className="text-emerald-400">npm install && npm run build</p>
           <p className="text-zinc-500 pt-1"># 3. Reiniciar a aplicação:</p>

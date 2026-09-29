@@ -63,32 +63,81 @@ export function estimateParamsLength(params: any): number {
 }
 
 export function calculateSessionTokens(messages: ChatMessage[]) {
-  let inputTokens = 0;
-  let outputTokens = 0;
+  if (!messages || messages.length === 0) {
+    return {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    };
+  }
+
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   for (const msg of messages) {
-    const textTokens = estimateTokens(msg.content);
-    let toolTokens = 0;
-    if (msg.toolCalls) {
-      for (const call of msg.toolCalls) {
-        toolTokens +=
-          estimateTokens(call.toolName) +
-          Math.ceil(estimateParamsLength(call.parameters) / 3.8) +
-          estimateTokens(call.result || '');
+    // 1. Calculate length from content and prompt sent
+    let inputCharLength = 0;
+    let outputCharLength = 0;
+
+    if (msg.role === 'user' || msg.role === 'system') {
+      inputCharLength += (msg.content || '').length;
+      if (msg.rawPayloadSent?.fullInjectedPrompt) {
+        inputCharLength = Math.max(inputCharLength, msg.rawPayloadSent.fullInjectedPrompt.length);
+      } else if (msg.rawPayloadSent?.promptText) {
+        inputCharLength = Math.max(inputCharLength, msg.rawPayloadSent.promptText.length);
+      }
+    } else {
+      outputCharLength += (msg.content || '').length;
+      if (msg.rawPayloadReceived?.rawTextStream) {
+        outputCharLength = Math.max(outputCharLength, msg.rawPayloadReceived.rawTextStream.length);
       }
     }
 
-    if (msg.role === 'user' || msg.role === 'system') {
-      inputTokens += textTokens + toolTokens;
-    } else {
-      outputTokens += textTokens + toolTokens;
+    // 2. Include tool calls (parameters + results + errors)
+    if (msg.toolCalls && msg.toolCalls.length > 0) {
+      for (const call of msg.toolCalls) {
+        const nameLen = (call.toolName || '').length;
+        const paramsLen = estimateParamsLength(call.parameters);
+        const resultLen = (call.result || '').length + (call.error || '').length;
+
+        // Tool invocations & parameters count as input/orchestration; results count as tool outputs
+        inputCharLength += nameLen + paramsLen;
+        outputCharLength += resultLen;
+      }
     }
+
+    // 3. Include activities
+    if (msg.activities && msg.activities.length > 0) {
+      for (const act of msg.activities) {
+        const actText = (act.command || '') + (act.result || '') + (act.filePath || '') + (act.error || '');
+        if (act.type === 'command' || act.type === 'file_edit' || act.type === 'file_read') {
+          outputCharLength += actText.length;
+        }
+      }
+    }
+
+    let msgInputTokens = Math.ceil(inputCharLength / 3.8);
+    let msgOutputTokens = Math.ceil(outputCharLength / 3.8);
+
+    // 4. Check if rawPayloadReceived tokenStats gives a higher reported count
+    if (msg.rawPayloadReceived?.tokenStats) {
+      const stats = msg.rawPayloadReceived.tokenStats;
+      if (stats.inputTokens && stats.inputTokens > msgInputTokens) {
+        msgInputTokens = stats.inputTokens;
+      }
+      if (stats.outputTokens && stats.outputTokens > msgOutputTokens) {
+        msgOutputTokens = stats.outputTokens;
+      }
+    }
+
+    totalInputTokens += msgInputTokens;
+    totalOutputTokens += msgOutputTokens;
   }
 
   return {
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    totalTokens: totalInputTokens + totalOutputTokens,
   };
 }
 
@@ -139,26 +188,15 @@ export function calculateContextBreakdown(
   }
   const projectContextTokens = estimateTokens(projectText);
 
-  // 3. Active Messages (accurately counts user prompts, AI responses, and tool call payload content)
-  let messagesTokens = 0;
-  if (messages && messages.length > 0) {
-    for (const msg of messages) {
-      if (msg.rawPayloadReceived?.tokenStats?.totalTokens) {
-        messagesTokens += msg.rawPayloadReceived.tokenStats.totalTokens;
-      } else {
-        let msgText = msg.content || '';
-        if (msg.toolCalls) {
-          for (const tc of msg.toolCalls) {
-            msgText += `\n[Tool: ${tc.toolName}] ` + JSON.stringify(tc.parameters || {}) + ` Result: ${tc.result || ''}`;
-          }
-        }
-        messagesTokens += estimateTokens(msgText);
-      }
-    }
-  }
+  // 3. Active Messages Tokens (accurately calculated using full contents, attachments & tools)
+  const sessionStats = calculateSessionTokens(messages || []);
+  const messagesTokens = sessionStats.totalTokens;
 
-  // 4. Tools & MCPs
-  let toolsText = 'Base System Tools: view_file, edit_file, create_file, run_command, list_dir, search, compile_applet, lint_applet\n';
+  // 4. Tools & MCPs (Includes base tool schemas definition overhead ~3,500 tokens + skills + MCPs)
+  let toolsText = 'Base System Tools Schemas (view_file, edit_file, create_file, run_command, list_dir, search, compile_applet, lint_applet, manage_task, schedule)\n';
+  // Standard tool JSON schema definition overhead is roughly ~13,000 characters (~3,400 tokens)
+  let baseToolsSchemaOverheadTokens = 3400;
+
   const activeSkills = skills?.filter((s) => s.enabled !== false) || [];
   if (activeSkills.length > 0) {
     toolsText += activeSkills.map((s) => `Skill [${s.name}]: ${s.description}\n${s.content || ''}`).join('\n');
@@ -167,7 +205,7 @@ export function calculateContextBreakdown(
   if (activeMcp.length > 0) {
     toolsText += activeMcp.map((m) => `MCP [${m.name}]: ${m.command || m.httpUrl || ''}`).join('\n');
   }
-  const toolsAndMcpTokens = estimateTokens(toolsText);
+  const toolsAndMcpTokens = baseToolsSchemaOverheadTokens + estimateTokens(toolsText);
 
   const totalActiveTokens =
     systemInstructionsTokens + projectContextTokens + messagesTokens + toolsAndMcpTokens;
@@ -191,8 +229,12 @@ export function calculateContextBreakdown(
  */
 export function compressContextMessages(
   messages: ChatMessage[],
-  settings: ContextSettings
+  settings?: Partial<ContextSettings>
 ): { compressedMessages: ChatMessage[]; tokensSaved: number; originalTokens: number; newTokens: number } {
+  const effectiveSettings: ContextSettings = {
+    ...DEFAULT_CONTEXT_SETTINGS,
+    ...(settings || {}),
+  };
   if (messages.length === 0) {
     return { compressedMessages: [], tokensSaved: 0, originalTokens: 0, newTokens: 0 };
   }
@@ -200,7 +242,7 @@ export function compressContextMessages(
   const originalStats = calculateSessionTokens(messages);
   const originalTokens = originalStats.totalTokens;
 
-  const keepCount = Math.max(2, settings.recentMessagesToKeep);
+  const keepCount = Math.max(2, effectiveSettings.recentMessagesToKeep);
   if (messages.length <= keepCount) {
     return {
       compressedMessages: messages,
@@ -215,7 +257,7 @@ export function compressContextMessages(
 
   let compressedMessages: ChatMessage[] = [];
 
-  if (settings.strategy === 'keep_recent_only') {
+  if (effectiveSettings.strategy === 'keep_recent_only') {
     compressedMessages = [
       {
         id: `sys_comp_${Date.now()}`,

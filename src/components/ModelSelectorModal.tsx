@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Search, Check, Sparkles, Cpu, Mic, Bot, Boxes, Database, Binary, Info } from 'lucide-react';
 import { ModelCatalogItem } from '../types.js';
 import { MODELS_CATALOG } from '../constants/modelsCatalog.js';
+import { formatModelName } from '../utils/modelFormatter.js';
 
 interface ModelSelectorModalProps {
   isOpen: boolean;
@@ -181,7 +182,7 @@ export const ModelSelectorModal: React.FC<ModelSelectorModalProps> = ({
                             )}
                           </span>
                           <span className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
-                            {item.id}
+                            {formatModelName(item.id)}
                           </span>
                         </div>
                       </td>

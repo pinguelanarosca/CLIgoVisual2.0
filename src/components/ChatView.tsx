@@ -31,7 +31,9 @@ import {
   File,
   X,
   Globe,
+  Minimize2,
 } from 'lucide-react';
+import { compressContextMessages } from '../utils/tokenUtils.js';
 import { LiveAudioWaveform } from './LiveAudioWaveform.js';
 import {
   ChatMessage,
@@ -97,6 +99,7 @@ interface ChatViewProps {
   onOpenSharedMemory?: () => void;
   activeMemoryVersion?: number;
   autoSendVoicePrompt?: boolean;
+  onUpdateMessages?: (newMessages: ChatMessage[]) => void;
 }
 
 export interface AttachedFileItem {
@@ -137,8 +140,32 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onOpenSharedMemory,
   activeMemoryVersion = 1,
   autoSendVoicePrompt = true,
+  onUpdateMessages,
 }) => {
   const [inputText, setInputText] = useState('');
+  const [compressFeedback, setCompressFeedback] = useState<string | null>(null);
+
+  const handleCompressContext = () => {
+    if (!messages || messages.length <= 2) {
+      setCompressFeedback('Sessão com poucas mensagens para comprimir.');
+      setTimeout(() => setCompressFeedback(null), 2500);
+      return;
+    }
+    const result = compressContextMessages(messages, {
+      strategy: 'keep_recent_only',
+      recentMessagesToKeep: 3,
+      maxContextWindow: 1000000,
+    });
+    if (result.compressedMessages && onUpdateMessages) {
+      onUpdateMessages(result.compressedMessages);
+      setCompressFeedback(
+        result.tokensSaved > 0
+          ? `~${result.tokensSaved.toLocaleString('pt-BR')} tokens liberados!`
+          : 'Contexto otimizado com sucesso.'
+      );
+      setTimeout(() => setCompressFeedback(null), 3000);
+    }
+  };
   const inputTextRef = useRef(inputText);
   inputTextRef.current = inputText;
 
@@ -453,7 +480,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               onClick={() => onOpenSettings('cli')}
               className="px-1.5 py-0.5 bg-amber-600 hover:bg-amber-500 text-white text-[10.5px] font-medium rounded transition cursor-pointer"
             >
-              Ajustes
+              Configurações
             </button>
           )}
         </div>
@@ -621,8 +648,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 <div
                   className={`group relative select-text transition-all ${
                     isUser
-                      ? 'ml-auto max-w-[88%] sm:max-w-[78%] md:max-w-2xl rounded-2xl rounded-tr-xs bg-zinc-800/80 hover:bg-zinc-800/95 border border-zinc-700/60 p-3 shadow-sm backdrop-blur-xs text-zinc-100 flex flex-col items-end'
-                      : 'w-full max-w-4xl rounded-2xl rounded-tl-xs bg-zinc-900/70 hover:bg-zinc-900/85 border border-zinc-800/80 p-3.5 shadow-sm backdrop-blur-xs text-zinc-200 flex flex-col items-start'
+                      ? 'ml-auto max-w-[85%] sm:max-w-[75%] md:max-w-2xl rounded-2xl rounded-tr-xs bg-zinc-800/80 hover:bg-zinc-800/95 border border-zinc-700/60 p-3 shadow-sm backdrop-blur-xs text-zinc-100 flex flex-col items-end'
+                      : 'mr-auto max-w-[85%] sm:max-w-[75%] md:max-w-2xl rounded-2xl rounded-tl-xs bg-zinc-900/70 hover:bg-zinc-900/85 border border-zinc-800/80 p-3.5 shadow-sm backdrop-blur-xs text-zinc-200 flex flex-col items-start'
                   }`}
                 >
                   {/* Header da Mensagem: Autor com Ícone Criativo Gemini na Frente + Data + Model Badge */}
@@ -693,7 +720,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   )}
 
                   {/* Conteúdo da Mensagem */}
-                  <div className={`w-full ${isUser ? 'text-zinc-100 font-medium text-left' : 'text-zinc-200 font-normal text-left'} leading-snug`}>
+                  <div className={`w-full ${isUser ? 'text-zinc-100 font-medium text-right [text-align-last:left]' : 'text-zinc-200 font-normal text-left'} leading-snug`}>
                     <MessageRenderer
                       content={msg.content}
                       isStreaming={msg.isStreaming}
@@ -1143,31 +1170,50 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
             </div>
 
-            {/* Approval Mode (Clean Labels) */}
-            <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded px-1.5 py-0.5">
-              <Sliders className="w-3 h-3 text-amber-400 shrink-0" />
-              <select
-                value={approvalMode}
-                onChange={(e) => {
-                  if (onChangeApprovalMode) {
-                    onChangeApprovalMode(e.target.value as any);
-                  }
-                }}
-                className="bg-transparent text-[10.5px] font-medium text-zinc-200 outline-hidden cursor-pointer"
+            {/* Approval Mode & Context Compression */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded px-1.5 py-0.5">
+                <Sliders className="w-3 h-3 text-amber-400 shrink-0" />
+                <select
+                  value={approvalMode}
+                  onChange={(e) => {
+                    if (onChangeApprovalMode) {
+                      onChangeApprovalMode(e.target.value as any);
+                    }
+                  }}
+                  className="bg-transparent text-[10.5px] font-medium text-zinc-200 outline-hidden cursor-pointer"
+                >
+                  <option value="default" className="bg-zinc-950 text-zinc-200">
+                    Padrão
+                  </option>
+                  <option value="auto_edit" className="bg-zinc-950 text-zinc-200">
+                    Auto-Editar
+                  </option>
+                  <option value="yolo" className="bg-zinc-950 text-zinc-200">
+                    YOLO
+                  </option>
+                  <option value="plan" className="bg-zinc-950 text-zinc-200">
+                    Planejar
+                  </option>
+                </select>
+              </div>
+
+              {/* Botão de Compressão de Contexto */}
+              <button
+                type="button"
+                onClick={handleCompressContext}
+                title="Comprimir Contexto (Resumir mensagens antigas para liberar tokens)"
+                className="flex items-center gap-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white text-[10.5px] font-medium rounded px-1.5 py-0.5 transition cursor-pointer"
               >
-                <option value="default" className="bg-zinc-950 text-zinc-200">
-                  Padrão
-                </option>
-                <option value="auto_edit" className="bg-zinc-950 text-zinc-200">
-                  Auto-Editar
-                </option>
-                <option value="yolo" className="bg-zinc-950 text-zinc-200">
-                  YOLO
-                </option>
-                <option value="plan" className="bg-zinc-950 text-zinc-200">
-                  Planejar
-                </option>
-              </select>
+                <Minimize2 className="w-3 h-3 text-purple-400 shrink-0" />
+                <span>Comprimir Contexto</span>
+              </button>
+
+              {compressFeedback && (
+                <span className="text-[10px] text-emerald-400 font-mono font-medium animate-fade-in">
+                  {compressFeedback}
+                </span>
+              )}
             </div>
           </div>
         </div>

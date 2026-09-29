@@ -16,6 +16,7 @@ import {
 import { ChatMessage, AgentConfig, ProjectItem, AuthorizedDir, SkillConfig, McpConfig } from '../types.js';
 import { calculateSessionTokens, calculateContextBreakdown, formatTokenCount } from '../utils/tokenUtils.js';
 import { MODELS_CATALOG } from '../constants/modelsCatalog.js';
+import { formatModelName } from '../utils/modelFormatter.js';
 
 interface TokenMonitorBarProps {
   messages: ChatMessage[];
@@ -138,11 +139,14 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
         title="Monitor de Tokens em Tempo Real"
         className="flex items-center gap-2 bg-amber-500/10 dark:bg-amber-500/15 hover:bg-amber-500/20 border border-amber-500/30 dark:border-amber-500/40 px-2.5 py-1 rounded-lg cursor-pointer transition shadow-2xs group"
       >
-        {/* Active Chat Token Counter (System + Project + Tools + Messages) */}
-        <div className="flex items-center gap-1" title={`Tokens Totais no Contexto Ativo: ${contextBreakdown.totalActiveTokens.toLocaleString('pt-BR')}`}>
+        {/* Active Chat Token Counter (Directly responsive to the currently active chat session) */}
+        <div
+          className="flex items-center gap-1"
+          title={`Chat Atual: ${sessionTokens.totalTokens.toLocaleString('pt-BR')} tokens | Contexto Total na LLM (com Schemas/Sistema): ${contextBreakdown.totalActiveTokens.toLocaleString('pt-BR')} tokens`}
+        >
           <Zap className={`w-3.5 h-3.5 text-amber-500 ${isStreaming ? 'animate-bounce' : ''}`} />
           <span className="text-xs font-bold font-mono text-zinc-900 dark:text-zinc-100 tracking-tight">
-            {formatTokenCount(contextBreakdown.totalActiveTokens)}
+            {formatTokenCount(sessionTokens.totalTokens)}
           </span>
           <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium hidden sm:inline">
             tokens
@@ -200,7 +204,7 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
                     Monitor de Tokens & Cotas
                   </h4>
                   <div className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-                    Modelo: <span className="text-amber-600 dark:text-amber-400 font-semibold">{selectedModel?.name}</span>
+                    Modelo: <span className="text-amber-600 dark:text-amber-400 font-semibold">{formatModelName(selectedModel?.name || selectedModelId)}</span>
                   </div>
                 </div>
               </div>
@@ -266,8 +270,30 @@ export const TokenMonitorBar: React.FC<TokenMonitorBarProps> = ({
               </div>
 
               <div className="flex justify-between text-[10px] text-zinc-500 font-mono">
-                <span>{formatTokenCount(contextBreakdown.totalActiveTokens)} tokens ativos</span>
+                <span>Total LLM: {formatTokenCount(contextBreakdown.totalActiveTokens)}</span>
                 <span>Máx: {formatTokenCount(contextBreakdown.maxContextWindow)}</span>
+              </div>
+
+              {/* Sub-breakdown of chat vs schemas */}
+              <div className="pt-2 border-t border-zinc-200/60 dark:border-zinc-700/60 space-y-1 text-[10.5px]">
+                <div className="flex justify-between text-zinc-600 dark:text-zinc-400">
+                  <span>• Mensagens / Anexos do Chat:</span>
+                  <span className="font-mono font-bold text-amber-600 dark:text-amber-400">
+                    {sessionTokens.totalTokens.toLocaleString('pt-BR')} tokens
+                  </span>
+                </div>
+                <div className="flex justify-between text-zinc-500 dark:text-zinc-400">
+                  <span>• Schemas de Ferramentas & MCPs:</span>
+                  <span className="font-mono">
+                    {contextBreakdown.toolsAndMcpTokens.toLocaleString('pt-BR')} tokens
+                  </span>
+                </div>
+                <div className="flex justify-between text-zinc-500 dark:text-zinc-400">
+                  <span>• Instruções de Sistema / Projeto:</span>
+                  <span className="font-mono">
+                    {(contextBreakdown.systemInstructionsTokens + contextBreakdown.projectContextTokens).toLocaleString('pt-BR')} tokens
+                  </span>
+                </div>
               </div>
             </div>
 
