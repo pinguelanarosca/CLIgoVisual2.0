@@ -323,7 +323,6 @@ export function ensureValidUUID(id?: string): string | undefined {
 export function isExistingSession(sessionId?: string, workspaceDir?: string): boolean {
   if (!sessionId) return false;
   const normalizedId = ensureValidUUID(sessionId) || sessionId;
-  if (knownSessions.has(normalizedId) || knownSessions.has(sessionId)) return true;
 
   try {
     const candidateDirs: string[] = [
@@ -343,8 +342,11 @@ export function isExistingSession(sessionId?: string, workspaceDir?: string): bo
     if (workspaceDir) {
       candidateDirs.push(path.join(workspaceDir, '.gemini', 'tmp'));
       const wsName = path.basename(workspaceDir);
+      const sanitizedWsName = wsName.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
       candidateDirs.push(path.join(os.homedir(), '.gemini', 'tmp', wsName, 'chats'));
+      candidateDirs.push(path.join(os.homedir(), '.gemini', 'tmp', sanitizedWsName, 'chats'));
       candidateDirs.push(path.join(getGuiDataDir(), '.gemini', 'tmp', wsName, 'chats'));
+      candidateDirs.push(path.join(getGuiDataDir(), '.gemini', 'tmp', sanitizedWsName, 'chats'));
     }
 
     const shortId = normalizedId.slice(0, 8).toLowerCase();
@@ -367,8 +369,6 @@ export function isExistingSession(sessionId?: string, workspaceDir?: string): bo
               n.includes(normalizedId.toLowerCase()) ||
               n.includes(sessionId.toLowerCase())
             ) {
-              knownSessions.add(normalizedId);
-              knownSessions.add(sessionId);
               return true;
             }
           }
@@ -1293,20 +1293,15 @@ export function executeGeminiCli(
 
       if (effectiveSessionId) {
         const sessionExists = isExistingSession(effectiveSessionId, cwd);
-        const shouldPassResumeFlag =
-          params.resume === true ||
-          isRetry ||
-          knownSessions.has(effectiveSessionId) ||
-          (params.sessionId ? knownSessions.has(params.sessionId) : false) ||
-          (shouldResume && sessionExists);
+        // Só passa flag -r (--resume) se a sessão REALMENTE existir no disco em chats/
+        // Se o arquivo da sessão não existir no disco, passa --session-id para criá-la
+        const shouldPassResumeFlag = Boolean(params.resume !== false && sessionExists);
 
         if (shouldPassResumeFlag) {
           args.push('-r', effectiveSessionId);
         } else {
           args.push('--session-id', effectiveSessionId);
         }
-        knownSessions.add(effectiveSessionId);
-        if (params.sessionId) knownSessions.add(params.sessionId);
       }
 
       if (!cliPath || (cliPath !== 'gemini' && !fs.existsSync(cliPath))) {
@@ -1830,9 +1825,13 @@ export function executeGeminiCli(
           } catch {}
         }
         try { fs.rmSync(requestDumpDir, { recursive: true, force: true }); } catch {}
-        if (code !== 0 && stderrText.includes("No previous sessions found")) {
+        if (code !== 0 && (stderrText.includes("No previous sessions found") || stderrText.includes("Invalid session identifier"))) {
           sysLog.warn('CLI', `Sessão ${params.sessionId} não encontrada, limpando cache.`);
           if (params.sessionId) knownSessions.delete(params.sessionId);
+          if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
+        } else if (code === 0 && effectiveSessionId) {
+          knownSessions.add(effectiveSessionId);
+          if (params.sessionId) knownSessions.add(params.sessionId);
         }
         params.onEvent({ 
           type: 'stderr_debug_complete', 
@@ -1874,19 +1873,16 @@ export function executeGeminiCli(
         // 1. Se falhou ao retomar OU se a sessão está inacessível/corrompida
         if (isSessionResumeError || (isSessionAlreadyExistsError && params.resume)) {
           const freshSessionId = crypto.randomUUID();
-          sysLog.warn('CLI', `Sessão anterior inacessível ou corrompida (${params.sessionId || effectiveSessionId}). Gerando nova sessão limpa: ${freshSessionId}...`);
+          sysLog.warn('CLI', `Sessão anterior inacessível ou corrompida (${params.sessionId || effectiveSessionId}). Criando nova sessão com --session-id: ${freshSessionId}...`);
           if (params.sessionId) knownSessions.delete(params.sessionId);
           if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-          knownSessions.add(freshSessionId);
-          executeGeminiCli({ ...params, executionId, sessionId: freshSessionId, resume: false }, true, { ...state, executionId });
+          executeGeminiCli({ ...params, executionId, sessionId: freshSessionId, resume: false }, false, { ...state, executionId });
           return;
         }
 
         // 2. Se a sessão existe legitimamente e ainda não usamos -r (--resume)
         if (isSessionAlreadyExistsError && !params.resume) {
           sysLog.warn('CLI', `Sessão já existe no disco (${params.sessionId || effectiveSessionId}). Retomando com -r (--resume)...`);
-          if (params.sessionId) knownSessions.add(params.sessionId);
-          if (effectiveSessionId) knownSessions.add(effectiveSessionId);
           executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: true }, true, { ...state, executionId });
           return;
         }
@@ -1896,8 +1892,7 @@ export function executeGeminiCli(
           sysLog.warn('CLI', `Código 42 detectado (${params.sessionId || effectiveSessionId}). Reiniciando em nova sessão limpa: ${freshSessionId}...`);
           if (params.sessionId) knownSessions.delete(params.sessionId);
           if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-          knownSessions.add(freshSessionId);
-          executeGeminiCli({ ...params, executionId, sessionId: freshSessionId, resume: false }, true, { ...state, executionId });
+          executeGeminiCli({ ...params, executionId, sessionId: freshSessionId, resume: false }, false, { ...state, executionId });
           return;
         }
 
