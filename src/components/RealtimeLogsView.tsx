@@ -11,9 +11,11 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  Save,
 } from 'lucide-react';
 import { SystemLogEntry, SystemLogLevel, SystemLogCategory } from '../types.js';
 import { fetchJsonSafely } from '../utils/apiUtils.js';
+import { LogSaveModal } from './LogSaveModal.js';
 
 interface RealtimeLogsViewProps {
   onEmitClientLog?: (message: string, level?: SystemLogLevel, category?: SystemLogCategory) => void;
@@ -36,6 +38,7 @@ export const RealtimeLogsView: React.FC<RealtimeLogsViewProps> = () => {
   const [selectedLevel, setSelectedLevel] = useState<SystemLogLevel | 'ALL'>('ALL');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -253,6 +256,16 @@ export const RealtimeLogsView: React.FC<RealtimeLogsViewProps> = () => {
 
         <button
           type="button"
+          onClick={() => setIsSaveModalOpen(true)}
+          title="Opções para Salvar / Exportar Logs (TXT, JSON, CSV, MD, Servidor)"
+          className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-700/60 text-emerald-300 transition cursor-pointer flex items-center gap-1 shrink-0"
+        >
+          <Save className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+          <span className="hidden xs:inline">Salvar</span>
+        </button>
+
+        <button
+          type="button"
           onClick={handleClear}
           title="Limpar logs registrados"
           className="p-1 rounded text-zinc-400 hover:text-rose-400 hover:bg-zinc-900 transition cursor-pointer shrink-0"
@@ -401,6 +414,15 @@ export const RealtimeLogsView: React.FC<RealtimeLogsViewProps> = () => {
           </button>
         )}
       </div>
+
+      <LogSaveModal
+        isOpen={isSaveModalOpen}
+        onClose={() => setIsSaveModalOpen(false)}
+        allLogs={logs}
+        filteredLogs={filteredLogs}
+        currentFilterLevel={selectedLevel}
+        currentSearchQuery={searchQuery}
+      />
     </div>
   );
 };

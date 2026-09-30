@@ -95,6 +95,9 @@ import {
   getLogs,
   clearLogs,
   exportLogsText,
+  exportLogsFormatted,
+  saveLogsSnapshotToDisk,
+  listSavedLogFiles,
   registerSseClient,
   addLog,
 } from './server/logger-service.js';
@@ -1170,11 +1173,43 @@ priority = 90
   });
 
   app.get('/api/logs/export', (req, res) => {
-    const text = exportLogsText();
-    const filename = `gemini_gui_logs_${new Date().toISOString().replace(/[:.]/g, '-')}.log`;
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.send(text);
+    const { format, level, category, search, limit } = req.query;
+    const result = exportLogsFormatted({
+      format: (format as any) || 'txt',
+      level: level as string,
+      category: category as string,
+      search: search as string,
+      limit: limit ? Number(limit) : undefined,
+    });
+    res.setHeader('Content-Type', result.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    res.send(result.content);
+  });
+
+  app.post('/api/logs/save-to-disk', (req, res) => {
+    try {
+      const { format, level, category, search, limit, customFilename } = req.body || {};
+      const saved = saveLogsSnapshotToDisk({
+        format,
+        level,
+        category,
+        search,
+        limit: limit ? Number(limit) : undefined,
+        customFilename,
+      });
+      res.json(saved);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message || 'Falha ao salvar logs em disco.' });
+    }
+  });
+
+  app.get('/api/logs/saved-files', (req, res) => {
+    try {
+      const files = listSavedLogFiles();
+      res.json({ success: true, files });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   app.get('/api/subagent-logs', (req, res) => {

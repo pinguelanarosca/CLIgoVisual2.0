@@ -192,14 +192,228 @@ export function clearLogs(): void {
   flushLogsToDiskSync();
 }
 
-export function exportLogsText(): string {
-  return logsBuffer
+export interface ExportLogsOptions {
+  format?: 'txt' | 'log' | 'json' | 'csv' | 'md';
+  level?: string;
+  category?: string;
+  search?: string;
+  limit?: number;
+}
+
+export function filterLogs(options?: ExportLogsOptions): SystemLogEntry[] {
+  let list = [...logsBuffer];
+
+  if (options?.level && options.level !== 'ALL') {
+    list = list.filter((l) => l.level.toLowerCase() === options.level?.toLowerCase());
+  }
+
+  if (options?.category && options.category !== 'ALL') {
+    list = list.filter((l) => l.category.toUpperCase() === options.category?.toUpperCase());
+  }
+
+  if (options?.search) {
+    const q = options.search.toLowerCase();
+    list = list.filter(
+      (l) =>
+        l.message.toLowerCase().includes(q) ||
+        l.formattedDateTime.includes(q) ||
+        l.category.toLowerCase().includes(q) ||
+        (l.source && l.source.toLowerCase().includes(q))
+    );
+  }
+
+  if (options?.limit && options.limit > 0) {
+    list = list.slice(-options.limit);
+  }
+
+  return list;
+}
+
+export function exportLogsFormatted(options?: ExportLogsOptions): {
+  content: string;
+  mimeType: string;
+  extension: string;
+  filename: string;
+  totalLogs: number;
+} {
+  const format = options?.format || 'txt';
+  const list = filterLogs(options);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+  if (format === 'json') {
+    return {
+      content: JSON.stringify(list, null, 2),
+      mimeType: 'application/json; charset=utf-8',
+      extension: 'json',
+      filename: `gemini_gui_logs_${timestamp}.json`,
+      totalLogs: list.length,
+    };
+  }
+
+  if (format === 'csv') {
+    const escapeCsv = (val: any) => {
+      if (val === null || val === undefined) return '""';
+      const str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+
+    const header = ['"ID"', '"Data/Hora"', '"Timestamp_ISO"', '"Nível"', '"Categoria"', '"Origem"', '"Mensagem"', '"Detalhes"'].join(',');
+    const rows = list.map((l) => [
+      escapeCsv(l.id),
+      escapeCsv(l.formattedDateTime),
+      escapeCsv(l.timestamp),
+      escapeCsv(l.level.toUpperCase()),
+      escapeCsv(l.category),
+      escapeCsv(l.source || ''),
+      escapeCsv(l.message),
+      escapeCsv(l.details || ''),
+    ].join(','));
+
+    return {
+      content: [header, ...rows].join('\n'),
+      mimeType: 'text/csv; charset=utf-8',
+      extension: 'csv',
+      filename: `gemini_gui_logs_${timestamp}.csv`,
+      totalLogs: list.length,
+    };
+  }
+
+  if (format === 'md') {
+    const countsByLevel: Record<string, number> = {};
+    for (const l of list) {
+      countsByLevel[l.level] = (countsByLevel[l.level] || 0) + 1;
+    }
+
+    const summaryRows = Object.entries(countsByLevel)
+      .map(([lvl, cnt]) => `| ${lvl.toUpperCase()} | ${cnt} |`)
+      .join('\n');
+
+    const logItems = list
+      .map((l) => {
+        const detailsMd = l.details
+          ? `\n\`\`\`json\n${typeof l.details === 'object' ? JSON.stringify(l.details, null, 2) : l.details}\n\`\`\``
+          : '';
+        return `### [${l.formattedDateTime}] [${l.level.toUpperCase()}] \`${l.category}\`${l.source ? ` (${l.source})` : ''}\n**Mensagem:** ${l.message}${detailsMd}\n`;
+      })
+      .join('\n---\n\n');
+
+    const mdContent = `# Relatório de Logs do Sistema (CLIgoVisual2.0)
+**Gerado em:** ${new Date().toLocaleString('pt-BR')}  
+**Total de Registros:** ${list.length}
+
+## Resumo por Nível
+| Nível | Contagem |
+|---|---|
+${summaryRows || '| Nenhum | 0 |'}
+
+## Detalhamento dos Registros
+${logItems || '_Nenhum registro encontrado._'}
+`;
+
+    return {
+      content: mdContent,
+      mimeType: 'text/markdown; charset=utf-8',
+      extension: 'md',
+      filename: `gemini_gui_logs_${timestamp}.md`,
+      totalLogs: list.length,
+    };
+  }
+
+  // Fallback: Plain text (.log / .txt)
+  const text = list
     .map((l) => {
       const detailsStr = l.details ? ` | Detalhes: ${typeof l.details === 'object' ? JSON.stringify(l.details) : l.details}` : '';
       const srcStr = l.source ? ` [Origem: ${l.source}]` : '';
       return `[${l.formattedDateTime}] [${l.level.toUpperCase().padEnd(7)}] [${l.category.padEnd(8)}]${srcStr} ${l.message}${detailsStr}`;
     })
     .join('\n');
+
+  return {
+    content: text,
+    mimeType: 'text/plain; charset=utf-8',
+    extension: format === 'log' ? 'log' : 'txt',
+    filename: `gemini_gui_logs_${timestamp}.${format === 'log' ? 'log' : 'txt'}`,
+    totalLogs: list.length,
+  };
+}
+
+export function exportLogsText(): string {
+  return exportLogsFormatted({ format: 'txt' }).content;
+}
+
+export function saveLogsSnapshotToDisk(options?: ExportLogsOptions & { customFilename?: string }): {
+  success: boolean;
+  filename: string;
+  filePath: string;
+  sizeBytes: number;
+  totalLogsSaved: number;
+  format: string;
+} {
+  const exported = exportLogsFormatted(options);
+  const targetDir = WORKSPACE_LOG_DIR;
+  if (!fs.existsSync(targetDir)) {
+    fs.mkdirSync(targetDir, { recursive: true });
+  }
+
+  const finalFilename = options?.customFilename ? options.customFilename : exported.filename;
+  const targetPath = path.join(targetDir, finalFilename);
+
+  fs.writeFileSync(targetPath, exported.content, 'utf8');
+  const stats = fs.statSync(targetPath);
+
+  addLog('success', 'SYSTEM', `Snapshot de logs salvo em disco com sucesso: ${finalFilename} (${stats.size} bytes, ${exported.totalLogs} logs)`, {
+    filePath: targetPath,
+    format: exported.extension,
+  });
+
+  return {
+    success: true,
+    filename: finalFilename,
+    filePath: targetPath,
+    sizeBytes: stats.size,
+    totalLogsSaved: exported.totalLogs,
+    format: exported.extension,
+  };
+}
+
+export function listSavedLogFiles(): Array<{
+  name: string;
+  path: string;
+  sizeBytes: number;
+  updatedAt: string;
+}> {
+  const results: Array<{
+    name: string;
+    path: string;
+    sizeBytes: number;
+    updatedAt: string;
+  }> = [];
+
+  const dirs = [WORKSPACE_LOG_DIR, LOG_DIR];
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const files = fs.readdirSync(dir);
+      for (const f of files) {
+        if (f.endsWith('.log') || f.endsWith('.json') || f.endsWith('.csv') || f.endsWith('.txt') || f.endsWith('.md')) {
+          const fullPath = path.join(dir, f);
+          try {
+            const stat = fs.statSync(fullPath);
+            if (stat.isFile()) {
+              results.push({
+                name: f,
+                path: fullPath,
+                sizeBytes: stat.size,
+                updatedAt: stat.mtime.toISOString(),
+              });
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  return results.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
 export function registerSseClient(res: Response): () => void {

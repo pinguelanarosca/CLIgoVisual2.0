@@ -44,6 +44,7 @@ import { DEFAULT_AGENTS } from './constants/defaultAgents.js';
 import { buildEffectiveSystemPrompt } from './utils/systemPromptUtils.js';
 import { fetchJsonSafely } from './utils/apiUtils.js';
 import { normalizeActivities } from './utils/activityTraceUtils.js';
+import { getMostRecentValidSession } from './utils/sessionUtils.js';
 
 export function App() {
   // Theme
@@ -156,7 +157,15 @@ export function App() {
     });
   };
   const [sessions, setSessions] = useState<SessionItem[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string>(generateSessionId);
+  const [currentSessionId, setCurrentSessionId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('gemini_gui_current_session_id');
+        if (saved && saved.trim()) return saved.trim();
+      } catch {}
+    }
+    return generateSessionId();
+  });
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -319,6 +328,95 @@ export function App() {
     }
   };
 
+  // Sessions Handlers & Resilient Loading Logic
+  const handleNewSession = (projectId?: string | null) => {
+    const newId = generateSessionId();
+    setCurrentSessionId(newId);
+    setMessages([]);
+    try {
+      localStorage.setItem('gemini_gui_current_session_id', newId);
+    } catch {}
+    if (projectId) {
+      const p = projects.find((x) => x.id === projectId);
+      if (p) {
+        setActiveProject(p);
+        return;
+      }
+    }
+    setActiveProject(null);
+  };
+
+  const switchToMostRecentValidSession = async (
+    invalidId?: string,
+    sessionPool?: SessionItem[]
+  ) => {
+    const pool = sessionPool || sessions;
+    const mostRecent = getMostRecentValidSession(pool, invalidId || currentSessionId);
+
+    if (mostRecent) {
+      console.warn(
+        `[Session] Alternando automaticamente do identificador inválido "${invalidId || currentSessionId}" para a sessão válida mais recente: "${mostRecent.id}" (${mostRecent.title || 'Conversa'}).`
+      );
+      await handleSelectSession(mostRecent);
+    } else {
+      console.warn(
+        `[Session] Nenhuma sessão alternativa válida encontrada no pool. Criando nova conversa limpa.`
+      );
+      handleNewSession();
+    }
+  };
+
+  const handleSelectSession = async (sess: SessionItem) => {
+    if (!sess || !sess.id) {
+      console.warn('[Session] Tentativa de selecionar sessão nula ou inválida. Alternando para a sessão válida mais recente.');
+      await switchToMostRecentValidSession();
+      return;
+    }
+
+    try {
+      if (sess.projectId) {
+        const p = projects.find((x) => x.id === sess.projectId);
+        if (p) setActiveProject(p);
+      } else {
+        setActiveProject(null);
+      }
+
+      if (sess.messages && sess.messages.length > 0) {
+        setCurrentSessionId(sess.id);
+        setMessages(sess.messages);
+        try {
+          localStorage.setItem('gemini_gui_current_session_id', sess.id);
+        } catch {}
+      } else {
+        const fullSess = await fetchJsonSafely<SessionItem>(`/api/sessions/${sess.id}`);
+        if (!fullSess || !fullSess.id) {
+          console.warn(`[Session] Sessão "${sess.id}" não encontrada no servidor (identificador inválido ou 404). Alternando automaticamente para a sessão mais recente.`);
+          const remaining = sessions.filter((s) => s.id !== sess.id);
+          setSessions(remaining);
+          try {
+            localStorage.removeItem('gemini_gui_current_session_id');
+          } catch {}
+          await switchToMostRecentValidSession(sess.id, remaining);
+          return;
+        }
+
+        setCurrentSessionId(fullSess.id);
+        setMessages(fullSess.messages || []);
+        try {
+          localStorage.setItem('gemini_gui_current_session_id', fullSess.id);
+        } catch {}
+      }
+    } catch (err) {
+      console.error(`[Session] Erro ao carregar mensagens da sessão "${sess?.id}":`, err);
+      const remaining = sessions.filter((s) => s.id !== sess?.id);
+      setSessions(remaining);
+      try {
+        localStorage.removeItem('gemini_gui_current_session_id');
+      } catch {}
+      await switchToMostRecentValidSession(sess?.id, remaining);
+    }
+  };
+
   const loadAllData = async () => {
     // Refresh status non-blockingly so it doesn't hold up data loading
     refreshStatus(false);
@@ -360,6 +458,32 @@ export function App() {
 
       if (sList && Array.isArray(sList)) {
         setSessions(sList);
+
+        // Validação e recuperação automática da sessão na carga inicial
+        let targetId = currentSessionId;
+        if (typeof window !== 'undefined') {
+          try {
+            const saved = localStorage.getItem('gemini_gui_current_session_id');
+            if (saved && saved.trim()) targetId = saved.trim();
+          } catch {}
+        }
+
+        const candidate = sList.find((s) => s.id === targetId);
+        if (candidate && !candidate.isArchived) {
+          await handleSelectSession(candidate);
+        } else if (sList.length > 0) {
+          // Identificador inválido, ausente ou arquivado:
+          // Alternar automaticamente para a sessão válida mais recente
+          const mostRecent = getMostRecentValidSession(sList, candidate ? undefined : targetId);
+          if (mostRecent) {
+            console.log(
+              `[Session] Identificador inicial "${targetId}" inválido ou ausente. Alternando para a sessão válida mais recente: "${mostRecent.id}"`
+            );
+            await handleSelectSession(mostRecent);
+          } else {
+            handleNewSession();
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to load initial configurations:', err);
@@ -688,9 +812,19 @@ export function App() {
                   ))
                 );
 
+                const isSessionResumeErr =
+                  text.includes('Error resuming session') ||
+                  text.includes('Invalid session identifier') ||
+                  text.includes('Searched for sessions in') ||
+                  text.includes('Use --list-sessions') ||
+                  text.includes('no previous session');
+
                 if (isAuthError) {
                   hasError = true;
                   errorMessage = 'A variável de ambiente GEMINI_API_KEY não foi encontrada ou não está autorizada no ambiente do sistema.';
+                } else if (isSessionResumeErr) {
+                  hasError = true;
+                  errorMessage = text;
                 } else {
                   // Filter out cosmetic warnings from terminal
                   const isBenign =
@@ -733,8 +867,37 @@ export function App() {
 
       // Compute final message content & token stats
       let finalContent = assistantContent.trim();
-      if (hasError && !finalContent) {
-        const errLower = (errorMessage || '').toLowerCase();
+      const errLower = (errorMessage || '').toLowerCase();
+      const asstLower = (assistantContent || '').toLowerCase();
+      const isSessionResumeFailure =
+        errLower.includes('invalid session identifier') ||
+        errLower.includes('error resuming session') ||
+        errLower.includes('searched for sessions in') ||
+        errLower.includes('use --list-sessions') ||
+        asstLower.includes('invalid session identifier') ||
+        asstLower.includes('error resuming session') ||
+        asstLower.includes('searched for sessions in');
+
+      if (isSessionResumeFailure) {
+        finalContent = `⚠️ **Identificador de Sessão Inválido no Gemini CLI**\n\nA sessão (\`${currentSessionId}\`) não pôde ser retomada porque não existe no armazenamento do Gemini CLI.\n\n🔄 **Recuperação Automática:** Alternando você automaticamente para a sessão válida mais recente para que possa continuar sem interrupções.`;
+        setTimeout(() => {
+          fetchJsonSafely<SessionItem[]>('/api/sessions').then((freshList) => {
+            if (freshList && Array.isArray(freshList)) {
+              setSessions(freshList);
+              const mostRecent = getMostRecentValidSession(freshList, currentSessionId);
+              if (mostRecent) {
+                handleSelectSession(mostRecent);
+              } else {
+                handleNewSession();
+              }
+            } else {
+              switchToMostRecentValidSession(currentSessionId);
+            }
+          }).catch(() => {
+            switchToMostRecentValidSession(currentSessionId);
+          });
+        }, 300);
+      } else if (hasError && !finalContent) {
         if (errLower.includes('503') || errLower.includes('high demand') || errLower.includes('unavailable') || errLower.includes('overloaded')) {
           finalContent = `⚠️ **API Gemini Temporariamente Sobrecarregada (Erro 503 - High Demand)**\n\n${errorMessage || 'O modelo está enfrentando um pico de demanda temporário nos servidores do Google.'}\n\n💡 **Recomendações:**\n- Alterne para um modelo com maior taxa de disponibilidade como o **Gemini 3.5 Flash Lite** ou **Gemini 2.5 Flash**;\n- Aguarde alguns instantes e tente novamente.`;
         } else if (errLower.includes('429') || errLower.includes('quota') || errLower.includes('resource_exhausted')) {
@@ -830,49 +993,51 @@ export function App() {
         )
       );
 
-      // Save session
-      const finalAssistantMsg: ChatMessage = {
-        ...assistantPlaceholder,
-        content: finalContent,
-        toolCalls: finalToolCalls,
-        activities: finalActivities,
-        isStreaming: false,
-        finalApiRequest: capturedFinalApiRequest || assistantPlaceholder.finalApiRequest,
-        allFinalApiRequests: capturedAllRealRequests.length > 0 ? capturedAllRealRequests : assistantPlaceholder.allFinalApiRequests,
-        parameterOrigins: capturedParameterOrigins || assistantPlaceholder.parameterOrigins,
-        rawPayloadReceived,
-      };
+      // Save session if not an invalid session failure (which auto-switches to valid session)
+      if (!isSessionResumeFailure) {
+        const finalAssistantMsg: ChatMessage = {
+          ...assistantPlaceholder,
+          content: finalContent,
+          toolCalls: finalToolCalls,
+          activities: finalActivities,
+          isStreaming: false,
+          finalApiRequest: capturedFinalApiRequest || assistantPlaceholder.finalApiRequest,
+          allFinalApiRequests: capturedAllRealRequests.length > 0 ? capturedAllRealRequests : assistantPlaceholder.allFinalApiRequests,
+          parameterOrigins: capturedParameterOrigins || assistantPlaceholder.parameterOrigins,
+          rawPayloadReceived,
+        };
 
-      const finalMsgList = activeBaseMessages.concat([userMsg, finalAssistantMsg]);
+        const finalMsgList = activeBaseMessages.concat([userMsg, finalAssistantMsg]);
 
-      const title =
-        promptText.length > 40 ? promptText.slice(0, 40) + '...' : promptText;
+        const title =
+          promptText.length > 40 ? promptText.slice(0, 40) + '...' : promptText;
 
-      const existingSess = sessions.find((s) => s.id === currentSessionId);
-      const effectiveProjectId = existingSess !== undefined ? existingSess.projectId : activeProject?.id;
+        const existingSess = sessions.find((s) => s.id === currentSessionId);
+        const effectiveProjectId = existingSess !== undefined ? existingSess.projectId : activeProject?.id;
 
-      const savedSession: SessionItem = {
-        id: currentSessionId,
-        title: existingSess?.title || title,
-        projectId: effectiveProjectId,
-        isArchived: existingSess?.isArchived || false,
-        createdAt: existingSess?.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        messageCount: finalMsgList.length,
-        messages: finalMsgList,
-        statusGrade: 'CONFIGURED',
-      };
+        const savedSession: SessionItem = {
+          id: currentSessionId,
+          title: existingSess?.title || title,
+          projectId: effectiveProjectId,
+          isArchived: existingSess?.isArchived || false,
+          createdAt: existingSess?.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          messageCount: finalMsgList.length,
+          messages: finalMsgList,
+          statusGrade: 'CONFIGURED',
+        };
 
-      await fetch('/api/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(savedSession),
-      });
+        await fetch('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(savedSession),
+        });
 
-      // Reload sessions list
-      const sessList = await fetchJsonSafely<SessionItem[]>('/api/sessions');
-      if (sessList) {
-        setSessions(sessList);
+        // Reload sessions list
+        const sessList = await fetchJsonSafely<SessionItem[]>('/api/sessions');
+        if (sessList) {
+          setSessions(sessList);
+        }
       }
 
       // Auto-play TTS if configured
@@ -1173,46 +1338,17 @@ export function App() {
   };
 
   // Sessions handlers
-  const handleSelectSession = async (sess: SessionItem) => {
-    setCurrentSessionId(sess.id);
-    if (sess.projectId) {
-      const p = projects.find((x) => x.id === sess.projectId);
-      if (p) setActiveProject(p);
-    } else {
-      setActiveProject(null);
-    }
-
-    if (sess.messages && sess.messages.length > 0) {
-      setMessages(sess.messages);
-    } else {
-      try {
-        const fullSess = await fetchJsonSafely<SessionItem>(`/api/sessions/${sess.id}`);
-        setMessages(fullSess?.messages || []);
-      } catch (err) {
-        console.error('Erro ao carregar mensagens da sessão:', err);
-        setMessages([]);
-      }
-    }
-  };
-
-  const handleNewSession = (projectId?: string | null) => {
-    setCurrentSessionId(generateSessionId());
-    setMessages([]);
-    if (projectId) {
-      const p = projects.find((x) => x.id === projectId);
-      if (p) {
-        setActiveProject(p);
-        return;
-      }
-    }
-    setActiveProject(null);
-  };
-
   const handleDeleteSession = async (id: string) => {
     await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
-    setSessions((prev) => prev.filter((s) => s.id !== id));
+    const remaining = sessions.filter((s) => s.id !== id);
+    setSessions(remaining);
     if (currentSessionId === id) {
-      handleNewSession();
+      const mostRecent = getMostRecentValidSession(remaining);
+      if (mostRecent) {
+        await handleSelectSession(mostRecent);
+      } else {
+        handleNewSession();
+      }
     }
   };
 
@@ -1357,9 +1493,15 @@ export function App() {
     for (const id of ids) {
       await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
     }
-    setSessions((prev) => prev.filter((s) => !ids.includes(s.id)));
+    const remaining = sessions.filter((s) => !ids.includes(s.id));
+    setSessions(remaining);
     if (ids.includes(currentSessionId)) {
-      handleNewSession();
+      const mostRecent = getMostRecentValidSession(remaining);
+      if (mostRecent) {
+        await handleSelectSession(mostRecent);
+      } else {
+        handleNewSession();
+      }
     }
   };
 
@@ -1380,7 +1522,13 @@ export function App() {
       setSessions(data);
     }
     if (ids.includes(currentSessionId)) {
-      handleNewSession();
+      const remaining = (data || sessions).filter((s) => !ids.includes(s.id) && !s.isArchived);
+      const mostRecent = getMostRecentValidSession(remaining);
+      if (mostRecent) {
+        await handleSelectSession(mostRecent);
+      } else {
+        handleNewSession();
+      }
     }
   };
 
