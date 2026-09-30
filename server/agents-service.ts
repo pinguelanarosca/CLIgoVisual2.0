@@ -505,22 +505,29 @@ export function loadAgents(targetDir?: string): AgentConfig[] {
   }
 
   // Make sure all default agents are present and have their base instructions
+  let needsSettingsSync = false;
   for (const defaultAgent of DEFAULT_AGENTS) {
     const existing = loadedMap.get(defaultAgent.name);
     if (!existing) {
-      saveAgentToFile(defaultAgent, targetDir);
+      saveAgentToFile(defaultAgent, targetDir, true);
       loadedMap.set(defaultAgent.name, defaultAgent);
+      needsSettingsSync = true;
     } else if (!existing.baseInstructions && defaultAgent.baseInstructions) {
       // Restore base instructions if they were lost during migration
       existing.baseInstructions = defaultAgent.baseInstructions;
-      saveAgentToFile(existing, targetDir);
+      saveAgentToFile(existing, targetDir, true);
+      needsSettingsSync = true;
     }
+  }
+
+  if (needsSettingsSync) {
+    syncAgentsToSettings(targetDir);
   }
 
   return Array.from(loadedMap.values());
 }
 
-export function saveAgentToFile(agent: AgentConfig, targetDir?: string) {
+export function saveAgentToFile(agent: AgentConfig, targetDir?: string, skipSettingsSync = false) {
   const agentsDir = getAgentsDirectory(targetDir);
   if (!fs.existsSync(agentsDir)) {
     fs.mkdirSync(agentsDir, { recursive: true });
@@ -621,7 +628,9 @@ export function saveAgentToFile(agent: AgentConfig, targetDir?: string) {
   }
 
   // Sincronizar configurações do modelo no settings.json do Gemini CLI
-  syncAgentsToSettings(targetDir, agent.name, agent);
+  if (!skipSettingsSync) {
+    syncAgentsToSettings(targetDir, agent.name, agent);
+  }
 }
 
 export function deleteAgent(name: string, targetDir?: string): boolean {

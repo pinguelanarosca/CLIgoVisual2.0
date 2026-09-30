@@ -1848,22 +1848,14 @@ export function executeGeminiCli(
           return;
         }
 
-        // Se o Gemini CLI acusar que a sessão já existe, auto-recuperar retomando com -r
+        // Se o Gemini CLI acusar que a sessão já existe e tentamos sem resume
         const isSessionAlreadyExistsError =
           stderrText.includes('already exists. Use --resume to resume it') ||
           stderrText.includes('already exists') ||
           reportedErrorText.includes('already exists. Use --resume to resume it') ||
           reportedErrorText.includes('already exists');
 
-        if (isSessionAlreadyExistsError && (params.sessionId || effectiveSessionId)) {
-          sysLog.warn('CLI', `Sessão já existe no disco (${params.sessionId || effectiveSessionId}). Retomando automaticamente com -r (--resume)...`);
-          if (params.sessionId) knownSessions.add(params.sessionId);
-          if (effectiveSessionId) knownSessions.add(effectiveSessionId);
-          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: true }, true, { ...state, executionId });
-          return;
-        }
-
-        // Se o Gemini CLI falhar ao retomar a sessão, auto-recuperar iniciando sessão limpa
+        // Se o Gemini CLI falhar ao retomar a sessão
         const isSessionResumeError =
           stderrText.includes('Error resuming session') ||
           stderrText.includes('Invalid session identifier') ||
@@ -1874,18 +1866,33 @@ export function executeGeminiCli(
           reportedErrorText.includes('Error resuming session') ||
           reportedErrorText.includes('Invalid session identifier');
 
-        if (isSessionResumeError && (params.sessionId || effectiveSessionId)) {
-          sysLog.warn('CLI', `Sessão anterior não encontrada no disco ou inválida (${params.sessionId || effectiveSessionId}). Reiniciando automaticamente em uma nova sessão...`);
+        // 1. Se falhou ao retomar OU se a sessão está inacessível/corrompida
+        if (isSessionResumeError || (isSessionAlreadyExistsError && params.resume)) {
+          const freshSessionId = crypto.randomUUID();
+          sysLog.warn('CLI', `Sessão anterior inacessível ou corrompida (${params.sessionId || effectiveSessionId}). Gerando nova sessão limpa: ${freshSessionId}...`);
           if (params.sessionId) knownSessions.delete(params.sessionId);
           if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { ...state, executionId });
+          knownSessions.add(freshSessionId);
+          executeGeminiCli({ ...params, executionId, sessionId: freshSessionId, resume: false }, true, { ...state, executionId });
+          return;
+        }
+
+        // 2. Se a sessão existe legitimamente e ainda não usamos -r (--resume)
+        if (isSessionAlreadyExistsError && !params.resume) {
+          sysLog.warn('CLI', `Sessão já existe no disco (${params.sessionId || effectiveSessionId}). Retomando com -r (--resume)...`);
+          if (params.sessionId) knownSessions.add(params.sessionId);
+          if (effectiveSessionId) knownSessions.add(effectiveSessionId);
+          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: true }, true, { ...state, executionId });
           return;
         }
 
         if (code === 42 && (params.sessionId || effectiveSessionId) && !isRetry) {
+          const freshSessionId = crypto.randomUUID();
+          sysLog.warn('CLI', `Código 42 detectado (${params.sessionId || effectiveSessionId}). Reiniciando em nova sessão limpa: ${freshSessionId}...`);
           if (params.sessionId) knownSessions.delete(params.sessionId);
           if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: false }, true, { ...state, executionId });
+          knownSessions.add(freshSessionId);
+          executeGeminiCli({ ...params, executionId, sessionId: freshSessionId, resume: false }, true, { ...state, executionId });
           return;
         }
 
