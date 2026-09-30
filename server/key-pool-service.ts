@@ -334,17 +334,6 @@ export function classifyKeyResult(
     return { group: 'G1', errorCode: '200_OK', errorType: 'Operacional' };
   }
 
-  // 0.1. Erros locais de Sistema de Arquivos / Ambiente que NÃO devem penalizar a chave de API
-  if (
-    text.includes('directory does not exist') ||
-    text.includes('skipping unreadable directory') ||
-    text.includes('no such file or directory') ||
-    text.includes('enoent') ||
-    (text.includes('both google_api_key') && text.includes('gemini_api_key'))
-  ) {
-    return { group: 'G1', errorCode: 'FS_ENV_NOTICE', errorType: 'Aviso Local de Ambiente/Diretório' };
-  }
-
   // 1. Verificação de Sobrecarga / 529 / Alta Demanda -> G2
   if (
     status === 529 ||

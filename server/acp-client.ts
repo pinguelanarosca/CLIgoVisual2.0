@@ -122,16 +122,7 @@ export class AcpSession {
     }
 
     if (params.authorizedDirs && params.authorizedDirs.length > 0) {
-      const validAuthorizedDirs = params.authorizedDirs.filter((d) => {
-        try {
-          return Boolean(d && fs.existsSync(d) && fs.statSync(d).isDirectory());
-        } catch {
-          return false;
-        }
-      });
-      if (validAuthorizedDirs.length > 0) {
-        args.push('--include-directories', validAuthorizedDirs.join(','));
-      }
+      args.push('--include-directories', params.authorizedDirs.join(','));
     }
 
     // Políticas de segurança
