@@ -339,7 +339,7 @@ export async function refactorMemoryWithAgent(
   }
 
   // Resolver modelo baseado no agente selecionado se fornecido
-  let targetModel = customModel || mem.agentConfig?.model || 'gemini-2.5-flash';
+  let targetModel = customModel || mem.agentConfig?.model || 'gemini-3.5-flash-lite';
   let agentDisplayName = 'Agente Recluso';
 
   if (selectedAgentId) {

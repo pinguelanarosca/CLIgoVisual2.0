@@ -135,8 +135,8 @@ Diretrizes operacionais:
     name: 'auditor',
     displayName: 'Auditor',
     role: 'Auditor: revisão crítica e identificação de problemas.',
-    model: 'gemini-3.8-flash',
-    fallbackModel: 'gemini-3.6-flash',
+    model: 'gemini-3.6-flash',
+    fallbackModel: 'gemini-3.7-flash',
     description: 'Agente especializado em revisão crítica rigorosa de código, auditoria de segurança, detecção de regressões, conformidade e análise de vulnerabilidades.',
     baseInstructions: `Você é o Auditor do Gemini CLI.
 

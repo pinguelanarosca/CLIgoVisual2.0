@@ -652,10 +652,10 @@ export interface CliExecutionParams {
 }
 
 export const AGENT_FALLBACK_CHAINS: Record<string, string[]> = {
-  auditor: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite'],
+  auditor: ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite'],
   investigator: ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'],
-  architect: ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'],
-  principal: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'],
+  architect: ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite'],
+  principal: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash'],
   tester: ['gemini-3-flash', 'gemini-3.5-flash-lite'],
   worker: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'],
 };
@@ -1379,11 +1379,16 @@ export function executeGeminiCli(
         GEMINI_MAX_RETRIES: '0',
         MAX_RETRIES: '0',
         GEMINI_CLI_NO_RELAUNCH: '1',
-        GEMINI_CLI_SYSTEM_SETTINGS_PATH: tempSettingsFile,
         GEMINI_API_KEY: activeApiKey,
         GOOGLE_API_KEY: activeApiKey,
         GOOGLE_GENAI_API_KEY: activeApiKey,
       };
+
+      // Injetar caminho de settings do sistema apenas se estiver rodando como root (uid 0),
+      // pois o Gemini CLI emite Security Warning e descarta o arquivo se o diretório não pertencer ao root.
+      if (tempSettingsFile && typeof process.getuid === 'function' && process.getuid() === 0) {
+        env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = tempSettingsFile;
+      }
 
       if (systemPromptFile) {
         env.GEMINI_SYSTEM_MD = systemPromptFile;

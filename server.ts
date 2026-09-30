@@ -247,6 +247,14 @@ priority = 90
   });
 
   // 1. Status & CLI Information
+  app.get('/api/health', (req, res) => {
+    res.json({
+      status: 'ok',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   app.get('/api/status', async (req, res) => {
     const forceFresh = req.query.fresh === 'true' || req.query.fresh === '1';
     const model = typeof req.query.model === 'string' && req.query.model.trim() ? req.query.model.trim() : 'gemini-3.1-flash-lite';

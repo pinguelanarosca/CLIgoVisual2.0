@@ -47,8 +47,6 @@ export const OFFICIAL_POOL_MODELS = [
   'gemini-3.6-flash',
   'gemini-3.8-flash',
   'gemini-3-flash',
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
 ];
 
 export const GROUP_PRIORITY: Record<KeyGroup, number> = {

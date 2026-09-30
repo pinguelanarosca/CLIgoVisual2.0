@@ -5,7 +5,7 @@ import { getBestEligibleKey } from './key-pool-service.js';
 let geminiClient: GoogleGenAI | null = null;
 
 function getGenAiClient(customApiKey?: string, customApiUrl?: string): GoogleGenAI | null {
-  const apiKey = customApiKey || getBestEligibleKey('gemini-2.5-flash')?.key;
+  const apiKey = customApiKey || getBestEligibleKey('gemini-3.5-flash-lite')?.key;
   if (!apiKey) {
     return null;
   }
