@@ -10,11 +10,14 @@ import {
   ChevronUp,
 } from 'lucide-react';
 import { ContentViewerItem } from './ContentViewerSidebar';
+import { isLongMarkdownText, extractDocumentTitle } from '../utils/markdownDocUtils.js';
+import { MarkdownDocCard } from './MarkdownDocCard.js';
 
 interface MessageRendererProps {
   content: string;
   isStreaming?: boolean;
   onOpenViewer?: (item: ContentViewerItem) => void;
+  onOpenMarkdownDoc?: (title: string, content: string) => void;
 }
 
 // Helper to strip out internal system prompt/context preambles from user-facing view
@@ -324,8 +327,9 @@ const CodeBlockItem: React.FC<{
 
 export const MessageRenderer: React.FC<MessageRendererProps> = ({
   content,
-  isStreaming,
+  isStreaming = false,
   onOpenViewer,
+  onOpenMarkdownDoc,
 }) => {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
@@ -408,9 +412,22 @@ export const MessageRenderer: React.FC<MessageRendererProps> = ({
     return result;
   }, [mainCleanText]);
 
-  return (
-    <div className="space-y-2 text-xs sm:text-[13px] leading-relaxed select-text font-sans text-zinc-200">
-      {/* Markdown and Code Parts */}
+  const handleOpenDoc = (title: string, docContent: string) => {
+    if (onOpenMarkdownDoc) {
+      onOpenMarkdownDoc(title, docContent);
+    } else if (onOpenViewer) {
+      onOpenViewer({
+        id: `doc_${Date.now()}`,
+        title,
+        content: docContent,
+        fileExtension: '.md',
+        type: 'long_text',
+      });
+    }
+  };
+
+  const renderContentParts = () => (
+    <>
       {parts.map((part, idx) => {
         if (part.type === 'text') {
           return <MarkdownTextBlock key={idx} text={part.content} />;
@@ -428,6 +445,24 @@ export const MessageRenderer: React.FC<MessageRendererProps> = ({
           />
         );
       })}
+    </>
+  );
+
+  const isLong = !isStreaming && isLongMarkdownText(mainCleanText);
+
+  return (
+    <div className="space-y-2 text-xs sm:text-[13px] leading-relaxed select-text font-sans text-zinc-200">
+      {/* Se o texto for longo e não estiver em streaming, renderiza como Card .md com abertura na aba lateral direita */}
+      {isLong ? (
+        <MarkdownDocCard
+          content={mainCleanText}
+          isStreaming={isStreaming}
+          onOpenRightPanel={handleOpenDoc}
+          renderInlineContent={renderContentParts}
+        />
+      ) : (
+        renderContentParts()
+      )}
 
       {/* Attached Files Section - Compact Square Grid */}
       {attachedFileItems.length > 0 && (

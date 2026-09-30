@@ -1288,7 +1288,16 @@ export function executeGeminiCli(
       }
 
       if (params.authorizedDirs && params.authorizedDirs.length > 0) {
-        args.push('--include-directories', params.authorizedDirs.join(','));
+        const validAuthorizedDirs = params.authorizedDirs.filter((d) => {
+          try {
+            return Boolean(d && fs.existsSync(d) && fs.statSync(d).isDirectory());
+          } catch {
+            return false;
+          }
+        });
+        if (validAuthorizedDirs.length > 0) {
+          args.push('--include-directories', validAuthorizedDirs.join(','));
+        }
       }
 
       if (effectiveSessionId) {
@@ -2021,16 +2030,26 @@ export function executeGeminiCli(
         }
 
         if (hasFailed) {
-          // Registrar resultado no Key Pool para o modelo e chave atuais
-          recordRuntimeExecutionResult(chosenModel, activeKeyId, {
-            success: false,
-            httpStatus: apiErrCode,
-            errorText: stderrText || reportedErrorText,
-          });
+          const isFsOrEnvError = Boolean(
+            (stderrText && (
+              stderrText.toLowerCase().includes('directory does not exist') ||
+              stderrText.toLowerCase().includes('skipping unreadable directory') ||
+              stderrText.toLowerCase().includes('enoent')
+            ))
+          );
 
-          // 1. Tentar próxima chave elegível no Key Pool para o MESMO modelo
+          if (!isFsOrEnvError) {
+            // Registrar resultado no Key Pool para o modelo e chave atuais
+            recordRuntimeExecutionResult(chosenModel, activeKeyId, {
+              success: false,
+              httpStatus: apiErrCode,
+              errorText: stderrText || reportedErrorText,
+            });
+          }
+
+          // 1. Tentar próxima chave elegível no Key Pool para o MESMO modelo (apenas se não for erro de sistema de arquivos)
           const triedKeys = [...(state?.triedKeyIds || []), activeKeyId];
-          const nextKey = getBestEligibleKey(chosenModel, triedKeys);
+          const nextKey = isFsOrEnvError ? null : getBestEligibleKey(chosenModel, triedKeys);
 
           if (nextKey && !execState.cancelled && !isBadRequestError) {
             params.onEvent({

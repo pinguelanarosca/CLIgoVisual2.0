@@ -101,6 +101,7 @@ interface ChatViewProps {
   activeMemoryVersion?: number;
   autoSendVoicePrompt?: boolean;
   onUpdateMessages?: (newMessages: ChatMessage[]) => void;
+  onOpenMarkdownDoc?: (title: string, content: string) => void;
 }
 
 export interface AttachedFileItem {
@@ -142,6 +143,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   activeMemoryVersion = 1,
   autoSendVoicePrompt = true,
   onUpdateMessages,
+  onOpenMarkdownDoc,
 }) => {
   const [inputText, setInputText] = useState('');
   const [compressFeedback, setCompressFeedback] = useState<string | null>(null);
@@ -729,6 +731,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         setViewerItem(item);
                         setIsViewerOpen(true);
                       }}
+                      onOpenMarkdownDoc={onOpenMarkdownDoc}
                     />
                   </div>
 

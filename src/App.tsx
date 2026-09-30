@@ -18,6 +18,7 @@ import { AuthorizedDirsSidebar } from './components/AuthorizedDirsSidebar.js';
 import { ContextSidebar } from './components/ContextSidebar.js';
 import { ArchivedChatsSidebar } from './components/ArchivedChatsSidebar.js';
 import { FilesAndDiffsSidebar } from './components/FilesAndDiffsSidebar.js';
+import { MarkdownDocViewerSidebar } from './components/MarkdownDocViewerSidebar.js';
 import {
   ContextSettings,
   DEFAULT_CONTEXT_SETTINGS,
@@ -198,16 +199,23 @@ export function App() {
   const [isArchivedChatsOpen, setIsArchivedChatsOpen] = useState(false);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
 
-  // Right Panel System (Area 3: Docked Sidebars - Payload, Versions, Memory, Logs, History, Dirs, Context, Archived, Files)
+  // Right Panel System (Area 3: Docked Sidebars - Payload, Versions, Memory, Logs, History, Dirs, Context, Archived, Files, Markdown)
   const [rightPanelMode, setRightPanelMode] = useState<
-    'payload' | 'versions' | 'memory' | 'logs' | 'history' | 'dirs' | 'context' | 'archived' | 'files' | null
+    'payload' | 'versions' | 'memory' | 'logs' | 'history' | 'dirs' | 'context' | 'archived' | 'files' | 'markdown' | null
   >(null);
+  const [activeMarkdownDoc, setActiveMarkdownDoc] = useState<{ title: string; content: string } | null>(null);
   const [rightPanelWidth, setRightPanelWidth] = useState<number>(() =>
     Math.max(280, Math.min(320, typeof window !== 'undefined' ? Math.round(window.innerWidth * 0.20) : 300))
   );
   const [isResizingRightPanel, setIsResizingRightPanel] = useState<boolean>(false);
   const [inspectionMessage, setInspectionMessage] = useState<ChatMessage | null>(null);
   const [contextTargetSession, setContextTargetSession] = useState<SessionItem | null>(null);
+
+  const handleOpenMarkdownDoc = (title: string, content: string) => {
+    setActiveMarkdownDoc({ title, content });
+    setRightPanelMode('markdown');
+    setRightPanelWidth((prev) => Math.max(prev, 460));
+  };
 
   // Versions Snapshot Modal (legacy fallback if needed)
   const [isVersionsModalOpen, setIsVersionsModalOpen] = useState(false);
@@ -1789,6 +1797,7 @@ export function App() {
               onOpenSharedMemory={() => setRightPanelMode((prev) => (prev === 'memory' ? null : 'memory'))}
               activeMemoryVersion={activeMemoryVersion}
               onUpdateMessages={(newMsgs) => setMessages(newMsgs)}
+              onOpenMarkdownDoc={handleOpenMarkdownDoc}
             />
           ) : (
             <FilesAndDiffsView
@@ -1953,6 +1962,14 @@ export function App() {
                 }}
                 onUnarchiveSession={handleUnarchiveSession}
                 onDeleteSession={handleDeleteSession}
+              />
+            )}
+
+            {rightPanelMode === 'markdown' && (
+              <MarkdownDocViewerSidebar
+                isOpen={true}
+                onClose={() => setRightPanelMode(null)}
+                document={activeMarkdownDoc}
               />
             )}
           </div>
