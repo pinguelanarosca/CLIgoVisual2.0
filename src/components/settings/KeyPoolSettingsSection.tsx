@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Key,
   ShieldCheck,
@@ -16,6 +16,12 @@ import {
   Info,
   Clock,
   Sparkles,
+  Layers,
+  ListPlus,
+  Check,
+  X,
+  FileText,
+  CornerDownRight,
 } from 'lucide-react';
 import { ConfiguredKeyInfo, KeyModelStatus, KeyGroup } from '../../types.js';
 
@@ -75,6 +81,12 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Estados para Inserção em Lote (chave;chave;chave;...)
+  const [batchInput, setBatchInput] = useState<string>('');
+  const [showBatchArea, setShowBatchArea] = useState<boolean>(false);
+  const [batchFillMode, setBatchFillMode] = useState<'overwrite' | 'empty_only'>('overwrite');
+  const [isSavingBatch, setIsSavingBatch] = useState<boolean>(false);
+
   const [externalKeyStatus, setExternalKeyStatus] = useState<{
     hasExternalKey: boolean;
     source?: string;
@@ -84,6 +96,40 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
   const [isMigrating, setIsMigrating] = useState<boolean>(false);
 
   const keyIds = ['K1', 'K2', 'K3', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9'];
+
+  // Chaves parseadas do campo em lote
+  const parsedBatchKeys = useMemo(() => {
+    if (!batchInput) return [];
+    return batchInput
+      .split(/[\n;]+/)
+      .map((k) => k.trim().replace(/^["']|["']$/g, ''))
+      .filter((k) => k.length > 0);
+  }, [batchInput]);
+
+  // Prévia do mapeamento de slots K1..K9
+  const batchMappingPreview = useMemo(() => {
+    const mapping: Array<{ slot: string; key: string; masked: string }> = [];
+    if (parsedBatchKeys.length === 0) return mapping;
+
+    if (batchFillMode === 'overwrite') {
+      parsedBatchKeys.slice(0, 9).forEach((rawKey, idx) => {
+        const slot = `K${idx + 1}`;
+        const masked = rawKey.length > 8 ? `${rawKey.slice(0, 4)}...${rawKey.slice(-4)}` : `${rawKey.slice(0, 2)}...`;
+        mapping.push({ slot, key: rawKey, masked });
+      });
+    } else {
+      let keyIdx = 0;
+      for (let i = 1; i <= 9; i++) {
+        const slot = `K${i}`;
+        if (!configuredKeys[slot]?.configured && keyIdx < parsedBatchKeys.length) {
+          const rawKey = parsedBatchKeys[keyIdx++];
+          const masked = rawKey.length > 8 ? `${rawKey.slice(0, 4)}...${rawKey.slice(-4)}` : `${rawKey.slice(0, 2)}...`;
+          mapping.push({ slot, key: rawKey, masked });
+        }
+      }
+    }
+    return mapping;
+  }, [parsedBatchKeys, batchFillMode, configuredKeys]);
 
   useEffect(() => {
     console.log('[KPOOL_UI] selected_model', selectedModelFilter);
@@ -210,6 +256,44 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
       }
     } catch (err: any) {
       setErrorMessage(`Erro ao salvar chaves: ${err.message}`);
+    }
+  };
+
+  const handleApplyBatchKeys = async () => {
+    if (batchMappingPreview.length === 0) {
+      setErrorMessage('Nenhuma chave válida encontrada para aplicar. Insira chaves no formato chave1;chave2;chave3...');
+      return;
+    }
+
+    const payload: Record<string, string> = {};
+    batchMappingPreview.forEach((item) => {
+      payload[item.slot] = item.key;
+    });
+
+    try {
+      setIsSavingBatch(true);
+      setErrorMessage(null);
+      const res = await fetch('/api/key-pool/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys: payload }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setBatchInput('');
+        setShowBatchArea(false);
+        setConfiguredKeys(data.configuredKeys || {});
+        setSuccessMessage(`${Object.keys(payload).length} chave(s) configurada(s) em lote com sucesso no Key Pool!`);
+        setTimeout(() => setSuccessMessage(null), 5000);
+        await loadData();
+        if (onRefreshStatus) onRefreshStatus();
+      } else {
+        setErrorMessage(data.error || 'Falha ao salvar chaves em lote.');
+      }
+    } catch (err: any) {
+      setErrorMessage(`Erro ao salvar chaves em lote: ${err.message}`);
+    } finally {
+      setIsSavingBatch(false);
     }
   };
 
@@ -401,17 +485,165 @@ export const KeyPoolSettingsSection: React.FC<KeyPoolSettingsSectionProps> = ({ 
               Cadastro e Gerenciamento das Chaves (K1 a K9)
             </h4>
             <p className="text-[11px] text-zinc-500 mt-0.5">
-              Insira ou substitua chaves individualmente. As chaves são protegidas com permissão 600 e nunca aparecem em texto claro.
+              Insira ou substitua chaves individualmente ou use a inserção em lote separada por ponto e vírgula (;). Permissão segura chmod 600.
             </p>
           </div>
-          <button
-            onClick={handleSaveAllKeys}
-            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition self-start sm:self-auto cursor-pointer"
-          >
-            <Save className="w-3.5 h-3.5" />
-            <span>Salvar Todas</span>
-          </button>
+          <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+            <button
+              type="button"
+              onClick={() => setShowBatchArea((prev) => !prev)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
+                showBatchArea
+                  ? 'bg-amber-600 text-white shadow-xs'
+                  : 'bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 border border-zinc-300 dark:border-zinc-700'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>{showBatchArea ? 'Ocultar Inserção em Lote' : 'Inserir em Lote (chave;chave;...)'}</span>
+            </button>
+            <button
+              onClick={handleSaveAllKeys}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>Salvar Todas</span>
+            </button>
+          </div>
         </div>
+
+        {/* PAINEL DE INSERÇÃO EM LOTE */}
+        {showBatchArea && (
+          <div className="p-4 rounded-xl border border-amber-300 dark:border-amber-800/80 bg-amber-50/40 dark:bg-amber-950/20 space-y-3 animate-in fade-in duration-200">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-amber-200/80 dark:border-amber-800/50 pb-2.5">
+              <div className="flex items-center gap-2">
+                <div className="p-1 rounded-md bg-amber-500/20 text-amber-600 dark:text-amber-400">
+                  <ListPlus className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                    <span>Inserção Rápida de Múltiplas Chaves</span>
+                    <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-amber-200 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200">
+                      formato: chave;chave;chave;...
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-0.5">
+                    Cole várias chaves separadas por ponto e vírgula (<code className="font-bold text-amber-700 dark:text-amber-300">;</code>) ou uma por linha. Elas serão atribuídas automaticamente aos slots K1 a K9.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setBatchInput(
+                      'AIzaSyExampleKey11111111111111111111111;AIzaSyExampleKey22222222222222222222222;AIzaSyExampleKey33333333333333333333333'
+                    )
+                  }
+                  className="text-[10px] text-amber-700 dark:text-amber-300 hover:underline cursor-pointer"
+                >
+                  Carregar Exemplo
+                </button>
+              </div>
+            </div>
+
+            {/* Campo Textarea para colar chaves */}
+            <div className="space-y-1.5">
+              <textarea
+                value={batchInput}
+                onChange={(e) => setBatchInput(e.target.value)}
+                placeholder="Exemplo: AIzaSyA1...;AIzaSyB2...;AIzaSyC3...;AIzaSyD4..."
+                rows={3}
+                className="w-full bg-white dark:bg-zinc-900 border border-amber-300 dark:border-amber-700/70 rounded-xl p-3 text-xs font-mono text-zinc-900 dark:text-zinc-100 outline-none focus:ring-2 focus:ring-amber-500 transition placeholder:text-zinc-400 placeholder:text-xs"
+              />
+            </div>
+
+            {/* Configurações de Mapeamento & Prévia */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+              <div className="flex items-center gap-4 text-xs">
+                <label className="flex items-center gap-1.5 text-zinc-700 dark:text-zinc-300 cursor-pointer text-[11px] font-medium">
+                  <input
+                    type="radio"
+                    name="batchFillMode"
+                    checked={batchFillMode === 'overwrite'}
+                    onChange={() => setBatchFillMode('overwrite')}
+                    className="text-amber-600 focus:ring-amber-500"
+                  />
+                  <span>Substituir a partir de K1 (K1, K2, K3...)</span>
+                </label>
+                <label className="flex items-center gap-1.5 text-zinc-700 dark:text-zinc-300 cursor-pointer text-[11px] font-medium">
+                  <input
+                    type="radio"
+                    name="batchFillMode"
+                    checked={batchFillMode === 'empty_only'}
+                    onChange={() => setBatchFillMode('empty_only')}
+                    className="text-amber-600 focus:ring-amber-500"
+                  />
+                  <span>Preencher apenas slots vazios</span>
+                </label>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {batchInput && (
+                  <button
+                    type="button"
+                    onClick={() => setBatchInput('')}
+                    className="px-2.5 py-1.5 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 text-xs font-medium cursor-pointer"
+                  >
+                    Limpar
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleApplyBatchKeys}
+                  disabled={isSavingBatch || batchMappingPreview.length === 0}
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-xs ${
+                    batchMappingPreview.length > 0 && !isSavingBatch
+                      ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                      : 'bg-zinc-200 dark:bg-zinc-800 text-zinc-400 cursor-not-allowed'
+                  }`}
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>
+                    {isSavingBatch
+                      ? 'Salvando...'
+                      : `Aplicar e Salvar (${batchMappingPreview.length} ${
+                          batchMappingPreview.length === 1 ? 'chave' : 'chaves'
+                        })`}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Badges de Prévia das Chaves Detectadas */}
+            {parsedBatchKeys.length > 0 && (
+              <div className="pt-2 border-t border-amber-200/60 dark:border-amber-800/40 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-semibold text-zinc-700 dark:text-zinc-300">
+                    ⚡ {parsedBatchKeys.length} {parsedBatchKeys.length === 1 ? 'chave detectada' : 'chaves detectadas'}:
+                  </span>
+                  {parsedBatchKeys.length > 9 && (
+                    <span className="text-amber-600 dark:text-amber-400 font-medium">
+                      (As primeiras 9 serão gravadas em K1..K9)
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto p-1.5 bg-white/60 dark:bg-zinc-900/60 rounded-lg border border-amber-200/50 dark:border-amber-800/30">
+                  {batchMappingPreview.map((item) => (
+                    <div
+                      key={item.slot}
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-100/80 dark:bg-amber-900/40 border border-amber-200 dark:border-amber-800/60 text-[11px] font-mono"
+                    >
+                      <span className="font-bold text-amber-900 dark:text-amber-200">{item.slot}:</span>
+                      <span className="text-zinc-600 dark:text-zinc-300">{item.masked}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {keyIds.map((keyId) => {

@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { sysLog } from './logger-service.js';
 import { getGuiDataDir } from './paths-service.js';
-import { syncAgentsToSettings, ensureAllAgentsSynchronizedAndAcknowledged } from './agents-service.js';
+import { syncAgentsToSettings, ensureAllAgentsSynchronizedAndAcknowledged, loadAgents } from './agents-service.js';
 import { syncPoliciesToSettings } from './policies-service.js';
 import {
   CliExecutionParams,
@@ -82,16 +82,20 @@ export class AcpSession {
     // Configurar o settings e MCPs uma única vez para este processo persistente
 
     
-    let requestedModel = params.model || 'gemini-3.5-flash-lite';
-    if (requestedModel === 'auto') requestedModel = 'gemini-3.5-flash-lite';
+    let agentId = params.agentId?.toLowerCase() || '';
+    const allAgents = typeof loadAgents === 'function' ? loadAgents(cwd) : [];
+    const configuredAgent = allAgents.find(
+      (a) => a.id.toLowerCase() === agentId || a.name.toLowerCase() === agentId
+    );
+
+    let requestedModel = params.model || configuredAgent?.model || 'gemini-3.1-flash-lite';
+    if (requestedModel === 'auto') requestedModel = configuredAgent?.model || 'gemini-3.1-flash-lite';
     this.model = requestedModel;
 
-    let agentId = params.agentId?.toLowerCase() || '';
     if (!agentId && requestedModel) {
       if (requestedModel.includes('3.8')) agentId = 'auditor';
       else if (requestedModel.includes('3.7')) agentId = 'investigator';
-      else if (requestedModel.includes('3.5-flash-lite')) agentId = 'principal';
-      else if (requestedModel.includes('3.1-flash-lite')) agentId = 'worker';
+      else if (requestedModel.includes('3.5-flash-lite') || requestedModel.includes('3.1-flash-lite')) agentId = 'principal';
       else if (requestedModel === 'gemini-3-flash') agentId = 'tester';
     }
 

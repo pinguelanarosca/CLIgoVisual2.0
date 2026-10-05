@@ -784,12 +784,14 @@ export function syncAgentsToSettings(
       agentConfigsByName.set(ag.name, ag);
     }
     for (const [name, meta] of Object.entries(metadata)) {
-      const existing = agentConfigsByName.get(name) || { name, model: 'gemini-3.5-flash-lite' };
+      const defaultDef = DEFAULT_AGENTS.find(d => d.name === name || d.id === name);
+      const existing = agentConfigsByName.get(name) || { name, model: defaultDef?.model || 'gemini-3.1-flash-lite' };
       agentConfigsByName.set(name, { ...existing, ...meta });
     }
 
     if (activeAgentName && activeConfig) {
-      const existing = agentConfigsByName.get(activeAgentName) || { name: activeAgentName, model: activeConfig.model || 'gemini-3.5-flash-lite' };
+      const defaultDef = DEFAULT_AGENTS.find(d => d.name === activeAgentName || d.id === activeAgentName);
+      const existing = agentConfigsByName.get(activeAgentName) || { name: activeAgentName, model: activeConfig.model || defaultDef?.model || 'gemini-3.1-flash-lite' };
       agentConfigsByName.set(activeAgentName, { ...existing, ...activeConfig });
     }
 
@@ -839,7 +841,7 @@ export function syncAgentsToSettings(
     // 1. Configuração do agente ativo / principal para o escopo core e modelo padrão
     if (primaryAgent) {
       const primaryGenConfig = buildGenConfig(primaryAgent);
-      const primaryModel = primaryAgent.model || 'gemini-3.5-flash-lite';
+      const primaryModel = primaryAgent.model || 'gemini-3.1-flash-lite';
 
       newAliases[primaryAgent.name] = {
         modelConfig: {
@@ -854,16 +856,12 @@ export function syncAgentsToSettings(
         },
       };
 
-      // Match core - always use the ultra-fast gemini-3.5-flash-lite with no thinking Config for instant routing/tool selection
+      // Match core - respeita estritamente o modelo e configuração configurados para o agente titular/principal
       newOverrides.push({
         match: { overrideScope: 'core' },
         modelConfig: {
-          model: 'gemini-3.5-flash-lite',
-          generateContentConfig: {
-            temperature: 0.2,
-            topP: 0.95,
-            topK: 40,
-          },
+          model: primaryModel,
+          generateContentConfig: primaryGenConfig,
         },
       });
 
@@ -876,24 +874,20 @@ export function syncAgentsToSettings(
         },
       });
 
-      // Match model + core - always route core scope to the fast gemini-3.5-flash-lite
+      // Match model + core
       newOverrides.push({
         match: { model: primaryModel, overrideScope: 'core' },
         modelConfig: {
-          model: 'gemini-3.5-flash-lite',
-          generateContentConfig: {
-            temperature: 0.2,
-            topP: 0.95,
-            topK: 40,
-          },
+          model: primaryModel,
+          generateContentConfig: primaryGenConfig,
         },
       });
     }
 
-    // 2. Configuração de todos os demais agentes
+    // 2. Configuração de todos os demais agentes (garantindo que cada agente mantenha seu próprio modelo)
     for (const [name, agentData] of agentConfigsByName.entries()) {
       const genConfig = buildGenConfig(agentData);
-      const agentModel = agentData.model || 'gemini-3.5-flash-lite';
+      const agentModel = agentData.model || 'gemini-3.1-flash-lite';
 
       newAliases[name] = {
         modelConfig: {

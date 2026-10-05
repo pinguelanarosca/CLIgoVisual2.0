@@ -881,9 +881,9 @@ export function App() {
                     targetCall.error = typeof innerPayload.error === 'string' ? innerPayload.error : JSON.stringify(innerPayload.error);
                   }
                 }
-              } else if (eventPayload.text) {
-                const text = eventPayload.text;
-                // Check if this is a genuine authentication error from stderr
+              } else if (eventPayload.text || innerPayload.text) {
+                const text = eventPayload.text || innerPayload.text;
+                // Check if this is a genuine authentication error from stderr/stdout
                 const isAuthNotice = text.includes('Both GOOGLE_API_KEY and GEMINI_API_KEY are set');
                 const isAuthError = !isAuthNotice && (
                   text.includes('Please set an Auth method') ||
@@ -910,8 +910,8 @@ export function App() {
                 } else if (isSessionResumeErr) {
                   hasError = true;
                   errorMessage = text;
-                } else {
-                  // Filter out cosmetic warnings from terminal
+                } else if (evtType === 'message' || evtType === 'stream_event') {
+                  // Only append if it comes from an authentic message event
                   const isBenign =
                     isAuthNotice ||
                     text.includes('256-color support not detected') ||

@@ -1251,7 +1251,7 @@ export function executeGeminiCli(
       // Determine model:
       // When retrying/falling back within this execution, respect state.currentModel.
       // Otherwise, the agent strictly uses its factual configured model from settings/disk, or params.model as fallback.
-      let requestedModel = state?.currentModel || configuredAgent?.model || params.model || 'gemini-3.5-flash-lite';
+      let requestedModel = state?.currentModel || params.model || configuredAgent?.model || 'gemini-3.1-flash-lite';
       const chosenModel = normalizeCliModelName(requestedModel);
       const { authentication, apiKey: activeApiKey, keyId: activeKeyId } = resolveExecutionAuthentication(chosenModel, cwd, state?.triedKeyIds || [], cliPath);
 
@@ -1342,11 +1342,13 @@ export function executeGeminiCli(
         args.push('--policy', customPolicyPath);
       }
 
-      const fallbackChain = state?.fallbackChain || (AGENT_FALLBACK_CHAINS[agentId] || []);
+      const configuredFallback = params.fallbackModel || configuredAgent?.fallbackModel;
+      const defaultChain = AGENT_FALLBACK_CHAINS[agentId] || (configuredFallback ? [chosenModel, configuredFallback] : [chosenModel]);
+      const fallbackChain = state?.fallbackChain || (configuredFallback ? [chosenModel, configuredFallback] : defaultChain);
       const retryCount = state?.retryCount || 1;
       const fallbackIndex = state?.fallbackIndex !== undefined 
         ? state.fallbackIndex 
-        : (fallbackChain.indexOf(requestedModel) !== -1 ? fallbackChain.indexOf(requestedModel) : -1);
+        : (fallbackChain.indexOf(chosenModel) !== -1 ? fallbackChain.indexOf(chosenModel) : (fallbackChain.indexOf(requestedModel) !== -1 ? fallbackChain.indexOf(requestedModel) : -1));
 
       args.push('-m', chosenModel);
       args.push('--skip-trust');
@@ -1412,11 +1414,17 @@ Emita TODAS as chamadas em paralelo nesta mesma resposta. Ao receber as resposta
 
         const delegationProtocol = `\n\n[PROTOCOLO DE ATENDIMENTO E DELEGAÇÃO DE SUBAGENTES]
 Você é o orquestrador principal do Gemini CLI.
-DIRETRIZES DE ATENDIMENTO E DELEGAÇÃO:
-1. RESPONDA DIRETAMENTE ao usuário sempre que possível para perguntas gerais, conversas e solicitações simples.
-2. DELEGAÇÃO ESPECIALIZADA: Se o usuário solicitar uma análise técnica aprofundada (arquitetura, auditoria, testes, investigação ou tarefas práticas), acione a ferramenta 'invoke_agent' para o(s) subagente(s) adequado(s).
-3. EVOCAÇÃO SIMULTÂNEA: É TOTALMENTE PERMITIDO e SUPORTADO evocar subagentes simultaneamente em paralelo (emitindo múltiplas chamadas 'invoke_agent' na mesma rodada) sempre que a solicitação demandar visões multidisciplinares conjuntas (ex: arquiteto + auditor + tester) ou quando o usuário solicitar evocar/consultar todos os agentes ao mesmo tempo.
-4. Quando solicitado evocar todos os agentes simultaneamente, acione em paralelo todos os subagentes disponíveis (${availableSubagents.map((a) => a.name).join(', ')}), aguarde os retornos e consolide as conclusões em um parecer final unificado.${invokeAllDirectives}
+DIRETRIZES DE DELEGAÇÃO E RESPOSTA:
+1. NUNCA REPITA o prompt do usuário ou dados brutos enviados sem realizar uma ação útil ou análise técnica real.
+2. DELEGAÇÃO PROATIVA VIA invoke_agent:
+   - Quando a solicitação envolver investigação de código, pesquisa, busca ou diagnóstico: invoque 'investigator' via invoke_agent.
+   - Quando envolver design de sistemas, modelagem, arquitetura ou decisões estruturais: invoque 'architect' via invoke_agent.
+   - Quando envolver revisão crítica, segurança, auditoria ou análise de vulnerabilidades: invoque 'auditor' via invoke_agent.
+   - Quando envolver testes, planos de teste, garantia de qualidade ou validação: invoque 'tester' via invoke_agent.
+   - Quando envolver implementação prática de código, refatoração ou execução de tarefas: invoque 'worker' via invoke_agent.
+3. EVOCAÇÃO SIMULTÂNEA (EM PARALELO): É TOTALMENTE PERMITIDO e INCENTIVADO emitir múltiplas chamadas de 'invoke_agent' na MESMA rodada para consultas multidisciplinares ou quando solicitado evocar todos os agentes.
+4. CONSOLIDAÇÃO FINAL: Após receber o resultado das ferramentas/subagentes, sintetize um relatório estruturado, claro e completo para o usuário com conclusões acionáveis.
+5. CUMPRIMENTOS: Para mensagens simples de saudação (ex: "olá"), responda de forma prestativa apresentando sua equipe de subagentes prontos para atuar.${invokeAllDirectives}
 Subagentes disponíveis no sistema:
 ${subagentsList}
 ---
@@ -1545,17 +1553,13 @@ ${subagentsList}
       const executionTimer = setTimeout(() => terminateProcessTree(child), 300000);
       child.stdin?.on('error', (error) => { if (!execState.cancelled) { terminateProcessTree(child); params.onError(error); } });
 
-      if (child.stdin) {
-        if (isPromptLarge) {
-          try {
-            child.stdin.write(finalPrompt);
-          } catch (stdinErr) {
-            sysLog.error('CLI', `Erro ao escrever prompt grande no stdin: ${stdinErr}`, { executionId });
-          }
-        }
+      if (isPromptLarge && child.stdin) {
         try {
+          child.stdin.write(finalPrompt);
           child.stdin.end();
-        } catch {}
+        } catch (stdinErr) {
+          sysLog.error('CLI', `Erro ao escrever prompt grande no stdin: ${stdinErr}`, { executionId });
+        }
       }
 
       execState.childProcess = child;
@@ -1577,16 +1581,24 @@ ${subagentsList}
       let hasReceivedFirstAssistantEvent = false;
       let tFirstStdout = 0;
 
-      // Rastreamento estruturado de tool_calls / subagentes em voo
-      const activeToolCalls = new Map<string, {
+      // Rastreamento estruturado de tool_calls / subagentes em voo com isolamento estrito por invocação
+      interface ActiveToolCallContext {
         toolId: string;
         toolName: string;
         parameters: any;
         timestamp: number;
-      }>();
-      let lastSubagentRequestId: string | undefined;
-      let lastSubagentSessionId: string | undefined;
-      let lastSubagentModel: string | undefined;
+        agentName?: string;
+        model?: string;
+        sessionId?: string;
+        requestId?: string;
+        prompt?: string;
+        resultReceived: boolean;
+        resultData?: any;
+        status?: 'pending' | 'completed' | 'failed';
+        error?: string;
+      }
+      const activeToolCalls = new Map<string, ActiveToolCallContext>();
+      const toolCallsByPromptId = new Map<string, string>();
 
       child.stdout?.on('data', (chunk) => {
         if (!hasReceivedFirstStdout) {
@@ -1647,21 +1659,36 @@ ${subagentsList}
                   'tool';
                 const tParams = parsed.parameters || parsed.args || parsed.data?.parameters || parsed.data?.args || {};
 
-                activeToolCalls.set(callId, {
+                const isInvokeAgent = tName === 'invoke_agent';
+                const targetAgent = isInvokeAgent
+                  ? (tParams.agent_name || tParams.agent || tParams.name || 'subagent')
+                  : (agentId || 'principal');
+                const targetAgentObj = allDiscoveredAgents.find(
+                  (a) => a.name.toLowerCase() === targetAgent.toLowerCase() || a.id.toLowerCase() === targetAgent.toLowerCase()
+                );
+                const targetModel = targetAgentObj?.model || (isInvokeAgent ? (AGENT_FALLBACK_CHAINS[targetAgent]?.[0] || 'gemini-3.5-flash') : chosenModel);
+
+                const toolCtx: ActiveToolCallContext = {
                   toolId: callId,
                   toolName: tName,
                   parameters: tParams,
                   timestamp: Date.now(),
-                });
+                  agentName: targetAgent,
+                  model: targetModel,
+                  prompt: tParams.prompt,
+                  resultReceived: false,
+                  status: 'pending',
+                };
+                activeToolCalls.set(callId, toolCtx);
 
-                if (tName === 'invoke_agent') {
-                  const targetAgent = tParams.agent_name || tParams.agent || tParams.name || 'investigator';
+                if (isInvokeAgent) {
                   tracker.trackSubagentInvocation(callId, targetAgent, tParams.prompt || '');
                   logSubagentEvent({
                     timestamp: new Date().toISOString(),
                     executionId,
                     eventType: 'SUBAGENT_INVOKE_START',
                     agentName: targetAgent,
+                    model: targetModel,
                     toolName: tName,
                     prompt: tParams.prompt,
                     args: tParams,
@@ -1685,6 +1712,8 @@ ${subagentsList}
                     tool_name: tName,
                     name: tName,
                     parameters: tParams,
+                    agentName: targetAgent,
+                    subagentModel: targetModel,
                     timestamp: new Date().toISOString(),
                   },
                 });
@@ -1709,27 +1738,32 @@ ${subagentsList}
                   const entry = activeToolCalls.entries().next().value;
                   if (entry) {
                     prevCall = entry[1];
-                    activeToolCalls.delete(entry[0]);
                   }
-                } else if (callId) {
-                  activeToolCalls.delete(callId);
                 }
 
                 const resultData = parsed.result || parsed.data?.result || parsed.content;
                 const isFail = parsed.status === 'failed' || Boolean(parsed.error);
 
+                if (prevCall) {
+                  prevCall.resultReceived = true;
+                  prevCall.resultData = resultData;
+                  prevCall.status = isFail ? 'failed' : 'completed';
+                  prevCall.error = parsed.error;
+                }
+
                 if (prevCall?.toolName === 'invoke_agent') {
-                  tracker.trackSubagentResult(callId || 'unknown', resultData, isFail ? 'failed' : 'success', parsed.error);
+                  tracker.trackSubagentResult(callId || prevCall?.toolId || 'unknown', resultData, isFail ? 'failed' : 'success', parsed.error);
                   logSubagentEvent({
                     timestamp: new Date().toISOString(),
                     executionId,
                     eventType: isFail ? 'SUBAGENT_ERROR' : 'SUBAGENT_COMPLETE',
-                    agentName: prevCall.parameters?.agent_name || 'subagent',
+                    agentName: prevCall.agentName || prevCall.parameters?.agent_name || 'subagent',
+                    model: prevCall.model,
                     result: resultData,
                     error: parsed.error,
                   });
                 } else {
-                  tracker.trackSubagentResult(callId || 'unknown', resultData, isFail ? 'failed' : 'success', parsed.error);
+                  tracker.trackSubagentResult(callId || prevCall?.toolId || 'unknown', resultData, isFail ? 'failed' : 'success', parsed.error);
                   logSubagentEvent({
                     timestamp: new Date().toISOString(),
                     executionId,
@@ -1748,6 +1782,10 @@ ${subagentsList}
                     output: resultData,
                     status: isFail ? 'failed' : 'completed',
                     error: parsed.error,
+                    agentName: prevCall?.agentName,
+                    subagentModel: prevCall?.model,
+                    subagentSessionId: prevCall?.sessionId,
+                    lastRequestId: prevCall?.requestId,
                   },
                 });
               }
@@ -1767,19 +1805,37 @@ ${subagentsList}
                   };
                   retainRequest(reqItem);
 
-                  if (reqItem.role === 'subagent' || parsed.role === 'subagent') {
-                    lastSubagentRequestId = reqItem.requestId;
-                    lastSubagentSessionId = reqItem.sessionId;
-                    lastSubagentModel = reqItem.model;
+                  // Correlacionar requisição isoladamente com a chamada ativa do subagente sem sobrescrever dados globais
+                  let correlatedCall: ActiveToolCallContext | undefined;
+                  if (parsed.callId && activeToolCalls.has(parsed.callId)) {
+                    correlatedCall = activeToolCalls.get(parsed.callId);
+                  } else if (parsed.promptId && toolCallsByPromptId.has(parsed.promptId)) {
+                    const cId = toolCallsByPromptId.get(parsed.promptId);
+                    if (cId) correlatedCall = activeToolCalls.get(cId);
+                  } else if (reqItem.role === 'subagent' || parsed.role === 'subagent') {
+                    for (const ctx of activeToolCalls.values()) {
+                      if (ctx.toolName === 'invoke_agent' && !ctx.resultReceived) {
+                        if (!ctx.requestId || ctx.model === reqItem.model || ctx.agentName === parsed.agentName) {
+                          correlatedCall = ctx;
+                          break;
+                        }
+                      }
+                    }
+                  }
+
+                  if (correlatedCall) {
+                    correlatedCall.requestId = reqItem.requestId;
+                    correlatedCall.sessionId = reqItem.sessionId;
+                    if (reqItem.model) correlatedCall.model = reqItem.model;
                   }
 
                   logSubagentEvent({
                     timestamp: reqItem.timestamp,
                     executionId,
                     eventType: 'SUBAGENT_FINAL_REQUEST',
-                    agentName: reqItem.role === 'subagent' ? (lastSubagentRequestId || 'subagent') : agentId,
+                    agentName: reqItem.role === 'subagent' ? (correlatedCall?.agentName || 'subagent') : agentId,
                     model: reqItem.model,
-                    details: { requestId: reqItem.requestId, role: reqItem.role },
+                    details: { requestId: reqItem.requestId, role: reqItem.role, callId: correlatedCall?.toolId },
                   });
 
                   params.onEvent({
@@ -1794,6 +1850,8 @@ ${subagentsList}
                       timestamp: reqItem.timestamp,
                       callIndex: reqItem.callIndex,
                       role: reqItem.role,
+                      agentName: correlatedCall?.agentName,
+                      callId: correlatedCall?.toolId,
                     },
                   });
                 }
@@ -2108,13 +2166,14 @@ ${subagentsList}
           reportedErrorText.toLowerCase().includes('service unavailable')
         );
 
-        const hasUnresolvedToolCalls = activeToolCalls.size > 0;
+        const unresolvedCalls = Array.from(activeToolCalls.values()).filter(c => !c.resultReceived);
+        const hasUnresolvedToolCalls = unresolvedCalls.length > 0;
         const isProcessExitFailure = code !== 0 || Boolean(signal);
-        const hasFailed = executionFailed(code, signal, reportedErrorText, isQuotaError || isFetchFailed || isOverloadedError || isAuthError || isBadRequestError);
+        const hasFailed = executionFailed(code, signal, reportedErrorText, isQuotaError || isFetchFailed || isOverloadedError || isAuthError || isBadRequestError) || (hasUnresolvedToolCalls && isProcessExitFailure);
 
-        // Se houver chamadas de ferramentas/subagentes pendentes sem fechamento formal, emitir tool_result terminal
+        // Se houver chamadas de ferramentas/subagentes pendentes sem fechamento formal, emitir tool_result terminal FAILED (nunca completed / nunca sucesso fantasma!)
         if (hasUnresolvedToolCalls) {
-          for (const unres of activeToolCalls.values()) {
+          for (const unres of unresolvedCalls) {
             let toolFailureReason = reportedErrorText;
             if (!toolFailureReason && authStderrText.trim()) {
               toolFailureReason = authStderrText.trim();
@@ -2127,13 +2186,13 @@ ${subagentsList}
               toolFailureReason = 'Serviço da API Gemini temporariamente sobrecarregado (Erro 503 / Model Overloaded) durante a execução do subagente.';
             } else if (isAuthError) {
               toolFailureReason = `Falha de autenticação (${authentication.selectedType}) durante a execução do subagente.`;
+            } else if (!toolFailureReason) {
+              toolFailureReason = code === 0
+                ? `Execução do subagente [${unres.agentName || unres.toolName}] finalizada sem entrega de resultado terminal válido do subagente.`
+                : `Execução do subagente [${unres.agentName || unres.toolName}] finalizada abruptamente (exitCode: ${code ?? 0}).`;
             }
 
-            const isSuccess = code === 0 && !isProcessExitFailure && !reportedErrorText && !isQuotaError && !isFetchFailed && !isOverloadedError && !isAuthError;
-            if (!isSuccess && !toolFailureReason) {
-              toolFailureReason = `Execução do subagente/ferramenta finalizada sem retorno terminal formal (exitCode: ${code ?? 0}).`;
-            }
-
+            // CRÍTICO: NUNCA marcar como completed nem sucesso se não houve resultado válido entregue pelo subagente!
             params.onEvent({
               type: 'stream_event',
               data: {
@@ -2141,16 +2200,27 @@ ${subagentsList}
                 tool_call_id: unres.toolId,
                 tool_id: unres.toolId,
                 tool_name: unres.toolName,
-                status: isSuccess ? 'completed' : 'failed',
-                error: isSuccess ? undefined : toolFailureReason,
-                output: isSuccess ? 'Execução concluída com sucesso.' : toolFailureReason,
-                result: isSuccess ? 'Execução concluída com sucesso.' : toolFailureReason,
+                status: 'failed',
+                error: toolFailureReason,
+                output: toolFailureReason,
+                result: toolFailureReason,
                 executionId,
-                subagentSessionId: lastSubagentSessionId || effectiveSessionId || params.sessionId,
-                lastRequestId: lastSubagentRequestId,
-                subagentModel: lastSubagentModel,
+                agentName: unres.agentName,
+                subagentSessionId: unres.sessionId || effectiveSessionId || params.sessionId,
+                lastRequestId: unres.requestId,
+                subagentModel: unres.model,
               },
             });
+
+            logSubagentEvent({
+              timestamp: new Date().toISOString(),
+              executionId,
+              eventType: 'SUBAGENT_ERROR',
+              agentName: unres.agentName || unres.toolName,
+              model: unres.model,
+              error: toolFailureReason,
+            });
+            tracker.trackSubagentResult(unres.toolId, toolFailureReason, 'failed', toolFailureReason);
           }
           activeToolCalls.clear();
         }
@@ -2353,20 +2423,6 @@ ${subagentsList}
             }
           }
 
-          // Default fallback catch-all if quota was exceeded on another model
-          if (isQuotaError && !isRetry && chosenModel !== 'gemini-3.5-flash-lite' && !execState.cancelled) {
-            params.onEvent({
-              type: 'stream_event',
-              data: {
-                type: 'message',
-                role: 'assistant',
-                content: '⚠️ *Limite gratuito do modelo atingido. Alternando automaticamente para Gemini 3.5 Flash-Lite para continuar sua solicitação...*\n\n',
-              },
-            });
-            executeGeminiCli({ ...params, executionId, model: 'gemini-3.5-flash-lite', resume: true }, true, { executionId });
-            return;
-          }
-
           let finalMessage = reportedErrorText || stderrText.trim();
           if (code === -2 || stderrText.includes('ENOENT')) {
             finalMessage = `O executável do Gemini CLI (${cliPath}) ou o diretório de trabalho (${cwd}) não foi localizado no sistema (Erro -2 / ENOENT).`;
@@ -2391,6 +2447,7 @@ Você atingiu o limite de requisições.
             finalMessage = `O Gemini CLI encerrou com código de erro ${code ?? 0}.`;
           }
 
+          const lastSubagent = Array.from(activeToolCalls.values()).filter(c => c.toolName === 'invoke_agent').at(-1);
           params.onEvent({
             type: 'process_error',
             data: {
@@ -2399,8 +2456,9 @@ Você atingiu o limite de requisições.
               stderr: stderrText,
               message: finalMessage,
               executionId,
-              subagentSessionId: lastSubagentSessionId,
-              lastRequestId: lastSubagentRequestId,
+              subagentSessionId: lastSubagent?.sessionId || effectiveSessionId || params.sessionId,
+              lastRequestId: lastSubagent?.requestId,
+              subagentModel: lastSubagent?.model,
             },
           });
           logSubagentEvent({
