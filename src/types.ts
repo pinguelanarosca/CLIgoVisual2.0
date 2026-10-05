@@ -15,6 +15,10 @@ export interface CliStatus {
   globalUpdateNotice?: string;
   connectionState: 'connected' | 'error' | 'not_detected';
   authConfigured: boolean;
+  authMode?: 'oauth' | 'api-key' | 'native' | 'none';
+  authState?: 'authenticated' | 'configured' | 'unauthenticated';
+  authMessage?: string;
+  authWorkDir?: string;
   maskedApiKey?: string;
   maskedExaKey?: string;
   exaConfigured?: boolean;

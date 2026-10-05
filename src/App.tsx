@@ -333,7 +333,8 @@ export function App() {
   const refreshStatus = async (forceFresh = true) => {
     setIsCheckingStatus(true);
     try {
-      const data = await fetchJsonSafely<CliStatus>(`/api/status?fresh=${forceFresh ? 'true' : 'false'}`);
+      const workDir = activeProject?.associatedDirs[0] || authorizedDirs[0]?.path;
+      const data = await fetchJsonSafely<CliStatus>(`/api/status?fresh=${forceFresh ? 'true' : 'false'}${workDir ? `&workDir=${encodeURIComponent(workDir)}` : ''}`);
       if (data) {
         setCliStatus(data);
         if (data.approvalMode) setApprovalMode(data.approvalMode);
@@ -880,7 +881,7 @@ export function App() {
 
                 if (isAuthError) {
                   hasError = true;
-                  errorMessage = 'A variável de ambiente GEMINI_API_KEY não foi encontrada ou não está autorizada no ambiente do sistema.';
+                  errorMessage = cliStatus?.authMode === 'oauth' ? 'A autenticação Google/OAuth do Gemini CLI falhou. Verifique o login nativo no CLI.' : 'A autenticação do Gemini CLI falhou. Verifique o método selecionado no CLI.';
                 } else if (isSessionResumeErr) {
                   hasError = true;
                   errorMessage = text;

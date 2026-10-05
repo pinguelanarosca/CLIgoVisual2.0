@@ -5,6 +5,7 @@ const { execSync } = require('child_process');
 console.log('=== Empacotador Ubuntu Linux para Gemini CLI GUI ===');
 
 const rootDir = process.cwd();
+const appVersion = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8')).version;
 const distUbuntuDir = path.join(rootDir, 'dist-ubuntu');
 
 if (!fs.existsSync(distUbuntuDir)) {
@@ -135,7 +136,7 @@ fs.writeFileSync(path.join(appLauncherDir, 'gemini-gui.desktop'), desktopFile, '
 
 // 6. DEBIAN/control
 const debianControl = `Package: gemini-gui
-Version: 1.0.0
+Version: ${appVersion}
 Section: devel
 Priority: optional
 Architecture: all
@@ -158,7 +159,7 @@ exit 0
 fs.writeFileSync(path.join(debianMetaDir, 'postinst'), postinst, { mode: 0o755 });
 
 // 8. Build .deb package if dpkg-deb is available
-const debPackageOutput = path.join(distUbuntuDir, 'gemini-gui_1.0.0_all.deb');
+const debPackageOutput = path.join(distUbuntuDir, `gemini-gui_${appVersion}_all.deb`);
 try {
   execSync(`dpkg-deb --build "${debRoot}" "${debPackageOutput}"`, { stdio: 'inherit' });
   console.log(`✓ Pacote Debian criado: ${debPackageOutput}`);

@@ -467,23 +467,23 @@ export const ChatView: React.FC<ChatViewProps> = ({
         />
       </div>
 
-      {/* Missing API Key Warning */}
+      {/* Authentication warning for the selected native CLI method */}
       {cliStatus && (!cliStatus.authConfigured || cliStatus.apiValid === false) && (
         <div className="mx-2 mt-1 p-1.5 rounded bg-amber-500/10 border border-amber-500/20 flex items-center justify-between text-xs text-amber-200 shrink-0">
           <div className="flex items-center gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
             <span className="text-[10.5px]">
               {!cliStatus.authConfigured
-                ? 'Nenhuma chave Gemini cadastrada no Key Pool: cadastre em Configurações > Key Pool.'
+                ? cliStatus.authMessage || 'Gemini CLI não autenticado. Faça login no CLI e selecione o método desejado.'
                 : cliStatus.apiError || 'Erro na validação da chave API.'}
             </span>
           </div>
           {onOpenSettings && (
             <button
-              onClick={() => onOpenSettings('key_pool')}
+              onClick={() => onOpenSettings(cliStatus.authMode === 'api-key' ? 'key_pool' : 'cli')}
               className="px-1.5 py-0.5 bg-amber-600 hover:bg-amber-500 text-white text-[10.5px] font-medium rounded transition cursor-pointer"
             >
-              Configurar Key Pool
+              Configurar autenticação
             </button>
           )}
         </div>

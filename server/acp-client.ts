@@ -17,7 +17,7 @@ import {
   getResolvedCliPath,
   getExaAuditTools
 } from './gemini-cli-service.js';
-import { getBestEligibleKey } from './key-pool-service.js';
+import { resolveExecutionAuthentication, buildCliAuthEnvironment } from './cli-auth-service.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -151,21 +151,15 @@ export class AcpSession {
     args.push('--skip-trust');
 
     const cliPath = getResolvedCliPath();
-    const candidate = getBestEligibleKey(this.model || 'gemini-3.5-flash-lite');
-    const activeApiKey = candidate?.key;
+    const { authentication, apiKey: activeApiKey } = resolveExecutionAuthentication(this.model || 'gemini-3.5-flash-lite', cwd, [], cliPath);
 
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...buildCliAuthEnvironment(authentication, activeApiKey),
       NO_COLOR: '1',
       FORCE_COLOR: '0',
       GEMINI_CLI_TRUST_WORKSPACE: 'true',
       GEMINI_CLI_NO_RELAUNCH: '1',
       GEMINI_CLI_SYSTEM_SETTINGS_PATH: this.tempSettingsFile,
-      ...(activeApiKey ? {
-        GEMINI_API_KEY: activeApiKey,
-        GOOGLE_GENAI_API_KEY: activeApiKey,
-        GOOGLE_API_KEY: activeApiKey,
-      } : {}),
     };
 
     this.child = spawn(cliPath, args, {
@@ -206,7 +200,7 @@ export class AcpSession {
     // 1. Enviar handshake de inicialização
     await this.callMethod('initialize', {
       protocolVersion: 1,
-      clientInfo: { name: 'gemini-gui-acp', version: '2.0.0' },
+      clientInfo: { name: 'gemini-gui-acp', version: '2.1.0' },
       clientCapabilities: {
         auth: { terminal: false },
         fs: { readTextFile: false, writeTextFile: false },
@@ -542,7 +536,9 @@ export class AcpSessionManager {
     const config: Record<string, any> = {};
     for (const key of ['workDir', 'model', 'agentId', 'approvalMode', 'authorizedDirs', 'temperature', 'topP', 'topK', 'maxOutputTokens', 'thinking', 'thinkingLevel', 'thinking_level', 'systemInstructions', 'baseInstructions', 'overrideBasePrompt', 'sharedMemory', 'tools']) config[key] = (params as any)[key];
     config.cli = getResolvedCliPath();
-    config.key = getBestEligibleKey(params.model || 'gemini-3.5-flash-lite')?.key || process.env.GEMINI_API_KEY;
+    const auth = resolveExecutionAuthentication(params.model || 'gemini-3.5-flash-lite', params.workDir, [], getResolvedCliPath());
+    config.auth = auth.authentication;
+    config.key = auth.apiKey;
     config.files = [path.join(getGuiDataDir(), '.gemini', 'settings.json'), path.join(params.workDir || getGuiDataDir(), '.gemini', 'settings.json'), path.join(os.homedir(), '.gemini', 'settings.json')].map(file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
     return crypto.createHash('sha256').update(JSON.stringify(config)).digest('hex');
   }

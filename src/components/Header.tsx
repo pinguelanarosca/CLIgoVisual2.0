@@ -118,13 +118,13 @@ export const Header: React.FC<HeaderProps> = ({
                   ? `Erro: ${cliStatus.apiError}`
                   : cliStatus?.apiValid
                   ? `API conectada (${formatModelName(cliStatus.modelTested || 'gemini-3.1-flash-lite')})`
-                  : 'Configurações da API'
+                  : cliStatus?.authMessage || 'Configurações de autenticação'
               }
             >
               {isCheckingStatus ? (
                 <span className="text-zinc-400">Sincronizando...</span>
               ) : !cliStatus?.authConfigured ? (
-                <span className="text-rose-600 dark:text-rose-400 font-medium">Sem Chave</span>
+                <span className="text-rose-600 dark:text-rose-400 font-medium">Não autenticado</span>
               ) : cliStatus?.apiValid === false ? (
                 <span className="text-amber-600 dark:text-amber-400 font-medium">
                   {cliStatus.apiError?.includes('429') || cliStatus.apiError?.includes('quota')
@@ -133,7 +133,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </span>
               ) : (
                 <span className="text-emerald-700 dark:text-emerald-400 font-medium">
-                  API Ativa
+                  {cliStatus?.authMode === 'oauth' ? (cliStatus.authState === 'authenticated' ? 'OAuth autenticado' : 'OAuth configurado') : cliStatus?.authMode === 'native' ? 'Autenticação nativa' : 'API key configurada'}
                 </span>
               )}
 

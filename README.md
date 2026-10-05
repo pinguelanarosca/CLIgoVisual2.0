@@ -2,6 +2,8 @@
 
 Interface gráfica e ambiente de trabalho profissional para o **Gemini CLI (v0.58.0+)**, projetada para desenvolvedores e equipes que utilizam inteligência artificial diretamente em projetos locais.
 
+**Versão 2.1.0:** respeita a autenticação Google/OAuth nativa do Gemini CLI, inclusive o diretório de credenciais do Snap. OAuth executa sem Key Pool e sem variáveis de API key no processo filho. Key Pool, ranking, failover de chaves, fallback de modelos e agentes/subagentes continuam disponíveis no modo aplicável. Status, validação e testes de agentes distinguem os métodos de autenticação, sem alterar credenciais pessoais.
+
 ---
 
 ## 🚀 Funcionalidades Principais
@@ -98,7 +100,7 @@ npm start
 npm run build:ubuntu
 ```
 Os arquivos gerados serão salvos em `dist-ubuntu/`:
-- `gemini-gui_1.0.0_all.deb`
+- `gemini-gui_2.1.0_all.deb`
 - `gemini-gui-ubuntu-standalone.tar.gz`
 
 ---

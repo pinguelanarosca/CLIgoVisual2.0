@@ -28,7 +28,7 @@ Os 16 achados foram confirmados no código e corrigidos. As verificações abaix
 
 **Recuperação e preservação**
 
-Backup de código e dados anteriores às mudanças preservado localmente, fora do conteúdo publicado, com arquivos privados em modo 0600. Não havia SQLite pessoal neste ambiente. A migração de um banco legado e a restauração criam backups SQLite com VACUUM INTO, incluindo WAL; um banco temporário validou conteúdo e integrity_check. Os cinco arquivos preexistentes de configuração do projeto mantiveram exatamente os bytes arquivados.
+Backup anterior às mudanças em `.audit-recovery/20261004` (arquivo local privado, excluído da publicação): código e dados existentes, arquivos privados com permissão 0600. Não havia SQLite pessoal neste ambiente. A migração de um banco legado e a restauração criam backups SQLite com VACUUM INTO, incluindo WAL; um banco temporário validou conteúdo e integrity_check. Os cinco arquivos preexistentes de configuração do projeto mantiveram exatamente os bytes arquivados.
 
 **Verificações executadas**
 
@@ -40,6 +40,14 @@ Backup de código e dados anteriores às mudanças preservado localmente, fora d
 
 **Limitações**
 
-Node disponível: 22.23.3. Dependências já presentes no ambiente foram usadas temporariamente, sem instalação; Vite 8.3.2 e TypeScript 7.0.2 diferem das versões declaradas. Os vínculos temporários foram removidos; não existe instalação completa do Gemini CLI neste checkout. Não foram realizados testes pagos, uso real de provedores, ACP com Gemini real, MCP remoto ou atualização do repositório oficial. O checkout de auditoria não tinha metadados Git utilizáveis; fast-forward, árvore suja e divergência foram verificados em repositórios locais temporários.
+Node disponível: 22.23.3. Dependências já presentes no ambiente foram usadas temporariamente, sem instalação; Vite 8.3.2 e TypeScript 7.0.2 diferem das versões declaradas. Os vínculos temporários foram removidos; não existe instalação completa do Gemini CLI neste checkout. Não foram realizados testes pagos, uso real de provedores, ACP com Gemini real, MCP remoto ou atualização do repositório oficial. O checkout não tem metadados Git utilizáveis; fast-forward, árvore suja e divergência foram verificados em repositórios locais temporários.
 
 Snapshots antigos sem manifesto não permitem inferir ausências anteriores. Captura automática ignora caches/diretórios privados, links simbólicos e interrompe com diagnóstico acima de 10 mil arquivos ou 256 MiB. O build emitiu avisos de bundle grande e compatibilidade da configuração com a versão de Vite disponível. Não houve teste visual no navegador.
+
+## Versão 2.1 — autenticação nativa
+
+A regressão da v2.0 exigia uma chave do pool antes de iniciar o CLI e forçava variáveis de API key. O resolvedor compartilhado agora respeita `security.auth.selectedType`, a precedência nativa das configurações e o HOME do launcher Snap/`GEMINI_CLI_HOME`. Google/OAuth executa com pool vazio; as três variáveis de API key são removidas do ambiente do filho. Não há migração ou alteração das credenciais OAuth.
+
+Executor, ACP, status, validação e teste de agentes usam a seleção nativa. O Key Pool mantém ranking, troca de chaves e registros no modo API key; fallback de modelos, agentes/subagentes e `invoke_agent` são preservados. OAuth sem cache legível é informado como configurado, com verificação efetiva das credenciais a cargo do CLI. O teste de áudio direto pelo SDK continua limitado ao modo API key.
+
+Foram adicionadas dez regressões (35 testes no total), incluindo principal/subagente, pool vazio, variáveis residuais, failover K1→K2, fallback, falta de autenticação, ACP e diretório Snap. O smoke HTTP cobre OAuth e API key com processos, Express e SQLite reais e CLI emulado. As sete verificações existentes relacionadas também passaram. Build validado com dependências já disponíveis, em versões diferentes das declaradas. Permanecem os 28 diagnósticos de lint e a asserção antiga que exige oito modelos quando o catálogo tem seis; não há diagnósticos novos. Não foram feitas chamadas ao Google, login OAuth real nem testes ACP/invoke_agent com provedor real.

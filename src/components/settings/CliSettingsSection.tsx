@@ -33,12 +33,12 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
         message: string;
         latencyMs?: number;
         modelTested?: string;
-      }>('/api/cli/validate-key?model=gemma-4-31b', { method: 'POST' });
+      }>(`/api/cli/validate-key?model=gemma-4-31b${cliStatus?.authWorkDir ? `&workDir=${encodeURIComponent(cliStatus.authWorkDir)}` : ''}`, { method: 'POST' });
 
       if (data) {
         setApiValidationResult({
           ...data,
-          modelTested: data.modelTested || 'gemma-4-31b',
+          modelTested: data.modelTested,
         });
       } else {
         setApiValidationResult({
@@ -100,12 +100,12 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
         </div>
 
         <div className="flex justify-between items-center pt-2 border-t border-zinc-200/80 dark:border-zinc-700/60">
-          <span className="text-zinc-600 dark:text-zinc-400">Chave GEMINI_API_KEY / Key Pool:</span>
+          <span className="text-zinc-600 dark:text-zinc-400">Autenticação do Gemini CLI:</span>
           <div className="flex items-center gap-2">
             {cliStatus?.authConfigured ? (
               <span className="font-mono text-[11px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
                 <Check className="w-3.5 h-3.5" />
-                {cliStatus.maskedApiKey || 'Ativa no ambiente'}
+                {cliStatus.authMode === 'oauth' ? (cliStatus.authState === 'authenticated' ? 'Google/OAuth autenticado' : 'Google/OAuth configurado') : cliStatus.authMode === 'native' ? 'Autenticação nativa' : cliStatus.maskedApiKey || 'API key configurada'}
               </span>
             ) : (
               <span className="flex items-center gap-1 font-semibold text-rose-500 text-[11px]">
@@ -131,7 +131,7 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
           <div className="flex items-center gap-1.5">
             <Sparkles className="w-4 h-4 text-blue-500" />
             <h5 className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
-              Validação Dinâmica da API (Gemma 4 31B)
+              Validação de autenticação
             </h5>
           </div>
           <button
@@ -141,7 +141,7 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
             className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isValidatingApi ? 'animate-spin' : ''}`} />
-            <span>{isValidatingApi ? 'Testando...' : 'Testar Conexão Agora'}</span>
+            <span>{isValidatingApi ? 'Verificando...' : 'Verificar Autenticação'}</span>
           </button>
         </div>
 
@@ -162,7 +162,7 @@ export const CliSettingsSection: React.FC<CliSettingsSectionProps> = ({
               <p className="font-semibold">{apiValidationResult.message}</p>
               {apiValidationResult.success && apiValidationResult.latencyMs !== undefined && (
                 <p className="opacity-80 mt-0.5 font-mono">
-                  Latência: {apiValidationResult.latencyMs}ms | Modelo Testado: Gemma 4 (31B)
+                  Latência: {apiValidationResult.latencyMs}ms | Modelo Testado: {apiValidationResult.modelTested}
                 </p>
               )}
             </div>

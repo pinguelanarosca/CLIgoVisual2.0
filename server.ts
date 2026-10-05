@@ -1,3 +1,4 @@
+import { resolveCliAuthentication, resolveExecutionAuthentication } from './server/cli-auth-service.js';
 import express from 'express';
 import { validateExecutionContext } from './server/execution-policy.js';
 import { acpManager } from './server/acp-client.js';
@@ -58,7 +59,7 @@ for (const envFile of fallbackEnvPaths) {
     } catch {}
   }
 }
-import { detectCliStatus, executeGeminiCli, cancelActiveExecution, cancelExecutionById, setCustomCliPath, validateGeminiApiKey } from './server/gemini-cli-service.js';
+import { detectCliStatus, executeGeminiCli, cancelActiveExecution, cancelExecutionById, setCustomCliPath, validateCliAuthentication, testCliAgentConnection, getResolvedCliPath } from './server/gemini-cli-service.js';
 import { ensureAgentsSeeded, loadAgents, saveAgentToFile, deleteAgent, resetAllAgentsToDefault, ensureAllAgentsSynchronizedAndAcknowledged } from './server/agents-service.js';
 import { ensureSkillsSeeded, loadSkills, saveSkillToFile, deleteSkill } from './server/skills-service.js';
 import { ensureCommandsSeeded, loadCommands, saveCommandToFile, deleteCommand } from './server/commands-service.js';
@@ -265,15 +266,17 @@ priority = 90
   app.get('/api/status', async (req, res) => {
     const forceFresh = req.query.fresh === 'true' || req.query.fresh === '1';
     const model = typeof req.query.model === 'string' && req.query.model.trim() ? req.query.model.trim() : 'gemini-3.1-flash-lite';
-    const status = await detectCliStatus(forceFresh, model);
-    res.json(status);
+    try {
+      const workDir = typeof req.query.workDir === 'string' ? req.query.workDir : process.cwd();
+      res.json(await detectCliStatus(forceFresh, model, workDir));
+    } catch (error: any) { res.status(400).json({ error: error.message }); }
   });
 
   const handleApiKeyValidation = async (req: express.Request, res: express.Response) => {
     try {
       const modelQuery = req.query.model || req.body?.model;
       const model = typeof modelQuery === 'string' && modelQuery.trim() ? modelQuery.trim() : 'gemini-2.5-flash';
-      const result = await validateGeminiApiKey(true, model);
+      const result = await validateCliAuthentication(true, model, typeof req.body?.workDir === 'string' ? req.body.workDir : typeof req.query.workDir === 'string' ? req.query.workDir : process.cwd());
       
       // Map properties for complete compatibility across all front-end sections
       res.json({
@@ -281,6 +284,9 @@ priority = 90
         valid: result.valid,
         configured: result.configured,
         message: result.message,
+        authMode: result.authMode,
+        authState: result.authState,
+        checked: result.checked,
         modelTested: result.modelTested,
         latencyMs: result.latencyMs,
       });
@@ -419,9 +425,16 @@ priority = 90
     } catch {}
 
     const poolKeys = loadConfiguredKeys();
+    let authentication;
+    try {
+      authentication = resolveCliAuthentication(typeof req.body.workDir === 'string' ? req.body.workDir : process.cwd(), process.env, getResolvedCliPath());
+    } catch (error: any) { return res.status(400).json({ error: error.message }); }
     res.json({
       success: true,
-      authConfigured: Object.keys(poolKeys).length > 0,
+      authConfigured: authentication.configured,
+      authMode: authentication.mode,
+      authState: authentication.state,
+      poolConfigured: Object.keys(poolKeys).length > 0,
       exaConfigured: Boolean(process.env.EXA_API_KEY),
     });
   });
@@ -585,25 +598,25 @@ priority = 90
   app.post('/api/agents/test', async (req, res) => {
     const { model, type, voiceName, customInstructions } = req.body;
     
-    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY;
-    if (!apiKey) {
-      return res.status(400).json({
-        success: false,
-        message: 'A chave de API do Gemini (GEMINI_API_KEY) não está configurada nas variáveis de ambiente (.env).'
-      });
-    }
-
     try {
-      const { GoogleGenAI, Modality } = await import('@google/genai');
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          }
-        }
-      });
       const targetModel = model || 'gemini-2.5-flash';
+      const { authentication, apiKey } = resolveExecutionAuthentication(targetModel, req.body.workDir || process.cwd(), [], getResolvedCliPath());
+      const audioTest = type === 'voice' || type === 'narrator';
+      if (!audioTest && (authentication.mode !== 'api-key' || !apiKey)) {
+        const controller = new AbortController();
+        const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+        res.once('close', disconnected);
+        try {
+          const result = await testCliAgentConnection({ model: targetModel, workDir: req.body.workDir,
+            agentId: req.body.agentId, systemInstructions: customInstructions }, controller.signal);
+          return res.json({ success: true, authMode: authentication.mode,
+            message: `Conexão de Texto com o modelo [${targetModel}] via Gemini CLI (${authentication.selectedType}) estabelecida em ${result.latencyMs}ms. Resposta: "${result.text}".`, latencyMs: result.latencyMs });
+        } finally { res.removeListener('close', disconnected); }
+      }
+      if (!apiKey) return res.status(422).json({ success: false, code: 'AUTH_CAPABILITY_UNSUPPORTED', authMode: authentication.mode,
+        message: `O Gemini CLI usa ${authentication.selectedType}. O teste direto da API de áudio não está disponível com esse método; a execução dos agentes no CLI permanece disponível.` });
+      const { GoogleGenAI, Modality } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
       const start = Date.now();
 
       if (type === 'voice' || type === 'narrator') {
@@ -658,8 +671,9 @@ priority = 90
     } catch (err: any) {
       console.error('Falha no teste do agente:', err);
       const errMsg = err.message || String(err);
-      return res.status(500).json({
+      return res.status(err.code === 'AUTH_NOT_CONFIGURED' ? 400 : 500).json({
         success: false,
+        code: err.code,
         message: `A requisição de teste para o modelo falhou. Motivo: ${errMsg}`
       });
     }

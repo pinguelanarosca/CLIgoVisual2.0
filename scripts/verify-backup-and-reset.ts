@@ -31,7 +31,7 @@ async function runTests() {
   console.log('\n--- 1. Testando Exportação de Backup Completo ---');
   const fullBackup = exportFullSystemBackup();
   assert(!!fullBackup, 'Backup gerado com sucesso');
-  assert(fullBackup.version === '2.0.0', 'Versão do backup é 2.0.0');
+  assert(fullBackup.version === '2.1.0', 'Versão do backup é 2.1.0');
   assert(Array.isArray(fullBackup.agents), 'Agentes incluídos no backup');
   assert(Array.isArray(fullBackup.skills), 'Skills incluídas no backup');
   assert(Array.isArray(fullBackup.commands), 'Comandos incluídos no backup');

@@ -1,0 +1,125 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { getBestEligibleKey, loadConfiguredKeys } from './key-pool-service.js';
+
+export type CliAuthMode = 'oauth' | 'api-key' | 'native' | 'none';
+export interface CliAuthentication {
+  mode: CliAuthMode;
+  selectedType?: string;
+  configured: boolean;
+  state: 'authenticated' | 'configured' | 'unauthenticated';
+  message: string;
+}
+
+// Gemini CLI accepts JSON with comments in its native settings files.
+function readSettings(file: string): any {
+  if (!fs.existsSync(file)) return {};
+  const source = fs.readFileSync(file, 'utf8');
+  let output = '', quoted = false;
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    if (quoted) {
+      output += char;
+      if (char === '\\') output += source[++i] || '';
+      else if (char === '"') quoted = false;
+    } else if (char === '"') { quoted = true; output += char; }
+    else if (char === '/' && source[i + 1] === '/') {
+      while (i < source.length && source[i] !== '\n') i++;
+      output += '\n';
+    } else if (char === '/' && source[i + 1] === '*') {
+      i += 2;
+      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i++;
+      i++; output += ' ';
+    } else output += char;
+  }
+  const settings = JSON.parse(output);
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Configuração nativa do Gemini CLI inválida.');
+  return settings;
+}
+
+function nativeCliHome(env: NodeJS.ProcessEnv, cliPath = 'gemini'): string {
+  if (env.GEMINI_CLI_HOME) return env.GEMINI_CLI_HOME;
+  const home = os.homedir();
+  const executable = path.isAbsolute(cliPath) ? cliPath : (env.PATH || '').split(path.delimiter)
+    .map(directory => path.join(directory, cliPath)).find(file => fs.existsSync(file));
+  if (executable && path.dirname(executable) === '/snap/bin') {
+    try {
+      // The installed Snap launcher changes HOME. Resolve its alias/package,
+      // otherwise a logged-in Snap looks unauthenticated to a host GUI.
+      const launcher = path.basename(fs.readlinkSync(executable));
+      const snapName = (launcher.includes('.') ? launcher : path.basename(executable)).split('.')[0];
+      if (/^[a-z0-9-]+$/.test(snapName)) {
+        const metadata = fs.readFileSync(`/snap/${snapName}/current/meta/snap.yaml`, 'utf8');
+        if (/^\s+HOME:\s+\$SNAP_USER_COMMON\s*$/m.test(metadata)) return path.join(home, 'snap', snapName, 'common');
+        if (/^\s+HOME:\s+\$SNAP_USER_DATA\s*$/m.test(metadata)) return path.join(home, 'snap', snapName, 'current');
+      }
+    } catch { /* Unknown launchers retain the regular native HOME. */ }
+  }
+  return home;
+}
+
+export function resolveCliAuthentication(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env, cliPath?: string): CliAuthentication {
+  const home = nativeCliHome(env, cliPath);
+  const systemPath = env.GEMINI_CLI_SYSTEM_SETTINGS_PATH || (process.platform === 'win32'
+    ? 'C:\\ProgramData\\gemini-cli\\settings.json' : process.platform === 'darwin'
+      ? '/Library/Application Support/GeminiCli/settings.json' : '/etc/gemini-cli/settings.json');
+  // Same precedence as the CLI. Executions already explicitly trust their workspace.
+  const files = [env.GEMINI_CLI_SYSTEM_DEFAULTS_PATH || path.join(path.dirname(systemPath), 'system-defaults.json'),
+    path.join(home, '.gemini', 'settings.json'), ...(path.resolve(cwd) !== path.resolve(home) ? [path.join(cwd, '.gemini', 'settings.json')] : []), systemPath];
+  let selectedType: string | undefined, enforcedType: string | undefined;
+  for (const file of files) {
+    const auth = readSettings(file).security?.auth;
+    if (typeof auth?.selectedType === 'string') selectedType = auth.selectedType.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match: string, a: string | undefined, b: string | undefined) => env[a || b || ''] || '');
+    if (typeof auth?.enforcedType === 'string') enforcedType = auth.enforcedType;
+  }
+  if (!selectedType) {
+    if (env.GOOGLE_GENAI_USE_GCA === 'true') selectedType = 'oauth-personal';
+    else if (env.GOOGLE_GENAI_USE_VERTEXAI === 'true') selectedType = 'vertex-ai';
+    else if (env.GOOGLE_GEMINI_BASE_URL) selectedType = 'gateway';
+    else if (env.GEMINI_API_KEY) selectedType = 'gemini-api-key';
+    else if (env.CLOUD_SHELL === 'true' || env.GEMINI_CLI_USE_COMPUTE_ADC === 'true') selectedType = 'compute-default-credentials';
+    else if (env.GOOGLE_API_KEY || env.GOOGLE_GENAI_API_KEY || Object.keys(loadConfiguredKeys()).length) selectedType = 'gemini-api-key';
+  }
+  if (enforcedType && selectedType !== enforcedType) throw new Error('O método de autenticação selecionado não corresponde ao método exigido pela configuração nativa do Gemini CLI.');
+  if (!selectedType) return { mode: 'none', configured: false, state: 'unauthenticated', message: 'Gemini CLI não autenticado. Faça login no Gemini CLI e selecione o método de autenticação desejado.' };
+  if (selectedType === 'oauth-personal') {
+    // Do not refresh, rewrite or migrate native credentials. Encrypted/keychain
+    // credentials remain the CLI's responsibility and must never require a pool.
+    let cached = false;
+    if (env.GEMINI_FORCE_ENCRYPTED_FILE_STORAGE !== 'true') {
+      const credentialsPath = path.join(home, '.gemini', 'oauth_creds.json');
+      try {
+        const credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
+        cached = Boolean(credentials.refresh_token || (credentials.access_token && Number(credentials.expiry_date) > Date.now()));
+      } catch { /* Native CLI reports invalid or unavailable credentials itself. */ }
+    }
+    return { mode: 'oauth', selectedType, configured: true, state: cached ? 'authenticated' : 'configured',
+      message: cached ? 'Google/OAuth autenticado no Gemini CLI (credenciais nativas em cache).' : 'Google/OAuth configurado no Gemini CLI; as credenciais nativas serão verificadas pelo executor.' };
+  }
+  if (selectedType === 'gemini-api-key') return { mode: 'api-key', selectedType, configured: true, state: 'configured', message: 'Autenticação por API key configurada; Key Pool e credenciais nativas de API key são respeitados.' };
+  return { mode: 'native', selectedType, configured: true, state: 'configured', message: `Autenticação nativa do Gemini CLI configurada (${selectedType}).` };
+}
+
+export function resolveExecutionAuthentication(model: string, cwd?: string, excludedKeys: string[] = [], cliPath?: string) {
+  const authentication = resolveCliAuthentication(cwd, process.env, cliPath);
+  if (!authentication.configured) throw Object.assign(new Error(authentication.message), { code: 'AUTH_NOT_CONFIGURED' });
+  const candidate = authentication.mode === 'api-key' ? getBestEligibleKey(model, excludedKeys) : null;
+  const apiKey = authentication.mode === 'api-key' ? candidate?.key || process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY : undefined;
+  return { authentication, apiKey, keyId: candidate?.keyId };
+}
+
+export function buildCliAuthEnvironment(authentication: CliAuthentication, apiKey?: string, inherited: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...inherited };
+  if (authentication.mode === 'oauth') {
+    delete env.GEMINI_API_KEY;
+    delete env.GOOGLE_API_KEY;
+    delete env.GOOGLE_GENAI_API_KEY;
+    env.GOOGLE_GENAI_USE_GCA = 'true';
+  } else if (authentication.mode === 'api-key' && apiKey) {
+    env.GEMINI_API_KEY = apiKey;
+    env.GOOGLE_API_KEY = apiKey;
+    env.GOOGLE_GENAI_API_KEY = apiKey;
+  }
+  return env;
+}

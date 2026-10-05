@@ -13,7 +13,7 @@ const log = new Proxy({}, { get: () => () => {} });
 export function load(file, globals = {}) {
   let source = fs.readFileSync(path.join(root, file), 'utf8').replace(/^import[\s\S]*?;\s*/gm, '').replace(/^export\s*\{[^}]*\};?\s*/gm, '');
   source = stripTypeScriptTypes(source, { mode: 'transform' }).replace(/\bexport\s+(?=(?:async\s+)?(?:function|class|const|let|var))/g, '');
-  const context = vm.createContext({ console, Buffer, URL, AbortController, TextDecoder, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, process, fs, path, os, crypto, ...childProcess, sysLog: log, logSubagentEvent: () => {}, performance, ...globals });
+  const context = vm.createContext({ console, Buffer, URL, AbortController, AbortSignal, TextDecoder, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, process, fs, path, os, crypto, ...childProcess, sysLog: log, logSubagentEvent: () => {}, performance, ...globals });
   vm.runInContext(source, context, { filename: file });
   return context;
 }
@@ -109,7 +109,7 @@ test('MCP: leitura de projeto é imutável e configuração temporária preserva
   const original = fs.readFileSync(projectFile, 'utf8');
   const mcp = load('server/mcp-service.ts', { getGuiDataDir: () => gui });
   mcp.loadMcpSettings(project); assert.equal(fs.readFileSync(projectFile, 'utf8'), original);
-  const cli = load('server/gemini-cli-service.ts', { getGuiDataDir: () => gui, loadMcpSettings: mcp.loadMcpSettings, loadAgents: () => [] });
+  const cli = load('server/gemini-cli-service.ts', { getGuiDataDir: () => gui, loadMcpSettings: mcp.loadMcpSettings, loadAgents: () => [], resolveCliAuthentication: () => ({ mode: 'none', configured: false }) });
   const runtime = JSON.parse(fs.readFileSync(await cli.resolveEffectiveCliConfig(project, 'fixture-runtime'), 'utf8'));
   assert.equal(runtime.mcpServers.personal.command, 'mine'); assert.equal(runtime.guiManagedMcpNames, undefined);
   fs.writeFileSync(projectFile, '{invalid'); assert.throws(() => mcp.loadMcpSettings(project)); assert.equal(fs.readFileSync(projectFile, 'utf8'), '{invalid');
@@ -178,7 +178,7 @@ test('Versões: snapshots automáticos de criação/edição/exclusão e restaur
   assert.equal((await c.restoreVersion(version.id, dir)).success, false);
 });
 test('ACP: invalida configuração, serializa inicialização e limita retenção', async t => {
-  const dir = fixture(t); const c = load('server/acp-client.ts', { getGuiDataDir: () => dir, getResolvedCliPath: () => 'fixture', getBestEligibleKey: () => ({ key: 'not-real' }), process: { ...process, once() {} } });
+  const dir = fixture(t); const c = load('server/acp-client.ts', { getGuiDataDir: () => dir, getResolvedCliPath: () => 'fixture', resolveExecutionAuthentication: () => ({ authentication: { mode: 'api-key', selectedType: 'gemini-api-key', configured: true }, apiKey: 'not-real' }), process: { ...process, once() {} } });
   const Session = vm.runInContext('AcpSession', c), manager = vm.runInContext('new AcpSessionManager()', c);
   let initialized = 0; Session.prototype.initializeSession = async function () { initialized++; await new Promise(r => setTimeout(r, 5)); this.isReady = true; };
   Session.prototype.cleanup = function () { this.isClosed = true; };
@@ -289,14 +289,28 @@ test('Interface: carga inicial usa projetos novos, ignora seleção atrasada e b
 
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-function cliFixture(t, scenario) {
+function authenticationFixture(dir, options = {}) {
+  const home = path.join(dir, 'native-home'); fs.mkdirSync(path.join(home, '.gemini'), { recursive: true });
+  const env = { GEMINI_CLI_HOME: home, GEMINI_CLI_SYSTEM_SETTINGS_PATH: path.join(dir, 'system.json'), GEMINI_CLI_SYSTEM_DEFAULTS_PATH: path.join(dir, 'defaults.json'), ...options.env };
+  if (options.selectedType) fs.writeFileSync(path.join(home, '.gemini', 'settings.json'), JSON.stringify({ security: { auth: { selectedType: options.selectedType } } }));
+  if (options.cachedOAuth) fs.writeFileSync(path.join(home, '.gemini', 'oauth_creds.json'), JSON.stringify({ refresh_token: 'oauth-fixture-never-real' }));
+  const keys = options.keys || { K1: 'fixture-not-real' };
+  let poolCalls = 0;
+  const bestKey = (_, excluded = []) => { poolCalls++; const entry = Object.entries(keys).find(([id]) => !excluded.includes(id)); return entry ? { keyId: entry[0], key: entry[1], latencyRank: 'L1' } : null; };
+  const fakeProcess = { ...process, env, cwd: () => dir, once() {} };
+  const c = load('server/cli-auth-service.ts', { loadConfiguredKeys: () => keys, getBestEligibleKey: bestKey, process: fakeProcess });
+  return { c, process: fakeProcess, bestKey, home, env, get poolCalls() { return poolCalls; },
+    globals: Object.fromEntries(['resolveCliAuthentication', 'resolveExecutionAuthentication', 'buildCliAuthEnvironment'].map(name => [name, c[name]])) };
+}
+function cliFixture(t, scenario, options = {}) {
   const dir = fixture(t), policy = load('server/execution-policy.ts'), retention = load('src/utils/diagnosticRetention.ts');
   const children = [], invocations = [], results = [], events = [];
+  const auth = authenticationFixture(dir, options);
   class Tracker { constructor() { return new Proxy(this, { get: () => () => {} }); } }
   const c = load('server/gemini-cli-service.ts', {
-    console: { ...console, log() {} }, getGuiDataDir: () => dir, AgentExecutionTracker: Tracker, ...Object.fromEntries(['buildExecutionPrompt', 'consumeSessionRecovery', 'executionFailed', 'validateExecutionContext'].map(name => [name, policy[name]])), retainDiagnostics: retention.retainDiagnostics,
+    ...auth.globals, process: auth.process, ...(options.fastTimers ? { setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 5)) } : {}), console: { ...console, log() {} }, getGuiDataDir: () => dir, AgentExecutionTracker: Tracker, ...Object.fromEntries(['buildExecutionPrompt', 'consumeSessionRecovery', 'executionFailed', 'validateExecutionContext'].map(name => [name, policy[name]])), retainDiagnostics: retention.retainDiagnostics,
     acpManager: { cancelExecution() { return false; } }, terminateProcessTree(child) { if (child.closed || child.killed) return; child.killed = true; setTimeout(() => child.emit('close', null, 'SIGKILL'), 0); }, recordRuntimeExecutionResult: (...args) => results.push(args),
-    getBestEligibleKey: (_, excluded = []) => excluded.includes('K1') ? null : { key: 'fixture-not-real', keyId: 'K1' },
+    getBestEligibleKey: auth.bestKey, maskApiKey: () => '***',
     spawn(command, args, options) {
       invocations.push({ command, args, options, system: options.env.GEMINI_SYSTEM_MD ? fs.readFileSync(options.env.GEMINI_SYSTEM_MD, 'utf8') : '' });
       const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
@@ -304,10 +318,10 @@ function cliFixture(t, scenario) {
     },
   });
   c.getExaAuditTools = () => ({ tools: [], discoverySource: 'fixture' }); c.getResolvedCliPath = () => '/bin/sh'; c.isExistingSession = () => false;
-  c.loadAgents = () => [{ id: 'principal', name: 'principal', model: 'fixture-model' }]; c.syncAgentsToSettings = () => {}; c.syncPoliciesToSettings = () => {}; c.ensureAllAgentsSynchronizedAndAcknowledged = () => ({ acknowledgedCount: 0 }); c.buildEffectiveSystemPrompt = () => 'instruções';
+  c.loadAgents = () => options.agents || [{ id: 'principal', name: 'principal', model: 'fixture-model' }]; c.syncAgentsToSettings = () => {}; c.syncPoliciesToSettings = () => {}; c.ensureAllAgentsSynchronizedAndAcknowledged = () => ({ acknowledgedCount: 0 }); c.buildEffectiveSystemPrompt = () => 'instruções';
   c.resolveEffectiveCliConfig = async () => { const file = path.join(dir, `config-${crypto.randomUUID()}.json`); fs.writeFileSync(file, '{}'); return file; };
   const execute = (overrides = {}) => new Promise((resolve, reject) => c.executeGeminiCli({ prompt: 'continue', sessionId: crypto.randomUUID(), workDir: dir, resume: false, sharedMemory: 'memória validada', contextMessages: [{ role: 'user', content: 'histórico anterior' }], onEvent: event => events.push(plain(event)), onError: error => resolve({ error }), onDone: (code, signal) => resolve({ code, signal }), ...overrides }, false, { retryCount: 3, fallbackChain: [] }));
-  return { c, execute, events, children, invocations, results };
+  return { c, execute, events, children, invocations, results, auth, dir };
 }
 test('Executor real com subprocesso simulado: limita recuperação de sessão e propaga UUID/contexto/memória', async t => {
   const f = cliFixture(t, child => { child.stderr.write('Invalid session identifier'); child.emit('close', 42, null); });
@@ -347,4 +361,162 @@ test('Executor: ID duplicado e sessão ACP ocupada preservam a execução anteri
   f.c.process = { ...process, env: { ...process.env, GEMINI_GUI_PERSISTENT: '1' } };
   f.c.acpManager = { async getOrCreateSession() { throw Object.assign(new Error('Sessão ACP ocupada.'), { promptStarted: true }); }, removeSession() { removed++; } };
   const outcome = await f.execute({ executionId: crypto.randomUUID() }); assert.match(outcome.error.message, /ocupada/); assert.equal(removed, 0);
+});
+
+test('OAuth: principal e subagente executam com pool vazio e sem variáveis de API key; invoke_agent é preservado', async t => {
+  for (const agentId of ['principal', 'worker']) {
+    const f = cliFixture(t, child => {
+      for (const event of [{ type: 'tool_use', tool_name: 'invoke_agent', tool_id: 'invoke-1', parameters: { agent_name: 'worker', prompt: 'fixture' } },
+        { type: 'tool_result', tool_name: 'invoke_agent', tool_id: 'invoke-1', status: 'success', output: 'fixture result' },
+        { type: 'message', role: 'assistant', content: 'OK' }, { type: 'result', status: 'success' }]) child.stdout.write(JSON.stringify(event) + '\n');
+      child.emit('close', 0, null);
+    }, { selectedType: 'oauth-personal', cachedOAuth: true, keys: {}, env: { GEMINI_API_KEY: 'residual-1', GOOGLE_API_KEY: 'residual-2', GOOGLE_GENAI_API_KEY: 'residual-3' },
+      agents: [{ id: 'principal', name: 'principal', model: 'main-model' }, { id: 'worker', name: 'worker', model: 'worker-model' }] });
+    const before = fs.readFileSync(path.join(f.auth.home, '.gemini', 'oauth_creds.json'));
+    assert.equal((await f.execute({ agentId })).code, 0);
+    assert.equal(f.auth.poolCalls, 0); assert.equal(f.results.length, 0);
+    const env = f.invocations[0].options.env;
+    for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY']) assert.equal(Object.hasOwn(env, key), false);
+    assert.equal(env.GOOGLE_GENAI_USE_GCA, 'true'); assert.equal(f.auth.env.GEMINI_API_KEY, 'residual-1');
+    assert.ok(f.events.some(event => event.type === 'stream_event' && event.data.tool_name === 'invoke_agent'));
+    assert.deepEqual(fs.readFileSync(path.join(f.auth.home, '.gemini', 'oauth_creds.json')), before);
+    if (agentId === 'principal') assert.match(f.invocations[0].system, /invoke_agent/);
+  }
+});
+
+test('API key: pool, ranking e failover K1→K2 continuam funcionando para principal e subagente', async t => {
+  for (const agentId of ['principal', 'worker']) {
+    const f = cliFixture(t, (child, attempt) => {
+      child.stdout.write(JSON.stringify(attempt === 1 ? { type: 'result', status: 'error', error: { message: 'RESOURCE_EXHAUSTED quota 429' } } : { type: 'result', status: 'success' }) + '\n');
+      child.emit('close', attempt === 1 ? 1 : 0, null);
+    }, { selectedType: 'gemini-api-key', keys: { K1: 'fixture-k1', K2: 'fixture-k2' }, fastTimers: true });
+    assert.equal((await f.execute({ agentId })).code, 0);
+    assert.equal(f.invocations.length, 2);
+    for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY']) {
+      assert.equal(f.invocations[0].options.env[key], 'fixture-k1'); assert.equal(f.invocations[1].options.env[key], 'fixture-k2');
+    }
+    assert.equal(f.results[0][1], 'K1'); assert.equal(f.results[0][2].success, false);
+    assert.equal(f.results.at(-1)[1], 'K2'); assert.equal(f.results.at(-1)[2].success, true);
+    assert.ok(f.events.some(event => event.data?.content?.includes('Key Pool Failover')));
+  }
+});
+
+test('OAuth: fallback de modelo mantém método, contexto e identidade sem consultar Key Pool', async t => {
+  const f = cliFixture(t, (child, attempt) => {
+    child.stdout.write(JSON.stringify(attempt === 1 ? { type: 'result', status: 'error', error: { message: 'RESOURCE_EXHAUSTED quota 429' } } : { type: 'result', status: 'success' }) + '\n');
+    child.emit('close', attempt === 1 ? 1 : 0, null);
+  }, { selectedType: 'oauth-personal', cachedOAuth: true, keys: {}, fastTimers: true });
+  assert.equal((await f.execute({ agentId: 'principal', fallbackModel: 'fallback-model' })).code, 0);
+  assert.equal(f.invocations.length, 2); assert.equal(f.auth.poolCalls, 0); assert.equal(f.results.length, 0);
+  assert.ok(f.invocations[1].args.includes('fallback-model')); assert.match(f.invocations[1].system, /memória validada/);
+  assert.ok(f.events.some(event => event.data?.content?.includes('Modelo de Fallback Acionado')));
+});
+
+test('Sem autenticação real: erro específico, nenhum subprocesso e liberação da execução', async t => {
+  const f = cliFixture(t, () => assert.fail('Não deveria executar'), { keys: {} });
+  const outcome = await f.execute({ executionId: 'unauthenticated' });
+  assert.equal(outcome.error.code, 'AUTH_NOT_CONFIGURED'); assert.match(outcome.error.message, /não autenticado/);
+  assert.equal(f.invocations.length, 0); assert.equal(f.c.getExecutionState('unauthenticated'), undefined);
+  assert.equal(f.events.find(event => event.type === 'error').data.code, 'AUTH_NOT_CONFIGURED');
+});
+
+test('Status e validação distinguem OAuth, API key e ausência de autenticação sem sondar API no OAuth', async t => {
+  for (const mode of ['oauth', 'api-key', 'none']) {
+    const f = cliFixture(t, () => {}, { selectedType: mode === 'oauth' ? 'oauth-personal' : mode === 'api-key' ? 'gemini-api-key' : undefined,
+      cachedOAuth: mode === 'oauth', keys: mode === 'api-key' ? { K1: 'fixture-k1' } : {} });
+    let networkCalls = 0; f.c.fetch = async () => { networkCalls++; return { ok: true }; };
+    f.c.getResolvedCliPath = f.c.getLocalCliPath = () => '/fixture/node_modules/.bin/gemini'; f.c.getGlobalCliPath = () => '/fixture/global/gemini';
+    f.c.queryBinaryVersion = async () => '0.60.0';
+    const status = await f.c.detectCliStatus(); const validation = await f.c.validateCliAuthentication();
+    assert.equal(status.authMode, mode); assert.equal(status.authConfigured, mode !== 'none'); assert.equal(validation.valid, mode !== 'none');
+    if (mode === 'oauth') { assert.equal(status.authState, 'authenticated'); assert.equal(status.apiValid, undefined); assert.equal(status.maskedApiKey, undefined); assert.equal(validation.checked, false); }
+    if (mode === 'api-key') { assert.equal(status.apiValid, true); assert.equal(status.maskedApiKey, '***'); assert.equal(validation.checked, true); }
+    assert.equal(networkCalls, mode === 'api-key' ? 1 : 0);
+  }
+});
+
+test('Configuração nativa: JSON com comentários, precedência, ambiente OAuth e configurações efêmeras', async t => {
+  const dir = fixture(t), auth = authenticationFixture(dir, { selectedType: 'oauth-personal', keys: { K1: 'residual-pool' }, env: { GEMINI_API_KEY: 'residual-env' } });
+  const settings = path.join(auth.home, '.gemini', 'settings.json');
+  fs.writeFileSync(settings, '// native preference\n{"security":{"auth":{"selectedType":"oauth-personal"}},"url":"https://example.test"}');
+  assert.equal(auth.c.resolveCliAuthentication(dir).mode, 'oauth'); assert.equal(auth.poolCalls, 0);
+  const cli = load('server/gemini-cli-service.ts', { ...auth.globals, process: auth.process, getResolvedCliPath: () => 'fixture', getGuiDataDir: () => path.join(dir, 'gui'), loadMcpSettings() {}, loadAgents: () => [] });
+  const before = fs.readFileSync(settings);
+  const runtime = await cli.resolveEffectiveCliConfig(dir, 'oauth-config');
+  assert.equal(JSON.parse(fs.readFileSync(runtime)).security.auth.selectedType, 'oauth-personal'); assert.deepEqual(fs.readFileSync(settings), before);
+  fs.writeFileSync(auth.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH, '{"security":{"auth":{"selectedType":"gemini-api-key"}}}');
+  assert.equal(auth.c.resolveCliAuthentication(dir).mode, 'api-key');
+  fs.writeFileSync(settings, '{invalid'); assert.throws(() => auth.c.resolveCliAuthentication(dir));
+  const envAuth = authenticationFixture(fixture(t), { keys: {}, env: { GOOGLE_GENAI_USE_GCA: 'true', GEMINI_API_KEY: 'residual' } });
+  assert.equal(envAuth.c.resolveCliAuthentication().mode, 'oauth');
+  const adcAuth = authenticationFixture(fixture(t), { keys: { K1: 'unused-pool' }, env: { GEMINI_CLI_USE_COMPUTE_ADC: 'true' } });
+  assert.equal(adcAuth.c.resolveExecutionAuthentication('fixture').authentication.selectedType, 'compute-default-credentials');
+  assert.equal(adcAuth.poolCalls, 0);
+});
+
+test('ACP: OAuth não herda API keys, API key usa pool e troca do método invalida a sessão', async t => {
+  for (const mode of ['oauth-personal', 'gemini-api-key']) {
+    const dir = fixture(t), auth = authenticationFixture(dir, { selectedType: mode, keys: { K1: 'fixture-k1' }, env: { GEMINI_API_KEY: 'residual' } });
+    let environment;
+    const c = load('server/acp-client.ts', { ...auth.globals, process: auth.process, console: { ...console, log() {} }, readline: await import('node:readline'),
+      getGuiDataDir: () => dir, getResolvedCliPath: () => 'fixture', syncAgentsToSettings() {}, syncPoliciesToSettings() {},
+      resolveEffectiveCliConfig: async () => { const file = path.join(dir, 'runtime.json'); fs.writeFileSync(file, '{}'); return file; },
+      terminateProcessTree() {}, spawn(_, args, options) { environment = options.env; const child = new EventEmitter(); child.stdout = new PassThrough(); child.stdin = new PassThrough(); child.stderr = new PassThrough(); return child; } });
+    const Session = vm.runInContext('AcpSession', c), manager = vm.runInContext('new AcpSessionManager()', c);
+    Session.prototype.callMethod = async method => method === 'session/new' ? { sessionId: 'fixture-acp' } : {};
+    const session = await manager.getOrCreateSession('session', { workDir: dir, model: 'fixture-model' });
+    if (mode === 'oauth-personal') {
+      for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY']) assert.equal(Object.hasOwn(environment, key), false);
+      assert.equal(auth.poolCalls, 0);
+      fs.writeFileSync(path.join(auth.home, '.gemini', 'settings.json'), '{"security":{"auth":{"selectedType":"gemini-api-key"}}}');
+      const replaced = await manager.getOrCreateSession('session', { workDir: dir, model: 'fixture-model' });
+      assert.notEqual(replaced, session); assert.equal(session.isClosed, true); assert.equal(environment.GEMINI_API_KEY, 'fixture-k1');
+    } else assert.equal(environment.GEMINI_API_KEY, 'fixture-k1');
+    manager.removeSession('session');
+  }
+});
+
+test('Teste de agente usa o executor CLI com OAuth e sem pool', async t => {
+  const f = cliFixture(t, child => { child.stdout.write('{"type":"message","role":"assistant","content":"OK"}\n'); child.emit('close', 0, null); }, { selectedType: 'oauth-personal', cachedOAuth: true, keys: {} });
+  const result = await f.c.testCliAgentConnection({ model: 'fixture-model', workDir: f.dir });
+  assert.equal(result.text, 'OK'); assert.equal(f.auth.poolCalls, 0); assert.equal(f.invocations.length, 1);
+});
+
+test('Rota de teste de agentes: OAuth via CLI, API key via pool e ausência real de autenticação', async t => {
+  const source = fs.readFileSync(path.join(root, 'server.ts'), 'utf8');
+  const snippet = source.slice(source.indexOf("  app.post('/api/agents/test'"), source.indexOf("  app.post('/api/agents/reset-defaults'"))
+    .replace("await import('@google/genai')", 'await sdkFactory()');
+  for (const mode of ['oauth', 'api-key', 'none']) {
+    const dir = fixture(t), auth = authenticationFixture(dir, { keys: mode === 'api-key' ? { K1: 'route-fixture-key' } : {},
+      selectedType: mode === 'oauth' ? 'oauth-personal' : mode === 'api-key' ? 'gemini-api-key' : undefined });
+    let handler, cliCalls = 0, sdkKey;
+    const context = vm.createContext({ console: { ...console, error() {} }, process: auth.process, AbortController, ...auth.globals,
+      getResolvedCliPath: () => 'fixture', app: { post(route, callback) { assert.equal(route, '/api/agents/test'); handler = callback; } },
+      testCliAgentConnection: async () => { cliCalls++; return { text: 'OK', latencyMs: 1 }; },
+      sdkFactory: async () => ({ Modality: { AUDIO: 'AUDIO' }, GoogleGenAI: class { constructor(options) { sdkKey = options.apiKey; this.models = { generateContent: async () => ({ text: 'OK' }) }; } } }) });
+    vm.runInContext(stripTypeScriptTypes(snippet, { mode: 'transform' }), context);
+    const response = new EventEmitter(); response.statusCode = 200;
+    response.status = code => { response.statusCode = code; return response; }; response.json = data => { response.body = data; response.writableEnded = true; return response; };
+    await handler({ body: { model: 'fixture-model', workDir: dir } }, response);
+    assert.equal(response.statusCode, mode === 'none' ? 400 : 200); assert.equal(response.body.success, mode !== 'none');
+    assert.equal(cliCalls, mode === 'oauth' ? 1 : 0); assert.equal(sdkKey, mode === 'api-key' ? 'route-fixture-key' : undefined);
+    if (mode === 'none') assert.equal(response.body.code, 'AUTH_NOT_CONFIGURED');
+    assert.equal(Object.hasOwn(auth.env, 'GEMINI_API_KEY'), false);
+    if (mode === 'oauth') {
+      await handler({ body: { model: 'voice-model', type: 'voice', workDir: dir } }, response);
+      assert.equal(response.statusCode, 422); assert.equal(response.body.code, 'AUTH_CAPABILITY_UNSUPPORTED');
+    }
+  }
+});
+
+test('CLI Snap: seleção lê o HOME do launcher e respeita override GEMINI_CLI_HOME', t => {
+  const dir = fixture(t), native = path.join(dir, 'snap', 'gemini-cli', 'common', '.gemini'); fs.mkdirSync(native, { recursive: true });
+  fs.writeFileSync(path.join(native, 'settings.json'), '{"security":{"auth":{"selectedType":"oauth-personal"}}}');
+  fs.writeFileSync(path.join(native, 'oauth_creds.json'), '{"refresh_token":"snap-fixture-never-real"}');
+  const c = load('server/cli-auth-service.ts', { os: { ...os, homedir: () => dir }, getBestEligibleKey: () => assert.fail('Pool não deve ser consultado no OAuth'), loadConfiguredKeys: () => ({}),
+    fs: { ...fs, readlinkSync: () => 'gemini-cli.gemini', existsSync: file => file === '/snap/bin/gemini' || fs.existsSync(file),
+      readFileSync: (file, ...args) => file === '/snap/gemini-cli/current/meta/snap.yaml' ? 'apps:\n  gemini:\n    environment:\n      HOME: $SNAP_USER_COMMON\n' : fs.readFileSync(file, ...args) } });
+  const env = { PATH: '/snap/bin', GEMINI_CLI_SYSTEM_SETTINGS_PATH: path.join(dir, 'system.json'), GEMINI_CLI_SYSTEM_DEFAULTS_PATH: path.join(dir, 'defaults.json') };
+  const auth = c.resolveCliAuthentication(dir, env, 'gemini'); assert.equal(auth.mode, 'oauth'); assert.equal(auth.state, 'authenticated');
+  assert.equal(c.resolveCliAuthentication(dir, { ...env, GEMINI_CLI_HOME: path.join(dir, 'override') }, 'gemini').mode, 'none');
 });

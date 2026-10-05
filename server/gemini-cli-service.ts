@@ -1,3 +1,4 @@
+import { resolveCliAuthentication, resolveExecutionAuthentication, buildCliAuthEnvironment } from './cli-auth-service.js';
 import { spawn, execSync, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import { terminateProcessTree } from './process-service.js';
@@ -147,7 +148,7 @@ export async function validateGeminiApiKey(
   latencyMs?: number;
 }> {
   const candidate = getBestEligibleKey(targetModel);
-  const apiKey = candidate?.key;
+  const apiKey = candidate?.key || process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) {
     return {
       configured: false,
@@ -314,6 +315,48 @@ export async function validateGeminiApiKey(
   }
 }
 
+/** Checks the selected CLI authentication without turning OAuth into an API-key probe. */
+export async function validateCliAuthentication(forceFresh = false, targetModel = 'gemini-3.1-flash-lite', cwd = process.cwd()) {
+  const authentication = resolveCliAuthentication(cwd, process.env, getResolvedCliPath());
+  if (authentication.mode === 'api-key') {
+    const result = await validateGeminiApiKey(forceFresh, targetModel);
+    if (result.configured) return { ...result, checked: true, authMode: authentication.mode, authState: result.valid ? 'authenticated' as const : 'configured' as const };
+    // CLI versions with secure native API-key storage resolve that credential themselves.
+  }
+  return { configured: authentication.configured, valid: authentication.configured,
+    message: authentication.message, checked: false, authMode: authentication.mode, authState: authentication.state,
+    modelTested: undefined as string | undefined, latencyMs: undefined as number | undefined };
+}
+
+export function testCliAgentConnection(params: { model: string; workDir?: string; agentId?: string; systemInstructions?: string }, signal?: AbortSignal): Promise<{ text: string; latencyMs: number }> {
+  return new Promise((resolve, reject) => {
+    const started = performance.now();
+    let text = '', settled = false;
+    let execution: ReturnType<typeof executeGeminiCli> | undefined;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      if (error) reject(error); else resolve({ text: text.trim(), latencyMs: Math.round(performance.now() - started) });
+    };
+    const abort = () => { execution?.cancel(); finish(new Error('Teste do agente cancelado.')); };
+    const timer = setTimeout(() => { execution?.cancel(); finish(new Error('Timeout do teste do agente (30s).')); }, 30000);
+    if (signal?.aborted) { abort(); return; }
+    signal?.addEventListener('abort', abort, { once: true });
+    execution = executeGeminiCli({
+      ...params, workDir: params.workDir || process.cwd(), resume: false,
+      prompt: 'Responda apenas "OK" para teste de conexão.',
+      onEvent(event) {
+        const message = event.data;
+        if ((event.type === 'stream_event' || event.type === 'message') && message?.role === 'assistant' && typeof message.content === 'string') text = (text + message.content).slice(-2048);
+      },
+      onError: finish,
+      onDone(code, exitSignal) { finish(code === 0 && !exitSignal ? undefined : new Error(`O teste do agente falhou (${exitSignal || code}).`)); },
+    });
+  });
+}
+
 const knownSessions = new Set<string>();
 
 export function isValidUUID(id?: string): boolean {
@@ -416,16 +459,16 @@ export function setCustomCliPath(newPath: string) {
 
 export async function detectCliStatus(
   forceFresh = false,
-  targetModel = 'gemini-3.1-flash-lite'
+  targetModel = 'gemini-3.1-flash-lite',
+  cwd = process.cwd()
 ): Promise<CliStatus> {
   const cliPath = getResolvedCliPath();
   const localCliPath = getLocalCliPath();
   const globalCliPath = getGlobalCliPath();
 
-  const configuredKeys = loadConfiguredKeys();
-  const activeKeysCount = Object.keys(configuredKeys).length;
-  const bestCandidate = getBestEligibleKey(targetModel);
-  const authConfigured = activeKeysCount > 0;
+  const authentication = resolveCliAuthentication(cwd, process.env, getResolvedCliPath());
+  const authConfigured = authentication.configured;
+  const bestCandidate = authentication.mode === 'api-key' ? getBestEligibleKey(targetModel) : null;
   const maskedApiKey = bestCandidate ? maskApiKey(bestCandidate.key) : undefined;
 
   const rawExaKey = process.env.EXA_API_KEY || '';
@@ -442,19 +485,7 @@ export async function detectCliStatus(
   const [localVersion, globalVersion, apiCheck] = await Promise.all([
     queryBinaryVersion(localCliPath),
     queryBinaryVersion(globalCliPath),
-    authConfigured ? validateGeminiApiKey(forceFresh, targetModel) : Promise.resolve<{
-      configured: boolean;
-      valid: boolean;
-      message: string;
-      modelTested?: string;
-      latencyMs?: number;
-    }>({
-      configured: false,
-      valid: false,
-      message: 'Nenhuma GEMINI_API_KEY configurada no ambiente.',
-      latencyMs: undefined,
-      modelTested: undefined,
-    }),
+    validateCliAuthentication(forceFresh, targetModel, cwd),
   ]);
 
   // Fast-path: if local CLI version was already discovered and cliPath matches local bin, resolve directly
@@ -469,16 +500,20 @@ export async function detectCliStatus(
       globalVersion: globalVersion || undefined,
       connectionState: 'connected',
       authConfigured,
+      authMode: authentication.mode,
+      authState: apiCheck.authState,
+      authMessage: apiCheck.message,
+      authWorkDir: cwd,
       maskedApiKey,
       maskedExaKey,
       exaConfigured,
-      apiValid: apiCheck.valid,
-      apiChecked: true,
-      apiError: !apiCheck.valid ? apiCheck.message : undefined,
+      apiValid: authentication.mode === 'api-key' && apiCheck.checked ? apiCheck.valid : undefined,
+      apiChecked: authentication.mode === 'api-key' && apiCheck.checked,
+      apiError: authentication.mode === 'api-key' && !apiCheck.valid ? apiCheck.message : undefined,
       latencyMs: apiCheck.latencyMs,
       modelTested: apiCheck.modelTested,
       approvalMode: 'default',
-      errorMessage: !authConfigured ? 'Atenção: Nenhuma GEMINI_API_KEY detectada no ambiente.' : undefined,
+      errorMessage: !authConfigured ? authentication.message : undefined,
     };
   }
 
@@ -512,12 +547,16 @@ export async function detectCliStatus(
           globalVersion: globalVersion || undefined,
           connectionState: localVersion || globalVersion ? 'connected' : 'error',
           authConfigured,
+          authMode: authentication.mode,
+          authState: apiCheck.authState,
+          authMessage: apiCheck.message,
+          authWorkDir: cwd,
           maskedApiKey,
           maskedExaKey,
           exaConfigured,
-          apiValid: apiCheck.valid,
-          apiChecked: true,
-          apiError: !apiCheck.valid ? apiCheck.message : undefined,
+          apiValid: authentication.mode === 'api-key' && apiCheck.checked ? apiCheck.valid : undefined,
+          apiChecked: authentication.mode === 'api-key' && apiCheck.checked,
+          apiError: authentication.mode === 'api-key' && !apiCheck.valid ? apiCheck.message : undefined,
           latencyMs: apiCheck.latencyMs,
           modelTested: apiCheck.modelTested,
           approvalMode: 'default',
@@ -545,12 +584,16 @@ export async function detectCliStatus(
           globalVersion: globalVersion || undefined,
           connectionState: 'not_detected',
           authConfigured,
+          authMode: authentication.mode,
+          authState: apiCheck.authState,
+          authMessage: apiCheck.message,
+          authWorkDir: cwd,
           maskedApiKey,
           maskedExaKey,
           exaConfigured,
-          apiValid: apiCheck.valid,
-          apiChecked: true,
-          apiError: !apiCheck.valid ? apiCheck.message : undefined,
+          apiValid: authentication.mode === 'api-key' && apiCheck.checked ? apiCheck.valid : undefined,
+          apiChecked: authentication.mode === 'api-key' && apiCheck.checked,
+          apiError: authentication.mode === 'api-key' && !apiCheck.valid ? apiCheck.message : undefined,
           latencyMs: apiCheck.latencyMs,
           modelTested: apiCheck.modelTested,
           approvalMode: 'default',
@@ -572,16 +615,20 @@ export async function detectCliStatus(
             globalVersion: globalVersion || undefined,
             connectionState: 'connected',
             authConfigured,
+            authMode: authentication.mode,
+            authState: apiCheck.authState,
+            authMessage: apiCheck.message,
+            authWorkDir: cwd,
             maskedApiKey,
             maskedExaKey,
             exaConfigured,
-            apiValid: apiCheck.valid,
-            apiChecked: true,
-            apiError: !apiCheck.valid ? apiCheck.message : undefined,
+            apiValid: authentication.mode === 'api-key' && apiCheck.checked ? apiCheck.valid : undefined,
+            apiChecked: authentication.mode === 'api-key' && apiCheck.checked,
+            apiError: authentication.mode === 'api-key' && !apiCheck.valid ? apiCheck.message : undefined,
             latencyMs: apiCheck.latencyMs,
             modelTested: apiCheck.modelTested,
             approvalMode: 'default',
-            errorMessage: !authConfigured ? 'Atenção: Nenhuma GEMINI_API_KEY detectada no ambiente.' : undefined,
+            errorMessage: !authConfigured ? authentication.message : undefined,
           });
         } else {
           safeResolve({
@@ -594,12 +641,16 @@ export async function detectCliStatus(
             globalVersion: globalVersion || undefined,
             connectionState: localVersion ? 'connected' : 'error',
             authConfigured,
+            authMode: authentication.mode,
+            authState: apiCheck.authState,
+            authMessage: apiCheck.message,
+            authWorkDir: cwd,
             maskedApiKey,
             maskedExaKey,
             exaConfigured,
-            apiValid: apiCheck.valid,
-            apiChecked: true,
-            apiError: !apiCheck.valid ? apiCheck.message : undefined,
+            apiValid: authentication.mode === 'api-key' && apiCheck.checked ? apiCheck.valid : undefined,
+            apiChecked: authentication.mode === 'api-key' && apiCheck.checked,
+            apiError: authentication.mode === 'api-key' && !apiCheck.valid ? apiCheck.message : undefined,
             latencyMs: apiCheck.latencyMs,
             modelTested: apiCheck.modelTested,
             approvalMode: 'default',
@@ -618,10 +669,14 @@ export async function detectCliStatus(
         globalVersion: globalVersion || undefined,
         connectionState: 'error',
         authConfigured,
+        authMode: authentication.mode,
+        authState: apiCheck.authState,
+        authMessage: apiCheck.message,
+        authWorkDir: cwd,
         maskedApiKey,
-        apiValid: apiCheck.valid,
-        apiChecked: true,
-        apiError: !apiCheck.valid ? apiCheck.message : undefined,
+        apiValid: authentication.mode === 'api-key' && apiCheck.checked ? apiCheck.valid : undefined,
+        apiChecked: authentication.mode === 'api-key' && apiCheck.checked,
+        apiError: authentication.mode === 'api-key' && !apiCheck.valid ? apiCheck.message : undefined,
         latencyMs: apiCheck.latencyMs,
         modelTested: apiCheck.modelTested,
         approvalMode: 'default',
@@ -940,6 +995,15 @@ export async function resolveEffectiveCliConfig(cwd: string, executionId: string
     } catch { throw new Error('Configuração da GUI inválida; execução interrompida.'); }
   }
 
+  // The ephemeral system settings must preserve the CLI's native auth selection.
+  // This also prevents .env API-key leftovers from changing an OAuth execution.
+  const authentication = resolveCliAuthentication(cwd, process.env, getResolvedCliPath());
+  if (authentication.selectedType) {
+    settings.security ??= {};
+    settings.security.auth ??= {};
+    settings.security.auth.selectedType = authentication.selectedType;
+  }
+
   // Remove GUI-specific persistence metadata so runtime config complies with strict Gemini CLI schema
   delete settings.guiMcpServers;
   delete settings.guiManagedMcpNames;
@@ -1187,6 +1251,7 @@ export function executeGeminiCli(
       // Otherwise, the agent strictly uses its factual configured model from settings/disk, or params.model as fallback.
       let requestedModel = state?.currentModel || configuredAgent?.model || params.model || 'gemini-3.5-flash-lite';
       const chosenModel = normalizeCliModelName(requestedModel);
+      const { authentication, apiKey: activeApiKey, keyId: activeKeyId } = resolveExecutionAuthentication(chosenModel, cwd, state?.triedKeyIds || [], cliPath);
 
       // Infer agentId if not explicitly provided
       if (!agentId && requestedModel) {
@@ -1351,33 +1416,16 @@ export function executeGeminiCli(
         }
       }
 
-      // 4.1. Selecionar a melhor chave elegível do Key Pool para o modelo executado (Fonte Única Oficial)
-      const keyCandidate = getBestEligibleKey(chosenModel, state?.triedKeyIds || []);
-      const activeApiKey = keyCandidate?.key;
-      const activeKeyId = keyCandidate?.keyId || 'K1';
-
-      if (!activeApiKey) {
-        const noKeyMsg = 'Nenhuma chave Gemini cadastrada no Key Pool. Cadastre ao menos uma chave (K1..K9) em Configurações → Gemini API → Key Pool.';
-        sysLog.warn('KPOOL', `[KPOOL] Execução abortada: nenhuma chave elegível no Key Pool para o modelo ${chosenModel}.`);
-        params.onError(new Error(noKeyMsg));
-        params.onEvent({
-          type: 'error',
-          data: { message: noKeyMsg, code: 'NO_KEY_IN_POOL' },
-        });
-        return;
-      }
+      sysLog.info('CLI', `Autenticação da execução: ${authentication.selectedType} (${activeKeyId ? `Key Pool ${activeKeyId}` : 'credenciais nativas'}).`);
 
       const env: NodeJS.ProcessEnv = {
-        ...process.env,
+        ...buildCliAuthEnvironment(authentication, activeApiKey),
         NO_COLOR: '1',
         FORCE_COLOR: '0',
         GEMINI_CLI_TRUST_WORKSPACE: 'true',
         GEMINI_MAX_RETRIES: '0',
         MAX_RETRIES: '0',
         GEMINI_CLI_NO_RELAUNCH: '1',
-        GEMINI_API_KEY: activeApiKey,
-        GOOGLE_API_KEY: activeApiKey,
-        GOOGLE_GENAI_API_KEY: activeApiKey,
       };
 
       // CLI 0.59 supports an explicit runtime settings path without modifying user/workspace settings.
@@ -1390,6 +1438,7 @@ export function executeGeminiCli(
       // Configuração da GUI e Invocação da CLI (Conceitos separados do Final Model Request)
       const guiConfiguration = {
         model: chosenModel,
+        authMode: authentication.mode,
         agentId: agentId || 'principal',
         temperature: typeof params.temperature === 'number' ? params.temperature : undefined,
         topP: typeof params.topP === 'number' ? params.topP : undefined,
@@ -2013,7 +2062,7 @@ export function executeGeminiCli(
             } else if (isOverloadedError) {
               toolFailureReason = 'Serviço da API Gemini temporariamente sobrecarregado (Erro 503 / Model Overloaded) durante a execução do subagente.';
             } else if (isAuthError) {
-              toolFailureReason = 'Falha de autenticação da chave de API (GEMINI_API_KEY) durante a execução do subagente.';
+              toolFailureReason = `Falha de autenticação (${authentication.selectedType}) durante a execução do subagente.`;
             }
 
             const isSuccess = code === 0 && !isProcessExitFailure && !reportedErrorText && !isQuotaError && !isFetchFailed && !isOverloadedError && !isAuthError;
@@ -2044,15 +2093,15 @@ export function executeGeminiCli(
 
         if (hasFailed) {
           // Registrar resultado no Key Pool para o modelo e chave atuais
-          recordRuntimeExecutionResult(chosenModel, activeKeyId, {
+          if (activeKeyId) recordRuntimeExecutionResult(chosenModel, activeKeyId, {
             success: false,
             httpStatus: apiErrCode,
             errorText: stderrText || reportedErrorText,
           });
 
           // 1. Tentar próxima chave elegível no Key Pool para o MESMO modelo
-          const triedKeys = [...(state?.triedKeyIds || []), activeKeyId];
-          const nextKey = getBestEligibleKey(chosenModel, triedKeys);
+          const triedKeys = activeKeyId ? [...(state?.triedKeyIds || []), activeKeyId] : [];
+          const nextKey = authentication.mode === 'api-key' && activeKeyId ? getBestEligibleKey(chosenModel, triedKeys) : null;
 
           if (nextKey && !execState.cancelled && !isBadRequestError) {
             params.onEvent({
@@ -2258,7 +2307,10 @@ export function executeGeminiCli(
           if (code === -2 || stderrText.includes('ENOENT')) {
             finalMessage = `O executável do Gemini CLI (${cliPath}) ou o diretório de trabalho (${cwd}) não foi localizado no sistema (Erro -2 / ENOENT).`;
           } else if (isAuthError) {
-            finalMessage = 'A chave de API do Gemini (GEMINI_API_KEY) não está configurada no seu ambiente. Configure-a no menu de Configurações da GUI ou exporte a variável no terminal.';
+            finalMessage = authentication.mode === 'oauth'
+              ? 'A autenticação Google/OAuth do Gemini CLI falhou. Verifique o login nativo no Gemini CLI.'
+              : authentication.mode === 'api-key' ? 'A autenticação por API key falhou. Verifique a credencial utilizada pelo Gemini CLI ou pelo Key Pool.'
+              : 'A autenticação nativa do Gemini CLI falhou. Verifique o método selecionado no CLI.';
           } else if (isBadRequestError) {
             finalMessage = `⚠️ Requisição Inválida / Parâmetros Incompatíveis (Erro 400): ${reportedErrorText || stderrText.trim()}`;
           } else if (isQuotaError) {
@@ -2299,7 +2351,7 @@ Você atingiu o limite de requisições.
           tracker.trackFlowSummary(code || 1, finalMessage);
         } else {
           // Gravar sucesso no Key Pool para o modelo e chave atuais
-          recordRuntimeExecutionResult(chosenModel, activeKeyId, {
+          if (activeKeyId) recordRuntimeExecutionResult(chosenModel, activeKeyId, {
             success: true,
             latencyMs: Math.round(performance.now() - tSpawn),
           });
@@ -2340,6 +2392,9 @@ Você atingiu o limite de requisições.
       if (tempSettingsFile && fs.existsSync(tempSettingsFile)) {
         try { fs.unlinkSync(tempSettingsFile); } catch {}
       }
+      if (execState.childProcess?.exitCode === null && execState.childProcess?.signalCode === null) terminateProcessTree(execState.childProcess, true);
+      executions.delete(executionId);
+      if (err.code) params.onEvent({ type: 'error', data: { message: err.message, code: err.code } });
       params.onError(err);
     }
   };
