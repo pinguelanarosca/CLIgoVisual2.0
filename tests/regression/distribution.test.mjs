@@ -124,6 +124,7 @@ test('Empacotador gera .deb e arquivo completos, com versão/hash e dependência
   assert.equal(fs.existsSync(path.join(app, '.gemini')), false);
   for (const file of ['server.ts', 'scripts/distribution-source.cjs', 'scripts/patch-gemini-cli.cjs', 'install.sh']) assert.equal(hash(fs.readFileSync(path.join(app, file))), manifest.files[file]);
   assert.ok(fs.existsSync(path.join(app, '.git')));
+  assert.ok(fs.statSync(path.join(app, 'install.sh')).mode & 0o111, 'Instalador embutido deve executar diretamente');
   const control = fs.readFileSync(path.join(dir, 'dist-ubuntu/deb-root/DEBIAN/control'), 'utf8');
   assert.ok(control.includes(`Version: ${manifest.version}+git.${manifest.commit.slice(0, 7)}`));
   assert.ok(control.includes('Depends: nodejs (>= 22.13.0), npm, git'));
