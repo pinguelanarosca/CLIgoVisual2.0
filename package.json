@@ -14,7 +14,8 @@
     "reset": "./reset.sh",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test:regression": "node tests/regression/audit-fixes.test.mjs"
+    "test:regression": "node tests/regression/audit-fixes.test.mjs",
+    "test:distribution": "node tests/regression/distribution.test.mjs"
   },
   "dependencies": {
     "@google/gemini-cli": "^0.59.0",

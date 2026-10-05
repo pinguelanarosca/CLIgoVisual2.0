@@ -1,128 +1,32 @@
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { execFileSync, spawnSync } = require('node:child_process');
+const { exportSource, readLauncher } = require('./distribution-source.cjs');
 
 console.log('=== Empacotador Ubuntu Linux para Gemini CLI GUI ===');
-
 const rootDir = process.cwd();
-const appVersion = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8')).version;
-const distUbuntuDir = path.join(rootDir, 'dist-ubuntu');
+const outputDir = path.join(rootDir, 'dist-ubuntu');
+fs.mkdirSync(outputDir, { recursive: true });
 
-if (!fs.existsSync(distUbuntuDir)) {
-  fs.mkdirSync(distUbuntuDir, { recursive: true });
-}
+// Refuse stale bundles: compilation must succeed before any package is created.
+execFileSync('npm', ['run', 'build'], { stdio: 'inherit', cwd: rootDir });
+if (!fs.existsSync(path.join(rootDir, 'dist/server.cjs'))) throw new Error('Build não gerou dist/server.cjs.');
 
-console.log('1. Compilando aplicação (Vite + esbuild)...');
-try {
-  execSync('npm run build', { stdio: 'inherit', cwd: rootDir });
-} catch (err) {
-  console.error('Falha no build da aplicação:', err.message);
-  process.exit(1);
-}
-
-console.log('2. Preparando estrutura Debian /opt/gemini-gui...');
-const debRoot = path.join(distUbuntuDir, 'deb-root');
+const debRoot = path.join(outputDir, 'deb-root');
 fs.rmSync(debRoot, { recursive: true, force: true });
-fs.mkdirSync(debRoot, { recursive: true });
-
-const optAppDir = path.join(debRoot, 'opt', 'gemini-gui');
-const binDir = path.join(debRoot, 'usr', 'bin');
-const appLauncherDir = path.join(debRoot, 'usr', 'share', 'applications');
-const debianMetaDir = path.join(debRoot, 'DEBIAN');
-
-fs.mkdirSync(optAppDir, { recursive: true });
-fs.mkdirSync(binDir, { recursive: true });
-fs.mkdirSync(appLauncherDir, { recursive: true });
-fs.mkdirSync(debianMetaDir, { recursive: true });
-
-// Copy compiled distribution
-console.log('3. Copiando dist/ e arquivos essenciais de execução...');
-fs.cpSync(path.join(rootDir, 'dist'), path.join(optAppDir, 'dist'), { recursive: true });
-fs.copyFileSync(path.join(rootDir, 'package.json'), path.join(optAppDir, 'package.json'));
-
-if (fs.existsSync(path.join(rootDir, '.gemini'))) {
-  fs.cpSync(path.join(rootDir, '.gemini'), path.join(optAppDir, '.gemini'), { recursive: true });
-}
-
-// 4. Launcher script in /usr/bin/gemini-gui
-const launcherScript = `#!/usr/bin/env bash
-set -e
-export GEMINI_GUI_DIR="/opt/gemini-gui"
-export PORT="\${PORT:-3000}"
-export NODE_ENV="production"
-
-# 1. Determinar o diretório home real do usuário
-TARGET_USER="\${SUDO_USER:-\$USER}"
-USER_HOME="\${HOME:-/root}"
-if [ -n "\$SUDO_USER" ] && [ "\$SUDO_USER" != "root" ]; then
-    SUDO_HOME=\$(eval echo "~\$SUDO_USER" 2>/dev/null || true)
-    if [ -n "\$SUDO_HOME" ]; then
-        USER_HOME="\$SUDO_HOME"
-    fi
-fi
-
-if ! command -v node &> /dev/null; then
-    echo "ERRO: Node.js é necessário. Instale via 'sudo apt install nodejs npm'"
-    exit 1
-fi
-
-if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22||(a===22&&b<13))process.exit(1); require("node:sqlite");' >/dev/null 2>&1; then
-    echo "ERRO: Node.js >=22.13.0 com node:sqlite é necessário."
-    exit 1
-fi
-
-# 2. Verificar e matar instâncias órfãs antes de iniciar
-pkill -f "dist/server.cjs" 2>/dev/null || true
-
-# 3. Validar a porta 3000 disponível antes de subir o servidor
-if command -v fuser &> /dev/null; then
-    fuser -k "\$PORT/tcp" 2>/dev/null || true
-elif command -v lsof &> /dev/null; then
-    ORPHAN_PID=\$(lsof -Pi :\$PORT -sTCP:LISTEN -t 2>/dev/null || true)
-    if [ -n "\$ORPHAN_PID" ]; then
-        kill -9 "\$ORPHAN_PID" 2>/dev/null || true
-    fi
-fi
-
-# 4. Redirecionar logs para ~/.local/share/gemini-gui/app.log
-LOG_DIR="\$USER_HOME/.local/share/gemini-gui"
-mkdir -p "\$LOG_DIR"
-LOG_FILE="\$LOG_DIR/app.log"
-
-if [ -n "\$SUDO_USER" ] && [ "\$SUDO_USER" != "root" ]; then
-    chown -R "\$SUDO_USER:" "\$LOG_DIR" 2>/dev/null || true
-fi
-
-cd /opt/gemini-gui
-
-echo "Iniciando Gemini CLI GUI em segundo plano..."
-echo "Porta: \$PORT"
-echo "Logs: \$LOG_FILE"
-
-# 5. Usar nohup e backgrounding correto para desanexar o processo do terminal
-nohup node dist/server.cjs >> "\$LOG_FILE" 2>&1 &
-SERVER_PID=\$!
-disown \$SERVER_PID 2>/dev/null || true
-
-# Aguardar inicialização e verificar saúde da porta
-for i in {1..10}; do
-    if command -v curl &> /dev/null && curl -s -m 1 "http://localhost:\$PORT/api/health" &>/dev/null; then
-        break
-    fi
-    sleep 0.5
-done
-
-if command -v xdg-open &> /dev/null; then
-    nohup xdg-open "http://localhost:\$PORT" >/dev/null 2>&1 &
-fi
-
-echo "Gemini CLI GUI iniciado com sucesso em segundo plano (PID \$SERVER_PID). Terminal desanexado."
-exit 0
-`;
-fs.writeFileSync(path.join(binDir, 'gemini-gui'), launcherScript, { mode: 0o755 });
-
-// 5. Desktop file
-const desktopFile = `[Desktop Entry]
+const appDir = path.join(debRoot, 'opt/gemini-gui');
+fs.mkdirSync(path.dirname(appDir), { recursive: true });
+const manifest = exportSource(rootDir, appDir);
+fs.cpSync(path.join(rootDir, 'dist'), path.join(appDir, 'dist'), { recursive: true });
+const sourceHash = crypto.createHash('sha256').update(JSON.stringify(manifest.files)).digest('hex').slice(0, 8);
+const revision = `${manifest.version}+git.${manifest.commit.slice(0, 7)}.${sourceHash}`;
+const metaDir = path.join(debRoot, 'DEBIAN');
+const binDir = path.join(debRoot, 'usr/bin');
+const desktopDir = path.join(debRoot, 'usr/share/applications');
+for (const directory of [metaDir, binDir, desktopDir]) fs.mkdirSync(directory, { recursive: true });
+fs.writeFileSync(path.join(binDir, 'gemini-gui'), readLauncher(rootDir), { mode: 0o755 });
+fs.writeFileSync(path.join(desktopDir, 'gemini-gui.desktop'), `[Desktop Entry]
 Name=Gemini CLI GUI
 Comment=Interface Gráfica Local para o Gemini CLI
 Exec=/usr/bin/gemini-gui
@@ -130,50 +34,42 @@ Icon=terminal
 Terminal=false
 Type=Application
 Categories=Development;Utility;
-Keywords=gemini;ai;cli;google;developer;
-`;
-fs.writeFileSync(path.join(appLauncherDir, 'gemini-gui.desktop'), desktopFile, 'utf8');
-
-// 6. DEBIAN/control
-const debianControl = `Package: gemini-gui
-Version: ${appVersion}
+`);
+fs.writeFileSync(path.join(metaDir, 'control'), `Package: gemini-gui
+Version: ${revision}
 Section: devel
 Priority: optional
 Architecture: all
-Depends: nodejs (>= 22.13.0)
+Depends: nodejs (>= 22.13.0), npm, git
 Maintainer: Gemini CLI GUI Developer <developer@local>
-Description: Interface grafica local, moderna e amigavel para o Gemini CLI no Ubuntu Linux.
- Integracao direta com o processo real do Gemini CLI, agentes especializados,
- skills, comandos, MCP, audio STT/TTS e inspecao de diffs.
-`;
-fs.writeFileSync(path.join(debianMetaDir, 'control'), debianControl, 'utf8');
-
-// 7. DEBIAN/postinst
-const postinst = `#!/bin/sh
+Description: Interface grafica local para o Gemini CLI.
+ Inclui fonte versionada, build e suporte a atualizacao Git.
+`);
+// server.cjs has external dependencies. Install them and run the existing CLI
+// patch from the included source; never ship credentials or borrowed node_modules.
+fs.writeFileSync(path.join(metaDir, 'postinst'), `#!/bin/sh
 set -e
+cd /opt/gemini-gui
+npm install --include=dev --package-lock=false --no-audit --no-fund
 chmod +x /usr/bin/gemini-gui
 update-desktop-database 2>/dev/null || true
-echo "Gemini CLI GUI instalado com sucesso! Digite 'gemini-gui' no terminal para iniciar."
-exit 0
-`;
-fs.writeFileSync(path.join(debianMetaDir, 'postinst'), postinst, { mode: 0o755 });
+echo "Gemini CLI GUI ${revision} instalado. Digite gemini-gui para iniciar."
+`, { mode: 0o755 });
 
-// 8. Build .deb package if dpkg-deb is available
-const debPackageOutput = path.join(distUbuntuDir, `gemini-gui_${appVersion}_all.deb`);
-try {
-  execSync(`dpkg-deb --build "${debRoot}" "${debPackageOutput}"`, { stdio: 'inherit' });
-  console.log(`✓ Pacote Debian criado: ${debPackageOutput}`);
-} catch (err) {
-  console.log('dpkg-deb não disponível ou falhou. Criando tarball independente (.tar.gz)...');
+const dpkg = spawnSync('dpkg-deb', ['--version'], { encoding: 'utf8' });
+if (dpkg.error?.code === 'ENOENT') {
+  console.warn('dpkg-deb indisponível; somente o arquivo de instalação será gerado.');
+} else {
+  if (dpkg.error) throw dpkg.error;
+  if (dpkg.status !== 0 || dpkg.signal) throw new Error('dpkg-deb não terminou normalmente.');
+  const debFile = path.join(outputDir, `gemini-gui_${revision}_all.deb`);
+  execFileSync('dpkg-deb', ['--build', '--root-owner-group', debRoot, debFile], { stdio: 'inherit' });
+  console.log(`Pacote Debian criado: ${debFile}`);
 }
 
-// 9. Create portable standalone tarball
-const tarballOutput = path.join(distUbuntuDir, 'gemini-gui-ubuntu-standalone.tar.gz');
-try {
-  execSync(`tar -czf "${tarballOutput}" -C "${distUbuntuDir}" gemini-gui.desktop gemini-gui install.sh uninstall.sh PROCEDIMENTO_VALIDACAO_POS_INSTALACAO.md 2>/dev/null || true`);
-  console.log(`✓ Tarball standalone criado: ${tarballOutput}`);
-} catch (e) {
-  // Ignored
-}
-
-console.log('Empacotamento concluído com sucesso em dist-ubuntu/!');
+// A complete, exact source snapshot; npm dependencies require network access.
+// The official installer detects the embedded manifest and does not clone main.
+const tarFile = path.join(outputDir, 'gemini-gui-ubuntu-standalone.tar.gz');
+execFileSync('tar', ['-czf', tarFile, '-C', path.dirname(appDir), 'gemini-gui'], { stdio: 'inherit' });
+console.log(`Arquivo de instalação criado: ${tarFile}`);
+console.log('Extraia e execute sudo ./gemini-gui/install.sh. Dependências npm requerem acesso à rede.');

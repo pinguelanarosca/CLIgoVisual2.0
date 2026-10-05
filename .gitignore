@@ -2,6 +2,7 @@ node_modules/
 build/
 dist/
 dist-ubuntu/
+distribution-manifest.json
 .gemini-gui-storage.json
 coverage/
 .DS_Store

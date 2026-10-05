@@ -22,7 +22,7 @@ export const PackagingSettingsSection: React.FC<PackagingSettingsSectionProps> =
           Empacotamento Standalone para Ubuntu Linux & Matriz de Validação
         </h4>
         <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
-          Gera pacote .deb e tarball independente para instalação direta em qualquer Ubuntu Linux.
+          Exporta o código atual e o instalador oficial para Ubuntu. A instalação requer Node.js, Git, npm e acesso às dependências npm.
         </p>
       </div>
 
@@ -30,10 +30,10 @@ export const PackagingSettingsSection: React.FC<PackagingSettingsSectionProps> =
       <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-800/30 flex items-center justify-between">
         <div>
           <span className="font-semibold text-xs text-zinc-900 dark:text-zinc-100 block">
-            Gerar Pacote de Distribuição (.deb & standalone tarball)
+            Exportar Fonte e Instalador Ubuntu
           </span>
           <span className="text-[11px] text-zinc-500">
-            Inclui binário wrapper /usr/bin/gemini-gui, atalho desktop e instalador autônomo.
+            Inclui fonte versionada, manifesto, launcher, atalho desktop e instalador.
           </span>
         </div>
         <button
@@ -42,7 +42,7 @@ export const PackagingSettingsSection: React.FC<PackagingSettingsSectionProps> =
           className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs transition"
         >
           <Package className="w-4 h-4" />
-          <span>{isBuildingPackage ? 'Compilando...' : 'Gerar Pacote Ubuntu'}</span>
+          <span>{isBuildingPackage ? 'Exportando...' : 'Gerar Pacote Ubuntu'}</span>
         </button>
       </div>
 

@@ -3,7 +3,16 @@ set -e
 
 REPO_URL="https://github.com/pinguelanarosca/CLIgoVisual2.0"
 INSTALL_DIR="/opt/gemini-gui"
-TEMP_DIR="/tmp/gcli-install-source"
+TEMP_DIR=""
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Packaged sources are exact snapshots, not another download from main.
+if [ -z "${GEMINI_GUI_LOCAL_SOURCE:-}" ]; then
+    if [ -f "$SCRIPT_DIR/source/distribution-manifest.json" ]; then
+        GEMINI_GUI_LOCAL_SOURCE="$SCRIPT_DIR/source"
+    elif [ -f "$SCRIPT_DIR/distribution-manifest.json" ]; then
+        GEMINI_GUI_LOCAL_SOURCE="$SCRIPT_DIR"
+    fi
+fi
 
 echo "=================================================================="
 echo "   INSTALADOR / ATUALIZADOR OFICIAL - GCLI VISUAL INTERFACE       "
@@ -20,20 +29,6 @@ if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22|
     echo "ERRO: Node.js >=22.13.0 com node:sqlite é necessário."
     exit 1
 fi
-
-echo "Verificando e encerrando instâncias ativas do gemini-gui..."
-# Encerra processos do servidor compilado ou tsx vinculados a /opt/gemini-gui ou dist/server.cjs
-pkill -f "node.*/opt/gemini-gui" 2>/dev/null || true
-pkill -f "dist/server\.cjs" 2>/dev/null || true
-pkill -f "tsx.*server\.ts" 2>/dev/null || true
-
-# Encerra processos executando especificamente o launcher instalado, sem jamais casar com o script instalador atual
-MY_PID=$$
-for pid in $(pgrep -f "^/bin/bash /usr/(local/)?bin/gemini-gui|^/usr/(local/)?bin/gemini-gui" 2>/dev/null || true); do
-    if [ "$pid" != "$MY_PID" ] && [ "$pid" != "$PPID" ]; then
-        kill "$pid" 2>/dev/null || true
-    fi
-done
 
 echo "[1/6] Verificando dependências do sistema (git, node, npm)..."
 if ! command -v git &> /dev/null; then
@@ -55,20 +50,27 @@ fi
 NODE_VER=$(node -v)
 echo "   Node.js versão detectada: $NODE_VER"
 
+if ! command -v npm &> /dev/null; then
+    echo "ERRO: npm é necessário para instalar e compilar a aplicação."
+    exit 1
+fi
+TEMP_DIR=$(mktemp -d /opt/.gemini-gui-install.XXXXXX)
+trap 'if [ -n "$TEMP_DIR" ]; then rm -rf -- "$TEMP_DIR"; fi' EXIT
+
 echo "[2/6] Baixando a versão mais recente do repositório oficial no GitHub..."
 if [ -n "$GEMINI_GUI_LOCAL_SOURCE" ] && [ -d "$GEMINI_GUI_LOCAL_SOURCE" ]; then
     echo "   Modo de fonte local ativado: $GEMINI_GUI_LOCAL_SOURCE"
-    rm -rf "$TEMP_DIR"
-    mkdir -p "$TEMP_DIR"
-    cp -rf "$GEMINI_GUI_LOCAL_SOURCE"/* "$TEMP_DIR/"
-    cp -rf "$GEMINI_GUI_LOCAL_SOURCE"/.* "$TEMP_DIR/" 2>/dev/null || true
+    node "$GEMINI_GUI_LOCAL_SOURCE/scripts/distribution-source.cjs" "$GEMINI_GUI_LOCAL_SOURCE" "$TEMP_DIR"
 else
     echo "   Repositório Fonte: $REPO_URL (branch: main)"
-    rm -rf "$TEMP_DIR"
     git clone --depth 1 --branch main "$REPO_URL" "$TEMP_DIR"
 fi
 
 cd "$TEMP_DIR"
+if [ -n "${GEMINI_GUI_EXPECTED_COMMIT:-}" ] && [ "$(git rev-parse HEAD)" != "$GEMINI_GUI_EXPECTED_COMMIT" ]; then
+    echo "ERRO: O commit da fonte difere do commit esperado. Instalação interrompida."
+    exit 1
+fi
 COMMIT_HASH=$(git rev-parse HEAD 2>/dev/null || echo "desconhecido")
 COMMIT_DATE=$(git log -1 --format="%ci" 2>/dev/null || echo "desconhecido")
 COMMIT_MSG=$(git log -1 --format="%s" 2>/dev/null || echo "desconhecido")
@@ -80,19 +82,8 @@ echo "   Data:     $COMMIT_DATE"
 echo "   Mensagem: $COMMIT_MSG"
 echo "------------------------------------------------------------------"
 
-echo "[3/6] Removendo instalação e launchers anteriores para garantir idempotência limpa..."
-rm -rf "$INSTALL_DIR"
-rm -f "/usr/local/bin/gemini-gui" "/usr/bin/gemini-gui" "/usr/share/applications/gemini-gui.desktop"
-
-echo "[4/6] Instalando arquivos da aplicação em $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR"
-cp -rf "$TEMP_DIR"/* "$INSTALL_DIR/"
-cp -rf "$TEMP_DIR"/.* "$INSTALL_DIR/" 2>/dev/null || true
-
-cd "$INSTALL_DIR"
-
 echo "[5/6] Instalando dependências npm e compilando aplicação..."
-npm install --no-audit --no-fund
+npm install --include=dev --package-lock=false --no-audit --no-fund
 echo "   Compilando aplicação (Vite + esbuild)..."
 if ! npm run build; then
     echo "------------------------------------------------------------------"
@@ -102,10 +93,39 @@ if ! npm run build; then
     exit 1
 fi
 
-if [ ! -f "$INSTALL_DIR/dist/server.cjs" ]; then
+if [ ! -f "$TEMP_DIR/dist/server.cjs" ]; then
     echo "ERRO CRÍTICO: dist/server.cjs não foi gerado pelo build."
     exit 1
 fi
+
+echo "Verificando e encerrando instâncias ativas do gemini-gui..."
+# Encerra processos do servidor compilado ou tsx vinculados a /opt/gemini-gui ou dist/server.cjs
+pkill -f "node.*/opt/gemini-gui" 2>/dev/null || true
+pkill -f "dist/server\.cjs" 2>/dev/null || true
+pkill -f "tsx.*server\.ts" 2>/dev/null || true
+
+# Encerra processos executando especificamente o launcher instalado, sem jamais casar com o script instalador atual
+MY_PID=$$
+for pid in $(pgrep -f "^/bin/bash /usr/(local/)?bin/gemini-gui|^/usr/(local/)?bin/gemini-gui" 2>/dev/null || true); do
+    if [ "$pid" != "$MY_PID" ] && [ "$pid" != "$PPID" ]; then
+        kill "$pid" 2>/dev/null || true
+    fi
+done
+
+echo "[3/6] Preservando a instalação anterior..."
+if [ -e "$INSTALL_DIR" ]; then
+    BACKUP_DIR=$(mktemp -d /opt/.gemini-gui-backup.XXXXXX)
+    rmdir "$BACKUP_DIR"
+    mv -- "$INSTALL_DIR" "$BACKUP_DIR"
+    echo "   Recuperação disponível em: $BACKUP_DIR"
+fi
+echo "[4/6] Ativando a fonte compilada em $INSTALL_DIR..."
+if ! mv -- "$TEMP_DIR" "$INSTALL_DIR"; then
+    if [ -n "${BACKUP_DIR:-}" ]; then mv -- "$BACKUP_DIR" "$INSTALL_DIR"; fi
+    exit 1
+fi
+TEMP_DIR=""
+cd "$INSTALL_DIR"
 
 echo "[6/6] Preparando executáveis, atalhos do sistema e permissões..."
 mkdir -p /usr/local/bin /usr/bin /usr/share/applications
@@ -274,7 +294,7 @@ if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
 fi
 
 # Limpando arquivos temporários do instalador
-rm -rf "$TEMP_DIR"
+if [ -n "$TEMP_DIR" ]; then rm -rf -- "$TEMP_DIR"; fi
 
 echo "=================================================================="
 echo "   INSTALAÇÃO CONCLUÍDA COM SUCESSO!                             "

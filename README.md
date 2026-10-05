@@ -4,6 +4,8 @@ Interface gráfica e ambiente de trabalho profissional para o **Gemini CLI (v0.5
 
 **Versão 2.1.0:** respeita a autenticação Google/OAuth nativa do Gemini CLI, inclusive o diretório de credenciais do Snap. OAuth executa sem Key Pool e sem variáveis de API key no processo filho. Key Pool, ranking, failover de chaves, fallback de modelos e agentes/subagentes continuam disponíveis no modo aplicável. Status, validação e testes de agentes distinguem os métodos de autenticação, sem alterar credenciais pessoais.
 
+O catálogo efetivo foi conferido com o histórico anterior à auditoria. O default do Auditor no frontend continua sendo `gemini-3.8-flash` (fallback `gemini-3.6-flash`), divergência preexistente desde `397897f`; o backend e os arquivos persistidos usam `gemini-3.6-flash` (fallback `gemini-3.7-flash`). Nenhum desses modelos foi substituído pelas correções de autenticação.
+
 ---
 
 ## 🚀 Funcionalidades Principais
@@ -13,7 +15,7 @@ Interface gráfica e ambiente de trabalho profissional para o **Gemini CLI (v0.5
   - **Principal / Orchestrator** (`gemini-3.5-flash-lite`): Coordenação de fluxos e consolidação de respostas.
   - **Investigator** (`gemini-3.7-flash`): Análise de bugs, rastreamento de causas e diagnóstico empírico.
   - **Architect** (`gemini-3.6-flash`): Decisões arquiteturais, modularidade e padrões de projeto.
-  - **Auditor** (`gemini-3.8-flash`): Auditoria rigorosa de segurança, performance e regressões.
+  - **Auditor** (`gemini-3.6-flash` no backend e nos agentes salvos): Auditoria rigorosa de segurança, performance e regressões.
   - **Tester** (`gemini-3-flash`): Criação de suítes de testes e validação empírica.
   - **Worker** (`gemini-3.1-flash-lite`): Tarefas repetitivas, transformações em lote e boilerplate.
 - **Git & Diff Viewer**: Visualizador unificado de alterações de código e histórico de arquivos modificados com destaque de sintaxe.
@@ -27,7 +29,10 @@ Interface gráfica e ambiente de trabalho profissional para o **Gemini CLI (v0.5
 ## 📦 Instalação, Atualização, Reset e Desinstalação
 
 ### 1. Instalação / Atualização Oficial (`install.sh`)
-O instalador oficial baixa/clona automaticamente a versão mais recente do repositório GitHub (`https://github.com/pinguelanarosca/CLIgoVisual2.0`), instala todas as dependências, compila o aplicativo e registra os executáveis e atalhos do sistema. É **idempotente** e pode ser executado para instalar do zero ou atualizar uma versão existente.
+O instalador oficial baixa/clona automaticamente a versão mais recente do repositório GitHub (`https://github.com/pinguelanarosca/CLIgoVisual2.0`), instala todas as dependências, compila o aplicativo e registra os executáveis e atalhos do sistema. É **idempotente** e pode ser executado para instalar do zero ou atualizar uma versão existente. Compila a fonte em uma pasta temporária antes de ativá-la e preserva a instalação anterior para recuperação. `GEMINI_GUI_EXPECTED_COMMIT` permite interromper a instalação se `main` não corresponder ao SHA esperado.
+
+Os artefatos gerados pela GUI incluem uma cópia dos arquivos versionados e os scripts oficiais. `npm run package:linux` recompila a fonte e gera `.deb` (se `dpkg-deb` estiver disponível) e arquivo de instalação completo, com manifesto de hashes. Os pacotes embutem a fonte, em vez de baixar outra revisão de `main`, e excluem configurações, credenciais, logs, backups e dependências locais. A instalação requer rede para obter dependências npm; as versões são resolvidas pelos intervalos do `package.json`, sem promessa de build binário reproduzível. O `.deb` inclui Git e instala as dependências externas necessárias ao backend e o patch existente do Gemini CLI.
+
 
 ```bash
 sudo ./install.sh
