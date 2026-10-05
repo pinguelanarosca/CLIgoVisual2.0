@@ -18,6 +18,7 @@ export function load(file, globals = {}) {
     setTimeout, clearTimeout, setInterval, clearInterval, process, fs, path, os, crypto, 
     ...childProcess, sysLog: log, logSubagentEvent: () => {}, performance, 
     getGuiDataDir: () => os.tmpdir(),
+    buildEffectiveSystemPrompt: () => 'MOCKED PROMPT',
     ...globals 
   });
   vm.runInContext(source, context, { filename: file });
@@ -770,12 +771,37 @@ test('Resolução natural de modelos titulares para Principal e Worker e remoç�
   assert.equal(capturedWorkerConfig?.model, 'gemini-3.5-flash-lite');
 });
 
-test('Alias nativo codebase_investigator não deve criar arquivo físico', t => {
-  const { ensureAllAgentsSynchronizedAndAcknowledged } = load('server/agents-service.ts');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-test-'));
+test('Alias nativo codebase_investigator: comportamento de ownership e remoção', t => {
+  const { ensureAllAgentsSynchronizedAndAcknowledged, saveAgentToFile } = load('server/agents-service.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-ownership-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  // Force synchronization
-  ensureAllAgentsSynchronizedAndAcknowledged(dir, dir);
-  assert.equal(fs.existsSync(path.join(dir, '.gemini/agents/codebase_investigator.md')), false);
+  const agentsDir = path.join(dir, '.gemini/agents');
+  fs.mkdirSync(agentsDir, { recursive: true });
+
+  const aliasFile = path.join(agentsDir, 'codebase_investigator.md');
+
+  // 1. GUI-owned native alias (previously created)
+  const agent = { name: 'investigator', id: 'investigator' };
+  // Manually trigger creation (saveAgentToFile handles aliases, but I need to force ownership entry)
+  // Actually, saveAgentToFile handles it. But for test, I need to force the ownership entry.
+  const ownershipPath = path.join(agentsDir, '.gui-owned-agents.json');
+  fs.writeFileSync(aliasFile, 'GUI-CONTENT');
+  const hash = crypto.createHash('sha256').update('GUI-CONTENT').digest('hex');
+  fs.writeFileSync(ownershipPath, JSON.stringify({ 'codebase_investigator.md': hash }));
+
+  // Run saveAgentToFile or sync to trigger removal logic
+  saveAgentToFile(agent, dir, true);
+  assert.equal(fs.existsSync(aliasFile), false, 'GUI-owned alias should be removed');
+
+  // 2. User-owned native alias (no ownership entry)
+  fs.writeFileSync(aliasFile, 'USER-CONTENT');
+  saveAgentToFile(agent, dir, true);
+  assert.equal(fs.existsSync(aliasFile), true, 'User-owned alias should be preserved');
+  assert.equal(fs.readFileSync(aliasFile, 'utf8'), 'USER-CONTENT');
+
+  // 3. Native alias inexistente
+  fs.unlinkSync(aliasFile);
+  saveAgentToFile(agent, dir, true);
+  assert.equal(fs.existsSync(aliasFile), false, 'Native alias should not be recreated');
 });
 

@@ -638,8 +638,23 @@ export function saveAgentToFile(agent: AgentConfig, targetDir?: string, skipSett
     aliasFmLines.push(effectivePrompt.trim());
     const aliasFilePath = path.join(agentsDir, `${aliasName}.md`);
     if (NATIVE_ALIASES.has(aliasName)) {
-      // Remove previously GUI-owned native alias files.
-      try { if (fs.existsSync(aliasFilePath)) fs.unlinkSync(aliasFilePath); } catch {}
+      // Remove previously GUI-owned native alias files safely.
+      const ownershipPath = path.join(agentsDir, '.gui-owned-agents.json');
+      const ownership: Record<string, string> = fs.existsSync(ownershipPath) ? JSON.parse(fs.readFileSync(ownershipPath, 'utf8')) : {};
+      
+      const aliasFileName = `${aliasName}.md`;
+      if (ownership[aliasFileName]) {
+        try {
+          if (fs.existsSync(aliasFilePath)) {
+            const currentHash = crypto.createHash('sha256').update(fs.readFileSync(aliasFilePath)).digest('hex');
+            if (ownership[aliasFileName] === currentHash) {
+               fs.unlinkSync(aliasFilePath);
+               delete ownership[aliasFileName];
+               fs.writeFileSync(ownershipPath, JSON.stringify(ownership, null, 2));
+            }
+          }
+        } catch {}
+      }
       continue;
     }
     try {
