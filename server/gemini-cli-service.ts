@@ -1673,6 +1673,17 @@ ${subagentsList}
                     args: tParams,
                   });
                 }
+
+                params.onEvent({
+                  type: 'tool_use',
+                  data: {
+                    tool_call_id: callId,
+                    tool_name: tName,
+                    name: tName,
+                    parameters: tParams,
+                    timestamp: new Date().toISOString(),
+                  },
+                });
               }
 
               const isToolResult =
@@ -1724,6 +1735,17 @@ ${subagentsList}
                     result: resultData,
                   });
                 }
+
+                params.onEvent({
+                  type: 'tool_result',
+                  data: {
+                    tool_call_id: callId || prevCall?.toolId || 'tool',
+                    tool_name: prevCall?.toolName || 'tool',
+                    output: resultData,
+                    status: isFail ? 'failed' : 'completed',
+                    error: parsed.error,
+                  },
+                });
               }
 
               if (parsed.type === 'final_api_request') {

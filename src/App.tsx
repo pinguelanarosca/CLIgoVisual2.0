@@ -787,24 +787,40 @@ export function App() {
                 hasError = false; errorMessage = '';
               }
               if (eventPayload.type === 'version_created') setVersionRevision(value => value + 1);
-              if (eventPayload.type === 'done') {
+              // Unpack nested stream_event or inner data payload if present
+              const innerPayload =
+                eventPayload.data && typeof eventPayload.data === 'object' && !Array.isArray(eventPayload.data)
+                  ? { ...eventPayload.data, type: eventPayload.data.type || eventPayload.type }
+                  : eventPayload;
+              const evtType = innerPayload.type || eventPayload.type;
+
+              if (eventPayload.type === 'done' || evtType === 'done') {
                 hasError = eventPayload.exitCode !== 0 || Boolean(eventPayload.signal);
                 if (hasError && !errorMessage) errorMessage = `Processo encerrado (código ${eventPayload.exitCode}, sinal ${eventPayload.signal || 'nenhum'}).`;
+                // Finalize any dangling running tool calls
+                const now = Date.now();
+                Object.values(toolCalls).forEach((tc) => {
+                  if (tc.status === 'running') {
+                    tc.status = 'completed';
+                    tc.completedAt = now;
+                    if (tc.startedAt) tc.durationMs = now - tc.startedAt;
+                  }
+                });
               }
               retainDiagnostics(rawEventsList, eventPayload.type === 'final_api_request' ? { ...eventPayload, finalApiRequest: undefined, allRealRequests: undefined } : eventPayload);
 
               // Capture finalApiRequest from backend (Exclusivamente o request real capturado)
-              if (eventPayload.type === 'final_api_request') {
-                const reqObj = eventPayload.finalApiRequest || eventPayload.data?.finalApiRequest;
+              if (eventPayload.type === 'final_api_request' || evtType === 'final_api_request') {
+                const reqObj = eventPayload.finalApiRequest || eventPayload.data?.finalApiRequest || innerPayload.finalApiRequest;
                 if (reqObj) {
                   capturedFinalApiRequest = reqObj;
                   retainDiagnostics(capturedAllRealRequests, { ...eventPayload, finalApiRequest: reqObj }, 20, 8 * 1024 * 1024);
                 }
-                const origins = eventPayload.parameterOrigins || eventPayload.data?.parameterOrigins;
+                const origins = eventPayload.parameterOrigins || eventPayload.data?.parameterOrigins || innerPayload.parameterOrigins;
                 if (origins) {
                   capturedParameterOrigins = origins;
                 }
-                const allReqs = eventPayload.allRealRequests || eventPayload.data?.allRealRequests;
+                const allReqs = eventPayload.allRealRequests || eventPayload.data?.allRealRequests || innerPayload.allRealRequests;
                 if (allReqs && Array.isArray(allReqs) && allReqs.length > 0) {
                   capturedAllRealRequests = allReqs;
                 }
@@ -812,48 +828,57 @@ export function App() {
 
               // Inspect Gemini CLI JSON stream event
               if (
-                eventPayload.type === 'process_error' ||
-                eventPayload.type === 'error' ||
+                evtType === 'process_error' ||
+                evtType === 'error' ||
                 (eventPayload.exitCode !== undefined && eventPayload.exitCode !== 0)
               ) {
                 hasError = true;
-                errorMessage = eventPayload.message || eventPayload.text || errorMessage || `Código de saída: ${eventPayload.exitCode}`;
-              } else if (eventPayload.type === 'result' && eventPayload.status === 'error') {
+                errorMessage = innerPayload.message || innerPayload.text || errorMessage || `Código de saída: ${eventPayload.exitCode}`;
+              } else if (evtType === 'result' && (innerPayload.status === 'error' || innerPayload.error)) {
                 hasError = true;
-                errorMessage = eventPayload.error?.message || errorMessage || 'Erro retornado pela API do Gemini.';
-              } else if (eventPayload.type === 'message') {
-                if (eventPayload.role === 'assistant' && eventPayload.content) {
-                  assistantContent += eventPayload.content;
+                errorMessage = innerPayload.error?.message || errorMessage || 'Erro retornado pela API do Gemini.';
+              } else if (evtType === 'message' || innerPayload.role === 'assistant' || innerPayload.candidates) {
+                const msgContent = innerPayload.content || innerPayload.text || (innerPayload.candidates?.[0]?.content?.parts?.[0]?.text);
+                if (msgContent) {
+                  assistantContent += msgContent;
                 }
-              } else if (eventPayload.type === 'tool_use') {
-                const callId = eventPayload.tool_call_id || eventPayload.tool_id || `tool_${Date.now()}`;
+              } else if (evtType === 'tool_use' || evtType === 'tool_call') {
+                const callId = innerPayload.tool_call_id || innerPayload.tool_id || innerPayload.callId || innerPayload.id || `tool_${Date.now()}`;
                 const now = Date.now();
                 toolCalls[callId] = {
                   id: callId,
-                  toolName: eventPayload.tool_name || eventPayload.name || eventPayload.id || eventPayload.tool || 'tool',
-                  parameters: eventPayload.parameters || {},
+                  toolName: innerPayload.tool_name || innerPayload.name || innerPayload.id || innerPayload.tool || 'tool',
+                  parameters: innerPayload.parameters || innerPayload.args || {},
                   status: 'running',
-                  timestamp: eventPayload.timestamp || new Date().toISOString(),
+                  timestamp: innerPayload.timestamp || new Date().toISOString(),
                   startedAt: now,
-                  description: eventPayload.description,
-                  schema: eventPayload.schema || eventPayload.definition,
-                  componentRegister: eventPayload.componentRegister || eventPayload.registered_by,
-                  componentExecutor: eventPayload.componentExecutor || eventPayload.executed_by,
-                  origin: eventPayload.origin || eventPayload.source,
-                  wrapperRelation: eventPayload.wrapperRelation || eventPayload.wrapper,
+                  description: innerPayload.description,
+                  schema: innerPayload.schema || innerPayload.definition,
+                  componentRegister: innerPayload.componentRegister || innerPayload.registered_by,
+                  componentExecutor: innerPayload.componentExecutor || innerPayload.executed_by,
+                  origin: innerPayload.origin || innerPayload.source,
+                  wrapperRelation: innerPayload.wrapperRelation || innerPayload.wrapper,
                 };
-              } else if (eventPayload.type === 'tool_result') {
-                const callId = eventPayload.tool_call_id || eventPayload.tool_id;
-                if (callId && toolCalls[callId]) {
-                  const now = Date.now();
-                  toolCalls[callId].completedAt = now;
-                  if (toolCalls[callId].startedAt) {
-                    toolCalls[callId].durationMs = now - toolCalls[callId].startedAt!;
+              } else if (evtType === 'tool_result') {
+                const callId = innerPayload.tool_call_id || innerPayload.tool_id || innerPayload.callId || innerPayload.id;
+                let targetCall = callId ? toolCalls[callId] : undefined;
+                if (!targetCall) {
+                  // If single running tool call, match it
+                  const runningCalls = Object.values(toolCalls).filter(c => c.status === 'running');
+                  if (runningCalls.length === 1) {
+                    targetCall = runningCalls[0];
                   }
-                  toolCalls[callId].result = typeof eventPayload.output === 'string' ? eventPayload.output : JSON.stringify(eventPayload.output || '');
-                  toolCalls[callId].status = eventPayload.error ? 'failed' : 'completed';
-                  if (eventPayload.error) {
-                    toolCalls[callId].error = typeof eventPayload.error === 'string' ? eventPayload.error : JSON.stringify(eventPayload.error);
+                }
+                if (targetCall) {
+                  const now = Date.now();
+                  targetCall.completedAt = now;
+                  if (targetCall.startedAt) {
+                    targetCall.durationMs = now - targetCall.startedAt;
+                  }
+                  targetCall.result = typeof innerPayload.output === 'string' ? innerPayload.output : typeof innerPayload.result === 'string' ? innerPayload.result : JSON.stringify(innerPayload.output || innerPayload.result || '');
+                  targetCall.status = (innerPayload.error || innerPayload.status === 'failed') ? 'failed' : 'completed';
+                  if (innerPayload.error) {
+                    targetCall.error = typeof innerPayload.error === 'string' ? innerPayload.error : JSON.stringify(innerPayload.error);
                   }
                 }
               } else if (eventPayload.text) {
