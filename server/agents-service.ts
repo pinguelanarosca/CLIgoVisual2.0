@@ -1116,7 +1116,6 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string, nativeH
 
       // Remove only files previously written by this GUI and still unchanged.
       const canonical = new Set(agents.map(a => `${a.name}.md`));
-      const ownershipPath = path.join(dir, '.gui-owned-agents.json');
 
       for (const [name, hash] of Object.entries(ownership)) {
         if (canonical.has(name)) continue; // Canonical should be preserved
