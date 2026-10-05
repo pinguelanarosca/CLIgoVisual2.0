@@ -724,10 +724,10 @@ export interface CliExecutionParams {
 export const AGENT_FALLBACK_CHAINS: Record<string, string[]> = {
   principal: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'],
   worker: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
-  auditor: ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'],
-  investigator: ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'],
-  architect: ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite'],
-  tester: ['gemini-3.5-flash', 'gemini-3-flash', 'gemini-3.5-flash-lite'],
+  auditor: ['gemini-3.8-flash', 'gemini-3.6-flash'],
+  investigator: ['gemini-3.7-flash', 'gemini-3.5-flash'],
+  architect: ['gemini-3.6-flash', 'gemini-3.7-flash'],
+  tester: ['gemini-3.5-flash', 'gemini-3-flash'],
 };
 
 export function normalizeCliModelName(rawModel?: string): string {

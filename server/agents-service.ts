@@ -11,7 +11,7 @@ import { logSubagentEvent } from './subagent-logger.js';
 export { buildEffectiveSystemPrompt };
 
 export function sanitizeModelName(model?: string): string {
-  if (!model || typeof model !== 'string' || !model.trim()) return 'gemini-3.5-flash-lite';
+  if (!model || typeof model !== 'string' || !model.trim()) return 'gemini-3.1-flash-lite';
   return model.trim();
 }
 
@@ -296,7 +296,7 @@ export function ensureAgentsSeeded(targetDir?: string): AgentConfig[] {
 
   // Ensure common aliases exist on disk so subagent invocations like codebase_investigator resolve
   const defaultAliases: Record<string, string[]> = {
-    investigator: ['codebase_investigator', 'code_investigator', 'investigator_agent'],
+    investigator: ['code_investigator', 'investigator_agent'],
     principal: ['orquestrador', 'orchestrator', 'principal_orchestrator'],
     architect: ['software_architect', 'architect_agent'],
     auditor: ['security_auditor', 'auditor_agent'],
@@ -713,7 +713,9 @@ function parseAgentMarkdown(content: string, fallbackName: string, metadata: any
     systemInstructions = '';
   }
 
-  const resolvedModel = sanitizeModelName(fields['model'] || metadata.model || 'gemini-3.5-flash-lite');
+  const defaultDef = DEFAULT_AGENTS.find(d => d.name === name || d.id === name);
+  const defaultModel = defaultDef?.model || 'gemini-3.1-flash-lite';
+  const resolvedModel = sanitizeModelName(fields['model'] || metadata.model || defaultModel);
 
   return {
     id: name,
@@ -721,8 +723,8 @@ function parseAgentMarkdown(content: string, fallbackName: string, metadata: any
     displayName: metadata.displayName || fields['display_name'] || name,
     role: `${metadata.displayName || fields['display_name'] || name}: ${fields['description'] || ''}`,
     model: resolvedModel,
-    fallbackModel: metadata.fallbackModel || fields['fallback_model'] || fields['fallbackModel'] || DEFAULT_AGENTS.find(d => d.name === name || d.id === name)?.fallbackModel,
-    backupAgentId: metadata.backupAgentId || fields['backup_agent'] || fields['backup_agent_id'] || DEFAULT_AGENTS.find(d => d.name === name || d.id === name)?.backupAgentId,
+    fallbackModel: metadata.fallbackModel || fields['fallback_model'] || fields['fallbackModel'] || defaultDef?.fallbackModel,
+    backupAgentId: metadata.backupAgentId || fields['backup_agent'] || fields['backup_agent_id'] || defaultDef?.backupAgentId,
     description: fields['description'] || '',
     baseInstructions,
     systemInstructions,

@@ -22,9 +22,13 @@ function repo(t) {
   for (const file of ['package.json', 'server.ts', 'install.sh', 'uninstall.sh', 'scripts/distribution-source.cjs', 'scripts/patch-gemini-cli.cjs']) {
     const output = path.join(dir, file); fs.mkdirSync(path.dirname(output), { recursive: true });
     fs.copyFileSync(path.join(root, file), output);
+    if (file.endsWith('.sh')) fs.chmodSync(output, 0o755);
   }
   fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\ndist/\ndist-ubuntu/\n.gemini/\ndistribution-manifest.json\n');
   execFileSync('git', ['-C', dir, 'add', '.']);
+  try {
+    execFileSync('git', ['-C', dir, 'update-index', '--chmod=+x', 'install.sh']);
+  } catch {}
   execFileSync('git', ['-C', dir, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'fixture'], { stdio: 'pipe' });
   return dir;
 }

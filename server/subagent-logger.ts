@@ -92,14 +92,25 @@ export function logSubagentEvent(event: SubagentExecutionEvent): void {
   };
 
   switch (entry.eventType) {
-    case 'SUBAGENT_INVOKE_START':
-      sysLog.info(
-        category,
-        `🚀 [DELEGAÇÃO INICIADA] Invocação do subagente [${entry.agentName}] iniciada pelo orquestrador. Tarefa: "${(entry.prompt || '').slice(0, 120)}..."`,
-        details,
-        source
-      );
+    case 'SUBAGENT_INVOKE_START': {
+      const isOrch = entry.agentName === 'principal' || entry.agentName === 'orchestrator';
+      if (isOrch) {
+        sysLog.info(
+          category,
+          `🚀 [EXECUÇÃO INICIADA] Inicializando Orquestrador Principal. Prompt: "${(entry.prompt || '').slice(0, 120)}..."`,
+          details,
+          source
+        );
+      } else {
+        sysLog.info(
+          category,
+          `🚀 [DELEGAÇÃO INICIADA] Invocação do subagente [${entry.agentName}] iniciada pelo orquestrador. Tarefa: "${(entry.prompt || '').slice(0, 120)}..."`,
+          details,
+          source
+        );
+      }
       break;
+    }
     case 'SUBAGENT_TOOL_CALL':
       sysLog.info(
         category,
@@ -124,31 +135,64 @@ export function logSubagentEvent(event: SubagentExecutionEvent): void {
         source
       );
       break;
-    case 'SUBAGENT_COMPLETE':
-      sysLog.success(
-        category,
-        `🎉 [DELEGAÇÃO CONCLUÍDA] Subagente [${entry.agentName}] finalizou com sucesso (Execução: ${entry.executionId})`,
-        details,
-        source
-      );
+    case 'SUBAGENT_COMPLETE': {
+      const isOrch = entry.agentName === 'principal' || entry.agentName === 'orchestrator';
+      if (isOrch) {
+        sysLog.success(
+          category,
+          `🎉 [EXECUÇÃO CONCLUÍDA] Orquestrador Principal finalizou com sucesso (Execução: ${entry.executionId})`,
+          details,
+          source
+        );
+      } else {
+        sysLog.success(
+          category,
+          `🎉 [DELEGAÇÃO CONCLUÍDA] Subagente [${entry.agentName}] finalizou com sucesso (Execução: ${entry.executionId})`,
+          details,
+          source
+        );
+      }
       break;
+    }
     case 'SUBAGENT_ERROR':
-    case 'SUBAGENT_CRASH':
-      sysLog.error(
-        category,
-        `❌ [ERRO DE SUBAGENTE] Falha no subagente [${entry.agentName || 'principal'}]: ${entry.error || 'Erro inesperado'}`,
-        details,
-        source
-      );
+    case 'SUBAGENT_CRASH': {
+      const isOrch = entry.agentName === 'principal' || entry.agentName === 'orchestrator';
+      if (isOrch) {
+        sysLog.error(
+          category,
+          `❌ [ERRO DE EXECUÇÃO] Falha no Orquestrador Principal: ${entry.error || 'Erro inesperado'}`,
+          details,
+          source
+        );
+      } else {
+        sysLog.error(
+          category,
+          `❌ [ERRO DE SUBAGENTE] Falha no subagente [${entry.agentName || 'principal'}]: ${entry.error || 'Erro inesperado'}`,
+          details,
+          source
+        );
+      }
       break;
-    case 'SUBAGENT_STDERR':
-      sysLog.warn(
-        category,
-        `⚠️ [STDERR SUBAGENTE] [${entry.agentName || 'principal'}]: ${entry.stderr}`,
-        details,
-        source
-      );
+    }
+    case 'SUBAGENT_STDERR': {
+      const isOrch = entry.agentName === 'principal' || entry.agentName === 'orchestrator';
+      if (isOrch) {
+        sysLog.warn(
+          category,
+          `⚠️ [STDERR PRINCIPAL] [${entry.agentName || 'principal'}]: ${entry.stderr}`,
+          details,
+          source
+        );
+      } else {
+        sysLog.warn(
+          category,
+          `⚠️ [STDERR SUBAGENTE] [${entry.agentName || 'principal'}]: ${entry.stderr}`,
+          details,
+          source
+        );
+      }
       break;
+    }
     case 'AGENT_DISCOVERY':
       sysLog.info(
         category,

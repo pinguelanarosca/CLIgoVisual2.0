@@ -126,7 +126,8 @@ export function resolveCliAuthentication(cwd = process.cwd(), env: NodeJS.Proces
 export function resolveExecutionAuthentication(model: string, cwd?: string, excludedKeys: string[] = [], cliPath?: string) {
   const authentication = resolveCliAuthentication(cwd, process.env, cliPath);
   if (!authentication.configured) throw Object.assign(new Error(authentication.message), { code: 'AUTH_NOT_CONFIGURED' });
-  const hasPoolKeys = Object.keys(loadConfiguredKeys()).length > 0;
+  const configuredPoolKeys = loadConfiguredKeys();
+  const hasPoolKeys = Object.keys(configuredPoolKeys).length > 0;
   const candidate = authentication.mode === 'api-key' ? getBestEligibleKey(model, excludedKeys) : null;
   const apiKey = authentication.mode === 'api-key'
     ? (candidate?.key || (hasPoolKeys ? undefined : (process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY)))
@@ -141,11 +142,18 @@ export function buildCliAuthEnvironment(authentication: CliAuthentication, apiKe
     delete env.GEMINI_API_KEY;
     delete env.GOOGLE_API_KEY;
     delete env.GOOGLE_GENAI_API_KEY;
+    delete env.GOOGLE_GENAI_USE_VERTEXAI;
+    delete env.GEMINI_CLI_USE_COMPUTE_ADC;
     env.GOOGLE_GENAI_USE_GCA = 'true';
-  } else if (authentication.mode === 'api-key' && apiKey) {
-    env.GEMINI_API_KEY = apiKey;
-    env.GOOGLE_API_KEY = apiKey;
-    env.GOOGLE_GENAI_API_KEY = apiKey;
+  } else if (authentication.mode === 'api-key') {
+    delete env.GOOGLE_GENAI_USE_GCA;
+    delete env.GOOGLE_GENAI_USE_VERTEXAI;
+    delete env.GEMINI_CLI_USE_COMPUTE_ADC;
+    delete env.GOOGLE_API_KEY;
+    delete env.GOOGLE_GENAI_API_KEY;
+    if (apiKey) {
+      env.GEMINI_API_KEY = apiKey;
+    }
   }
   return env;
 }

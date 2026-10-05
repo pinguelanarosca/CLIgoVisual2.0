@@ -392,9 +392,9 @@ test('API key: pool, ranking e failover K1→K2 continuam funcionando para princ
     }, { selectedType: 'gemini-api-key', keys: { K1: 'fixture-k1', K2: 'fixture-k2' }, fastTimers: true });
     assert.equal((await f.execute({ agentId })).code, 0);
     assert.equal(f.invocations.length, 2);
-    for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY']) {
-      assert.equal(f.invocations[0].options.env[key], 'fixture-k1'); assert.equal(f.invocations[1].options.env[key], 'fixture-k2');
-    }
+    assert.equal(f.invocations[0].options.env.GEMINI_API_KEY, 'fixture-k1');
+    assert.equal(f.invocations[1].options.env.GEMINI_API_KEY, 'fixture-k2');
+    assert.equal(f.invocations[0].options.env.GOOGLE_API_KEY, undefined);
     assert.equal(f.results[0][1], 'K1'); assert.equal(f.results[0][2].success, false);
     assert.equal(f.results.at(-1)[1], 'K2'); assert.equal(f.results.at(-1)[2].success, true);
     assert.ok(f.events.some(event => event.data?.content?.includes('Key Pool Failover')));
@@ -707,5 +707,60 @@ test('Permite evocar todos os agentes simultaneamente em paralelo via invoke_age
   assert.equal(f.invocations[0].system.includes('ESTRITAMENTE PROIBIDO'), false);
   const toolUses = f.events.filter(e => e.type === 'stream_event' && e.data?.type === 'tool_use' && e.data?.tool_name === 'invoke_agent');
   assert.equal(toolUses.length, 5);
+});
+
+test('Resolução natural de modelos titulares para Principal e Worker e remoção de GOOGLE_GENAI_USE_GCA no modo API key', async t => {
+  const dir = fixture(t);
+  const cliAuth = load('server/cli-auth-service.ts', { getGuiDataDir: () => dir });
+  const envKey = cliAuth.buildCliAuthEnvironment({ mode: 'api-key', selectedType: 'gemini-api-key', configured: true, state: 'configured', message: 'ok' }, 'AIzaSyTestKey', { GOOGLE_GENAI_USE_GCA: 'true', GEMINI_API_KEY: 'old' });
+  assert.equal(envKey.GEMINI_API_KEY, 'AIzaSyTestKey');
+  assert.equal(envKey.GOOGLE_GENAI_USE_GCA, undefined);
+
+  const auth = authenticationFixture(dir, { selectedType: 'gemini-api-key', keys: { K1: 'AIzaSyTestKey' } });
+  const agentsService = load('server/agents-service.ts', { getGuiDataDir: () => dir, os: { ...os, homedir: () => auth.home }, buildEffectiveSystemPrompt: (base, sys) => sys || base });
+  agentsService.ensureAllAgentsSynchronizedAndAcknowledged(dir, auth.home);
+
+  const policy = load('server/execution-policy.ts');
+  class Tracker { constructor() { return new Proxy(this, { get: () => () => {} }); } }
+  const c = load('server/gemini-cli-service.ts', {
+    ...auth.globals, process: auth.process, getGuiDataDir: () => dir, getResolvedCliPath: () => '/bin/sh',
+    AgentExecutionTracker: Tracker,
+    terminateProcessTree: () => {},
+    recordRuntimeExecutionResult: () => {},
+    loadMcpSettings: () => [],
+    ...Object.fromEntries(['buildExecutionPrompt', 'consumeSessionRecovery', 'executionFailed', 'validateExecutionContext'].map(name => [name, policy[name]])),
+    buildEffectiveSystemPrompt: agentsService.buildEffectiveSystemPrompt,
+    loadAgents: (targetDir) => agentsService.loadAgents(targetDir || dir),
+    spawn() {
+      const child = new EventEmitter();
+      child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+      setTimeout(() => {
+        child.stdout.write('{"type":"content","text":"ok"}\n');
+        child.emit('close', 0, null);
+      }, 5);
+      return child;
+    }
+  });
+
+  let capturedPrincipalConfig, capturedWorkerConfig;
+  await new Promise(resolve => {
+    c.executeGeminiCli({
+      prompt: 'teste principal', workDir: dir, agentId: 'principal',
+      onEvent: e => { if (e.type === 'gui_configuration') capturedPrincipalConfig = e.data?.guiConfiguration; },
+      onError: (err) => { console.error('TEST 46 ERROR 1:', err); resolve(); },
+      onDone: () => resolve()
+    });
+  });
+  assert.equal(capturedPrincipalConfig?.model, 'gemini-3.1-flash-lite');
+
+  await new Promise(resolve => {
+    c.executeGeminiCli({
+      prompt: 'teste worker', workDir: dir, agentId: 'worker',
+      onEvent: e => { if (e.type === 'gui_configuration') capturedWorkerConfig = e.data?.guiConfiguration; },
+      onError: () => resolve(),
+      onDone: () => resolve()
+    });
+  });
+  assert.equal(capturedWorkerConfig?.model, 'gemini-3.5-flash-lite');
 });
 
