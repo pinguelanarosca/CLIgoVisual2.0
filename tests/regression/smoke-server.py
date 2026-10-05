@@ -16,6 +16,9 @@ mode=settings['security']['auth']['selectedType']
 keys=['GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_GENAI_API_KEY']
 if mode=='oauth-personal':
  assert not any(key in os.environ for key in keys), 'API key injetada no OAuth'
+ native_home=pathlib.Path(os.environ.get('GEMINI_CLI_HOME',os.environ['HOME']))
+ assert json.loads((native_home/'.gemini/settings.json').read_text())['security']['auth']['selectedType']=='oauth-personal'
+ pathlib.Path('native-home.txt').write_text(str(native_home))
 else:
  assert mode=='gemini-api-key'
  assert all(os.environ.get(key)=='fixture-key-not-real-00000000000' for key in keys), 'Key Pool não encaminhado'
@@ -39,7 +42,8 @@ else:
     credentials_before = oauth_credentials.read_bytes()
     with socket.socket() as sock: sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
     env = {k: v for k, v in os.environ.items() if k not in ('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY', 'EXA_API_KEY', 'NODE_OPTIONS', 'GEMINI_GUI_PERSISTENT', 'GEMINI_CLI_SYSTEM_SETTINGS_PATH', 'GEMINI_CLI_SYSTEM_DEFAULTS_PATH', 'GOOGLE_GENAI_USE_GCA', 'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_GEMINI_BASE_URL', 'CLOUD_SHELL', 'GEMINI_CLI_USE_COMPUTE_ADC')}
-    env.update(HOME=str(home), GEMINI_CLI_HOME=str(home), PATH=str(fixture_bin) + ':/usr/bin:/bin', GEMINI_GUI_DATA_DIR=str(data), NODE_ENV='production', PORT=str(port), HOST='127.0.0.1')
+    env.pop('GEMINI_CLI_HOME', None)
+    env.update(HOME=str(home), PATH=str(fixture_bin) + ':/usr/bin:/bin:/snap/bin', GEMINI_GUI_DATA_DIR=str(data), NODE_ENV='production', PORT=str(port), HOST='127.0.0.1')
     log_path = base / 'server.log'
     with log_path.open('w') as log:
         server = subprocess.Popen([shutil.which('node'), str(ROOT / 'dist/server.cjs')], cwd=workspace, env=env, stdout=log, stderr=log, start_new_session=True)
@@ -116,6 +120,33 @@ else:
             assert '"exitCode":0' in api_stream, api_stream
             native_settings.write_text(json.dumps({'security': {'auth': {'selectedType': 'oauth-personal'}}}))
             assert oauth_credentials.read_bytes() == credentials_before
+            # Real installed Snap launcher/metadata; only the profile, CLI and
+            # credentials below are fixtures in an isolated HOME.
+            if pathlib.Path('/snap/bin/gemini').exists() and pathlib.Path('/snap/gemini-cli/current/meta/snap.yaml').exists():
+                snap_home = home / 'snap/gemini-cli/common'
+                snap_native = snap_home / '.gemini'; snap_native.mkdir(parents=True)
+                snap_settings = snap_native / 'settings.json'
+                snap_creds = snap_native / 'oauth_creds.json'
+                snap_settings.write_text(json.dumps({'security': {'auth': {'selectedType': 'oauth-personal'}}}))
+                snap_creds.write_bytes(credentials_before)
+                snap_before = (snap_settings.read_bytes(), snap_creds.read_bytes())
+                native_settings.unlink()
+                local_bin = base / 'node_modules/.bin'; local_bin.mkdir(parents=True)
+                local_cli = local_bin / 'gemini'; local_cli.symlink_to(executable)
+                request('/api/cli/config', {'cliPath': str(local_cli)})
+                snap_status = request('/api/status')
+                assert snap_status['authMode'] == 'oauth' and snap_status['authState'] == 'authenticated'
+                assert request('/api/cli/validate-key', {}, 'POST')['authMode'] == 'oauth'
+                payload.update(executionId='snap-profile-smoke')
+                req = urllib.request.Request(url + '/api/cli/execute', json.dumps(payload).encode(), {'Content-Type': 'application/json'})
+                with urllib.request.urlopen(req, timeout=10) as response: snap_stream = response.read().decode()
+                assert '"exitCode":0' in snap_stream, snap_stream
+                assert (workspace / 'native-home.txt').read_text() == str(snap_home)
+                assert (snap_native / 'agents/principal.md').is_file()
+                assert (snap_settings.read_bytes(), snap_creds.read_bytes()) == snap_before
+                print('PASSOU: CLI local com perfil OAuth Snap e pool preenchido; HOME encaminhado e configurações/credenciais da fixture preservadas.')
+            else:
+                print('NÃO EXECUTADO: smoke do perfil Snap requer launcher e metadados Snap instalados; regressões usam launcher emulado.')
             payload.update(executionId='disconnect-smoke' , prompt='HANG', resetContext=False)
             req = urllib.request.Request(url + '/api/cli/execute', json.dumps(payload).encode(), {'Content-Type': 'application/json'})
             response = urllib.request.urlopen(req, timeout=10)

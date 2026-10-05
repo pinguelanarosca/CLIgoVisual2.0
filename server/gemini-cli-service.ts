@@ -1266,7 +1266,7 @@ export function executeGeminiCli(
       const tracker = new AgentExecutionTracker(executionId, agentId || 'principal', chosenModel);
       let syncResult = { synchronizedCount: 0, acknowledgedCount: 0, directories: [] as string[] };
       try {
-        syncResult = ensureAllAgentsSynchronizedAndAcknowledged(cwd);
+        syncResult = ensureAllAgentsSynchronizedAndAcknowledged(cwd, authentication.nativeHome);
       } catch (syncErr) {
         sysLog.warn('AGENT', `Aviso durante sincronização de agentes: ${syncErr}`);
       }

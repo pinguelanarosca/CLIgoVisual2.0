@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { getBestEligibleKey, loadConfiguredKeys } from './key-pool-service.js';
+import { getBestEligibleKey } from './key-pool-service.js';
 
 export type CliAuthMode = 'oauth' | 'api-key' | 'native' | 'none';
 export interface CliAuthentication {
@@ -10,6 +10,7 @@ export interface CliAuthentication {
   configured: boolean;
   state: 'authenticated' | 'configured' | 'unauthenticated';
   message: string;
+  nativeHome?: string;
 }
 
 // Gemini CLI accepts JSON with comments in its native settings files.
@@ -73,13 +74,27 @@ export function resolveCliAuthentication(cwd = process.cwd(), env: NodeJS.Proces
     if (typeof auth?.selectedType === 'string') selectedType = auth.selectedType.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match: string, a: string | undefined, b: string | undefined) => env[a || b || ''] || '');
     if (typeof auth?.enforcedType === 'string') enforcedType = auth.enforcedType;
   }
+  // A GUI-bundled CLI must not hide the terminal's configured Snap OAuth
+  // profile. Keep its patched executor, and forward the native HOME instead
+  // of copying credentials. Explicit native settings/HOME retain precedence.
+  if (!selectedType && !env.GEMINI_CLI_HOME && cliPath?.split(path.sep).includes('node_modules')) {
+    const snapLauncher = (env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'gemini'))
+      .find(file => path.dirname(file) === '/snap/bin' && fs.existsSync(file));
+    if (snapLauncher) {
+      const snapHome = nativeCliHome(env, snapLauncher);
+      if (snapHome !== home && readSettings(path.join(snapHome, '.gemini', 'settings.json')).security?.auth?.selectedType) {
+        const snapAuthentication = resolveCliAuthentication(cwd, env, snapLauncher);
+        if (snapAuthentication.mode === 'oauth') return snapAuthentication;
+      }
+    }
+  }
   if (!selectedType) {
     if (env.GOOGLE_GENAI_USE_GCA === 'true') selectedType = 'oauth-personal';
     else if (env.GOOGLE_GENAI_USE_VERTEXAI === 'true') selectedType = 'vertex-ai';
     else if (env.GOOGLE_GEMINI_BASE_URL) selectedType = 'gateway';
     else if (env.GEMINI_API_KEY) selectedType = 'gemini-api-key';
     else if (env.CLOUD_SHELL === 'true' || env.GEMINI_CLI_USE_COMPUTE_ADC === 'true') selectedType = 'compute-default-credentials';
-    else if (env.GOOGLE_API_KEY || env.GOOGLE_GENAI_API_KEY || Object.keys(loadConfiguredKeys()).length) selectedType = 'gemini-api-key';
+    else if (env.GOOGLE_API_KEY || env.GOOGLE_GENAI_API_KEY) selectedType = 'gemini-api-key';
   }
   if (enforcedType && selectedType !== enforcedType) throw new Error('O método de autenticação selecionado não corresponde ao método exigido pela configuração nativa do Gemini CLI.');
   if (!selectedType) return { mode: 'none', configured: false, state: 'unauthenticated', message: 'Gemini CLI não autenticado. Faça login no Gemini CLI e selecione o método de autenticação desejado.' };
@@ -94,11 +109,11 @@ export function resolveCliAuthentication(cwd = process.cwd(), env: NodeJS.Proces
         cached = Boolean(credentials.refresh_token || (credentials.access_token && Number(credentials.expiry_date) > Date.now()));
       } catch { /* Native CLI reports invalid or unavailable credentials itself. */ }
     }
-    return { mode: 'oauth', selectedType, configured: true, state: cached ? 'authenticated' : 'configured',
+    return { mode: 'oauth', selectedType, nativeHome: home, configured: true, state: cached ? 'authenticated' : 'configured',
       message: cached ? 'Google/OAuth autenticado no Gemini CLI (credenciais nativas em cache).' : 'Google/OAuth configurado no Gemini CLI; as credenciais nativas serão verificadas pelo executor.' };
   }
-  if (selectedType === 'gemini-api-key') return { mode: 'api-key', selectedType, configured: true, state: 'configured', message: 'Autenticação por API key configurada; Key Pool e credenciais nativas de API key são respeitados.' };
-  return { mode: 'native', selectedType, configured: true, state: 'configured', message: `Autenticação nativa do Gemini CLI configurada (${selectedType}).` };
+  if (selectedType === 'gemini-api-key') return { mode: 'api-key', selectedType, nativeHome: home, configured: true, state: 'configured', message: 'Autenticação por API key configurada; Key Pool e credenciais nativas de API key são respeitados.' };
+  return { mode: 'native', selectedType, nativeHome: home, configured: true, state: 'configured', message: `Autenticação nativa do Gemini CLI configurada (${selectedType}).` };
 }
 
 export function resolveExecutionAuthentication(model: string, cwd?: string, excludedKeys: string[] = [], cliPath?: string) {
@@ -112,6 +127,7 @@ export function resolveExecutionAuthentication(model: string, cwd?: string, excl
 export function buildCliAuthEnvironment(authentication: CliAuthentication, apiKey?: string, inherited: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...inherited };
   if (authentication.mode === 'oauth') {
+    if (authentication.nativeHome) env.GEMINI_CLI_HOME = authentication.nativeHome;
     delete env.GEMINI_API_KEY;
     delete env.GOOGLE_API_KEY;
     delete env.GOOGLE_GENAI_API_KEY;

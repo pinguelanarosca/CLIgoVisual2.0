@@ -980,7 +980,7 @@ export function overwriteAgents(agents: AgentConfig[], targetDir?: string): Agen
  * Also updates ~/.gemini/acknowledgments/agents.json with the SHA-256 hash of each .md file
  * so that Gemini CLI never blocks or ignores agents due to missing trust acknowledgments.
  */
-export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
+export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string, nativeHome = os.homedir()): {
   synchronizedCount: number;
   acknowledgedCount: number;
   directories: string[];
@@ -988,7 +988,7 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
   const targetDirs = new Set<string>();
 
   // 1. User home .gemini/agents - canonical global discovery for Gemini CLI
-  targetDirs.add(path.join(os.homedir(), '.gemini', 'agents'));
+  targetDirs.add(path.join(nativeHome, '.gemini', 'agents'));
 
   // 2. GUI data dir - persistent storage for Gemini GUI
   targetDirs.add(path.join(getGuiDataDir(), '.gemini', 'agents'));
@@ -997,7 +997,7 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
   // scans both ~/.gemini/agents and <cwd>/.gemini/agents, causing 'Duplicate agent name detected' warnings.
   // Load all agents from repository defaults and any existing configs
   const agents = loadAgents();
-  const ackFile = path.join(os.homedir(), '.gemini', 'acknowledgments', 'agents.json');
+  const ackFile = path.join(nativeHome, '.gemini', 'acknowledgments', 'agents.json');
   let ackMap: Record<string, string> = {};
   if (fs.existsSync(ackFile)) {
     try {
@@ -1072,8 +1072,8 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
         }
 
         // Never acknowledge a GUI hash for a different personal/project agent.
-        for (const root of new Set([os.homedir(), cwd || process.cwd()])) {
-          const candidates = [path.join(root, '.gemini', 'agents', `${agent.name}.md`), path.join(os.homedir(), '.gemini', 'agents', `${agent.name}.md`)];
+        for (const root of new Set([nativeHome, cwd || process.cwd()])) {
+          const candidates = [path.join(root, '.gemini', 'agents', `${agent.name}.md`), path.join(nativeHome, '.gemini', 'agents', `${agent.name}.md`)];
           if (candidates.some(file => fs.existsSync(file) && crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== hash)) continue;
           if (!ackMap[root]) (ackMap as any)[root] = {};
           if (typeof ackMap[root] === 'object') (ackMap as any)[root][agent.name] = hash;

@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { sysLog } from './logger-service.js';
 import { getGuiDataDir } from './paths-service.js';
-import { syncAgentsToSettings } from './agents-service.js';
+import { syncAgentsToSettings, ensureAllAgentsSynchronizedAndAcknowledged } from './agents-service.js';
 import { syncPoliciesToSettings } from './policies-service.js';
 import {
   CliExecutionParams,
@@ -152,6 +152,7 @@ export class AcpSession {
 
     const cliPath = getResolvedCliPath();
     const { authentication, apiKey: activeApiKey } = resolveExecutionAuthentication(this.model || 'gemini-3.5-flash-lite', cwd, [], cliPath);
+    ensureAllAgentsSynchronizedAndAcknowledged(cwd, authentication.nativeHome);
 
     const env: NodeJS.ProcessEnv = {
       ...buildCliAuthEnvironment(authentication, activeApiKey),
@@ -539,7 +540,7 @@ export class AcpSessionManager {
     const auth = resolveExecutionAuthentication(params.model || 'gemini-3.5-flash-lite', params.workDir, [], getResolvedCliPath());
     config.auth = auth.authentication;
     config.key = auth.apiKey;
-    config.files = [path.join(getGuiDataDir(), '.gemini', 'settings.json'), path.join(params.workDir || getGuiDataDir(), '.gemini', 'settings.json'), path.join(os.homedir(), '.gemini', 'settings.json')].map(file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
+    config.files = [path.join(getGuiDataDir(), '.gemini', 'settings.json'), path.join(params.workDir || getGuiDataDir(), '.gemini', 'settings.json'), path.join(auth.authentication.nativeHome || os.homedir(), '.gemini', 'settings.json')].map(file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
     return crypto.createHash('sha256').update(JSON.stringify(config)).digest('hex');
   }
 

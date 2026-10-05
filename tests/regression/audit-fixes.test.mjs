@@ -305,7 +305,7 @@ function authenticationFixture(dir, options = {}) {
 function cliFixture(t, scenario, options = {}) {
   const dir = fixture(t), policy = load('server/execution-policy.ts'), retention = load('src/utils/diagnosticRetention.ts');
   const children = [], invocations = [], results = [], events = [];
-  const auth = authenticationFixture(dir, options);
+  const auth = authenticationFixture(dir, { selectedType: 'gemini-api-key', ...options });
   class Tracker { constructor() { return new Proxy(this, { get: () => () => {} }); } }
   const c = load('server/gemini-cli-service.ts', {
     ...auth.globals, process: auth.process, ...(options.fastTimers ? { setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms, 5)) } : {}), console: { ...console, log() {} }, getGuiDataDir: () => dir, AgentExecutionTracker: Tracker, ...Object.fromEntries(['buildExecutionPrompt', 'consumeSessionRecovery', 'executionFailed', 'validateExecutionContext'].map(name => [name, policy[name]])), retainDiagnostics: retention.retainDiagnostics,
@@ -463,7 +463,7 @@ test('OAuth: fallback de modelo mantém método, contexto e identidade sem consu
 });
 
 test('Sem autenticação real: erro específico, nenhum subprocesso e liberação da execução', async t => {
-  const f = cliFixture(t, () => assert.fail('Não deveria executar'), { keys: {} });
+  const f = cliFixture(t, () => assert.fail('Não deveria executar'), { selectedType: undefined, keys: {} });
   const outcome = await f.execute({ executionId: 'unauthenticated' });
   assert.equal(outcome.error.code, 'AUTH_NOT_CONFIGURED'); assert.match(outcome.error.message, /não autenticado/);
   assert.equal(f.invocations.length, 0); assert.equal(f.c.getExecutionState('unauthenticated'), undefined);
@@ -509,7 +509,7 @@ test('ACP: OAuth não herda API keys, API key usa pool e troca do método invali
     const dir = fixture(t), auth = authenticationFixture(dir, { selectedType: mode, keys: { K1: 'fixture-k1' }, env: { GEMINI_API_KEY: 'residual' } });
     let environment;
     const c = load('server/acp-client.ts', { ...auth.globals, process: auth.process, console: { ...console, log() {} }, readline: await import('node:readline'),
-      getGuiDataDir: () => dir, getResolvedCliPath: () => 'fixture', syncAgentsToSettings() {}, syncPoliciesToSettings() {},
+      getGuiDataDir: () => dir, getResolvedCliPath: () => 'fixture', syncAgentsToSettings() {}, syncPoliciesToSettings() {}, ensureAllAgentsSynchronizedAndAcknowledged() {},
       resolveEffectiveCliConfig: async () => { const file = path.join(dir, 'runtime.json'); fs.writeFileSync(file, '{}'); return file; },
       terminateProcessTree() {}, spawn(_, args, options) { environment = options.env; const child = new EventEmitter(); child.stdout = new PassThrough(); child.stdin = new PassThrough(); child.stderr = new PassThrough(); return child; } });
     const Session = vm.runInContext('AcpSession', c), manager = vm.runInContext('new AcpSessionManager()', c);
@@ -569,4 +569,103 @@ test('CLI Snap: seleção lê o HOME do launcher e respeita override GEMINI_CLI_
   const env = { PATH: '/snap/bin', GEMINI_CLI_SYSTEM_SETTINGS_PATH: path.join(dir, 'system.json'), GEMINI_CLI_SYSTEM_DEFAULTS_PATH: path.join(dir, 'defaults.json') };
   const auth = c.resolveCliAuthentication(dir, env, 'gemini'); assert.equal(auth.mode, 'oauth'); assert.equal(auth.state, 'authenticated');
   assert.equal(c.resolveCliAuthentication(dir, { ...env, GEMINI_CLI_HOME: path.join(dir, 'override') }, 'gemini').mode, 'none');
+});
+
+test('Pool preenchido sem método nativo não seleciona API key nem é consultado para escolher autenticação', t => {
+  const dir = fixture(t), home = path.join(dir, 'home'); fs.mkdirSync(home);
+  const c = load('server/cli-auth-service.ts', { os: { ...os, homedir: () => home },
+    loadConfiguredKeys: () => assert.fail('Pool não escolhe autenticação'), getBestEligibleKey: () => assert.fail('Pool não deve ser consultado sem modo API key') });
+  const env = { GEMINI_CLI_HOME: home, GEMINI_CLI_SYSTEM_SETTINGS_PATH: path.join(dir, 'system.json'), GEMINI_CLI_SYSTEM_DEFAULTS_PATH: path.join(dir, 'defaults.json') };
+  c.process = { ...process, env, cwd: () => dir };
+  assert.equal(c.resolveCliAuthentication(dir).mode, 'none');
+  assert.throws(() => c.resolveExecutionAuthentication('fixture', dir), { code: 'AUTH_NOT_CONFIGURED' });
+});
+test('Perfil OAuth Snap com launcher emulado é respeitado pelo CLI local com pool preenchido e chaves residuais', t => {
+  const dir = fixture(t), home = path.join(dir, 'home'), gui = path.join(dir, 'gui'), workspace = path.join(dir, 'workspace');
+  const snapHome = path.join(home, 'snap', 'gemini-cli', 'common'), native = path.join(snapHome, '.gemini');
+  for (const p of [native, gui, workspace]) fs.mkdirSync(p, { recursive: true });
+  const settings = path.join(native, 'settings.json'), credentials = path.join(native, 'oauth_creds.json');
+  fs.writeFileSync(settings, '{"security":{"auth":{"selectedType":"oauth-personal"}},"mcpServers":{"personal":{"command":"mine"}}}');
+  fs.writeFileSync(credentials, '{"refresh_token":"snap-fixture-not-real"}');
+  const before = [settings, credentials].map(p => fs.readFileSync(p));
+  const local = path.join(gui, 'node_modules', '.bin', 'gemini'); let poolCalls = 0;
+  const env = { PATH: `${path.dirname(local)}:/snap/bin`, GEMINI_CLI_SYSTEM_SETTINGS_PATH: path.join(dir, 'system.json'), GEMINI_CLI_SYSTEM_DEFAULTS_PATH: path.join(dir, 'defaults.json'), GEMINI_API_KEY: 'residual', GOOGLE_API_KEY: 'residual', GOOGLE_GENAI_API_KEY: 'residual' };
+  const fakeFs = { ...fs, readlinkSync: p => p === '/snap/bin/gemini' ? 'gemini-cli.gemini' : fs.readlinkSync(p),
+    existsSync: p => p === '/snap/bin/gemini' || p === local || fs.existsSync(p),
+    readFileSync: (p, ...args) => p === '/snap/gemini-cli/current/meta/snap.yaml' ? 'apps:\n  gemini:\n    environment:\n      HOME: $SNAP_USER_COMMON\n' : fs.readFileSync(p, ...args),
+    realpathSync: p => { if (p === '/snap/bin/gemini') assert.fail('Não resolver a identidade Snap para /usr/bin/snap'); return fs.realpathSync(p); } };
+  const fakeProcess = { ...process, env, cwd: () => gui };
+  const auth = load('server/cli-auth-service.ts', { fs: fakeFs, os: { ...os, homedir: () => home }, process: fakeProcess,
+    loadConfiguredKeys: () => ({ K1: 'filled-pool-fixture' }), getBestEligibleKey: () => { poolCalls++; return { key: 'filled-pool-fixture', keyId: 'K1' }; } });
+  const selection = auth.resolveExecutionAuthentication('fixture', workspace, [], local);
+  assert.equal(selection.authentication.mode, 'oauth'); assert.equal(selection.authentication.nativeHome, snapHome);
+  assert.equal(selection.apiKey, undefined); assert.equal(poolCalls, 0);
+  const childEnv = auth.buildCliAuthEnvironment(selection.authentication, selection.apiKey);
+  assert.equal(childEnv.GEMINI_CLI_HOME, snapHome);
+  for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY']) assert.equal(Object.hasOwn(childEnv, key), false);
+  const childAuth = auth.resolveCliAuthentication(workspace, childEnv, local);
+  assert.equal(childAuth.mode, 'oauth'); assert.equal(childAuth.nativeHome, snapHome);
+  const cli = load('server/gemini-cli-service.ts', { fs: fakeFs, process: fakeProcess });
+  assert.equal(cli.getResolvedCliPath(), local); // Preserva os patches e o executor atual.
+  fs.mkdirSync(path.join(home, '.gemini'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.gemini', 'settings.json'), '{"security":{"auth":{"selectedType":"gemini-api-key"}}}');
+  assert.equal(auth.resolveExecutionAuthentication('fixture', workspace, [], local).keyId, 'K1');
+  assert.equal(poolCalls, 1); // Seleção nativa explícita de API key mantém o Key Pool.
+  assert.equal(auth.resolveCliAuthentication(workspace, { ...env, GEMINI_CLI_HOME: home }, local).mode, 'api-key');
+  assert.deepEqual([settings, credentials].map(p => fs.readFileSync(p)), before);
+});
+
+test('Agentes do perfil Snap: sincroniza somente arquivos da GUI no HOME nativo e preserva agentes/credenciais pessoais', t => {
+  const dir = fixture(t), host = path.join(dir, 'host'), snap = path.join(dir, 'snap'), gui = path.join(dir, 'gui'), workspace = path.join(dir, 'workspace');
+  for (const home of [host, snap]) fs.mkdirSync(path.join(home, '.gemini', 'agents'), { recursive: true });
+  fs.mkdirSync(gui); fs.mkdirSync(workspace);
+  const hostAgent = path.join(host, '.gemini', 'agents', 'personal.md'), snapAgent = path.join(snap, '.gemini', 'agents', 'worker.md');
+  const settings = path.join(snap, '.gemini', 'settings.json'), credentials = path.join(snap, '.gemini', 'oauth_creds.json');
+  fs.writeFileSync(hostAgent, 'Personal host agent'); fs.writeFileSync(snapAgent, 'Personal Snap worker');
+  fs.writeFileSync(settings, '{"security":{"auth":{"selectedType":"oauth-personal"}},"mcpServers":{"mine":{"command":"personal"}}}');
+  fs.writeFileSync(credentials, '{"refresh_token":"fixture-never-real"}');
+  const before = [hostAgent, snapAgent, settings, credentials].map(p => fs.readFileSync(p));
+  const agents = load('server/agents-service.ts', { os: { ...os, homedir: () => host }, getGuiDataDir: () => gui, buildEffectiveSystemPrompt: () => 'GUI prompt' });
+  agents.loadAgents = () => [{ id: 'principal', name: 'principal' }, { id: 'worker', name: 'worker' }]; agents.loadMetadata = () => ({});
+  const result = agents.ensureAllAgentsSynchronizedAndAcknowledged(workspace, snap);
+  assert.ok(result.directories.includes(path.join(snap, '.gemini', 'agents')));
+  assert.equal(fs.existsSync(path.join(host, '.gemini', 'agents', 'principal.md')), false);
+  const principal = path.join(snap, '.gemini', 'agents', 'principal.md');
+  assert.match(fs.readFileSync(principal, 'utf8'), /GUI prompt/);
+  const ack = JSON.parse(fs.readFileSync(path.join(snap, '.gemini', 'acknowledgments', 'agents.json')));
+  assert.equal(ack[principal], crypto.createHash('sha256').update(fs.readFileSync(principal)).digest('hex'));
+  assert.deepEqual([hostAgent, snapAgent, settings, credentials].map(p => fs.readFileSync(p)), before);
+});
+test('Principal e subagente recebem o HOME OAuth nativo, sem chaves do pool e com invoke_agent intacto', async t => {
+  for (const agentId of ['principal', 'worker']) {
+    const f = cliFixture(t, child => {
+      child.stdout.write('{"type":"tool_use","tool_name":"invoke_agent","tool_id":"native-invoke","parameters":{"agent_name":"worker"}}\n');
+      child.stdout.write('{"type":"tool_result","tool_name":"invoke_agent","tool_id":"native-invoke","status":"success","output":"OK"}\n');
+      child.emit('close', 0, null);
+    }, { selectedType: 'oauth-personal', keys: { K1: 'must-not-be-injected' } });
+    const snap = path.join(f.dir, 'snap-home'); fs.mkdirSync(path.join(snap, '.gemini'), { recursive: true });
+    fs.writeFileSync(path.join(snap, '.gemini', 'settings.json'), '{"security":{"auth":{"selectedType":"oauth-personal"}}}');
+    f.auth.env.GEMINI_CLI_HOME = snap;
+    let syncedHome; f.c.ensureAllAgentsSynchronizedAndAcknowledged = (_cwd, home) => { syncedHome = home; return { acknowledgedCount: 0 }; };
+    assert.equal((await f.execute({ agentId })).code, 0);
+    assert.equal(syncedHome, snap); assert.equal(f.invocations[0].options.env.GEMINI_CLI_HOME, snap);
+    for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENAI_API_KEY']) assert.equal(Object.hasOwn(f.invocations[0].options.env, key), false);
+    assert.equal(f.auth.poolCalls, 0); assert.ok(f.events.some(event => event.data?.tool_name === 'invoke_agent'));
+  }
+});
+test('ACP invalida sessões quando o HOME OAuth ou as configurações do perfil nativo mudam', async t => {
+  const dir = fixture(t), auth = authenticationFixture(dir, { selectedType: 'oauth-personal', keys: { K1: 'unused-pool-key' } });
+  const otherHome = path.join(dir, 'snap-home'); fs.mkdirSync(path.join(otherHome, '.gemini'), { recursive: true });
+  const settings = path.join(otherHome, '.gemini', 'settings.json');
+  fs.writeFileSync(settings, '{"security":{"auth":{"selectedType":"oauth-personal"}}}');
+  const c = load('server/acp-client.ts', { ...auth.globals, process: auth.process, getGuiDataDir: () => dir, getResolvedCliPath: () => '/fixture/node_modules/.bin/gemini' });
+  const Session = vm.runInContext('AcpSession', c), manager = vm.runInContext('new AcpSessionManager()', c);
+  Session.prototype.initializeSession = async function () { this.isReady = true; };
+  Session.prototype.cleanup = function () { this.isClosed = true; };
+  const params = { workDir: dir, model: 'fixture' }, first = await manager.getOrCreateSession('same', params);
+  auth.env.GEMINI_CLI_HOME = otherHome;
+  const second = await manager.getOrCreateSession('same', params); assert.notEqual(first, second); assert.equal(first.isClosed, true);
+  fs.writeFileSync(settings, '{"security":{"auth":{"selectedType":"oauth-personal"}},"mcpServers":{"native":{"command":"changed"}}}');
+  const third = await manager.getOrCreateSession('same', params); assert.notEqual(second, third); assert.equal(second.isClosed, true);
+  assert.equal(auth.poolCalls, 0); manager.removeSession('same');
 });
