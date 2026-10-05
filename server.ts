@@ -1,4 +1,7 @@
 import express from 'express';
+import { validateExecutionContext } from './server/execution-policy.js';
+import { acpManager } from './server/acp-client.js';
+import { updateSessionMetadataSqlite, replaceSessionMessagesSqlite } from './server/session-sqlite-service.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -108,6 +111,7 @@ import {
   resetSystemToFactoryDefaults,
 } from './server/backup-reset-service.js';
 import {
+  beginAutomaticSnapshot,
   listVersions,
   getVersion,
   createVersionSnapshot,
@@ -128,7 +132,7 @@ import {
 } from './server/memories-service.js';
 import { sendError } from './server/error-service.js';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 
 async function startServer() {
@@ -198,7 +202,7 @@ toolName = "*"
 decision = "allow"
 priority = 90
 `;
-    fs.writeFileSync(policyFile, policyContent, 'utf8');
+    if (!fs.existsSync(policyFile)) fs.writeFileSync(policyFile, policyContent, 'utf8');
     sysLog.info('SYSTEM', 'Política de visualização web (.gemini/web-preview-policy.toml) semeada com sucesso.');
   } catch (err: any) {
     console.error('Falha ao semear a política de visualização web:', err?.message);
@@ -423,7 +427,7 @@ priority = 90
   });
 
   // 2. Real Execution via Server-Sent Events (SSE)
-  app.post('/api/cli/execute', (req, res) => {
+  app.post('/api/cli/execute', async (req, res) => {
     const {
       executionId,
       prompt,
@@ -446,7 +450,17 @@ priority = 90
       systemInstructions,
       overrideBasePrompt,
       baseInstructions,
+      sharedMemory, contextMessages, resetContext, fallbackModel, projectId,
     } = req.body;
+
+    try {
+      validateExecutionContext(sharedMemory, contextMessages);
+      if (projectId) {
+        const project = getProjects().find(p => p.id === projectId);
+        if (!project || !project.associatedDirs.some(dir => path.resolve(dir) === path.resolve(workDir || ''))) throw new Error('Projeto e diretório de execução não correspondem.');
+      }
+      if (typeof prompt !== 'string' || !prompt.trim() || typeof workDir !== 'string' || !fs.existsSync(workDir) || !fs.statSync(workDir).isDirectory()) throw new Error('Prompt ou diretório de execução inválido.');
+    } catch (error: any) { return res.status(400).json({ error: error.message }); }
 
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt é obrigatório.' });
@@ -462,11 +476,20 @@ priority = 90
     const sendSse = (event: string, data: any) => {
       try {
         if (!res.writableEnded && !res.destroyed) {
-          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          res.write(`event: ${event}\ndata: ${JSON.stringify({ type: event, ...data })}\n\n`);
         }
       } catch {}
     };
 
+    let completed = false;
+    let snapshot: Awaited<ReturnType<typeof beginAutomaticSnapshot>> | undefined;
+    try { snapshot = await beginAutomaticSnapshot({ prompt, agentName: agentId || 'principal', model: model || 'gemini', executionId: executionId || `exec_${Date.now()}`, workspaceDir: workDir, projectId }); }
+    catch (error: any) { sysLog.warn('SYSTEM', `Snapshot automático indisponível: ${error.message}`); sendSse('snapshot_error', { message: error.message }); }
+    if (res.destroyed) { await snapshot?.dispose(); return; }
+    const finishSnapshot = async () => {
+      try { const version = await snapshot?.finish(); if (version) sendSse('version_created', { versionId: version.id }); }
+      catch (error: any) { sysLog.error('SYSTEM', 'Falha no snapshot automático', error); sendSse('snapshot_error', { message: error.message }); }
+    };
     const execution = executeGeminiCli({
       executionId,
       prompt,
@@ -489,6 +512,7 @@ priority = 90
       systemInstructions,
       overrideBasePrompt,
       baseInstructions,
+      sharedMemory, contextMessages, resetContext, fallbackModel,
       onEvent: (evt) => {
         try {
           const payload =
@@ -498,7 +522,9 @@ priority = 90
           sendSse(evt.type, payload);
         } catch {}
       },
-      onDone: (exitCode, signal) => {
+      onDone: async (exitCode, signal) => {
+        completed = true;
+        await finishSnapshot();
         try {
           sendSse('done', { executionId, exitCode, signal });
           if (!res.writableEnded && !res.destroyed) {
@@ -506,7 +532,9 @@ priority = 90
           }
         } catch {}
       },
-      onError: (err) => {
+      onError: async (err) => {
+        completed = true;
+        await finishSnapshot();
         try {
           sendSse('error', { executionId, message: err.message });
           if (!res.writableEnded && !res.destroyed) {
@@ -519,7 +547,7 @@ priority = 90
     sendSse('start', { timestamp: new Date().toISOString(), executionId: execution.executionId });
 
     res.on('close', () => {
-      // Client closed connection
+      if (!completed) execution.cancel();
     });
   });
 
@@ -890,12 +918,25 @@ priority = 90
     if (!session || !session.id) {
       return res.status(400).json({ error: 'Sessão inválida.' });
     }
-    const saved = saveSession(session);
-    res.json(saved);
+    try { res.json(saveSession(session)); }
+    catch (error: any) { res.status(400).json({ error: error.message }); }
+  });
+
+  app.patch('/api/sessions/:id', (req, res) => {
+    try { res.json(updateSessionMetadataSqlite(req.params.id, req.body)); }
+    catch (error: any) { res.status(400).json({ error: error.message }); }
+  });
+
+  app.put('/api/sessions/:id/messages', (req, res) => {
+    try { res.json(replaceSessionMessagesSqlite(req.params.id, req.body)); }
+    catch (error: any) { res.status(400).json({ error: error.message }); }
   });
 
   app.delete('/api/sessions/:id', (req, res) => {
     const { id } = req.params;
+    acpManager.removeSession(id);
+    const session = getSessionById(id);
+    if (session?.cliSessionId) acpManager.removeSession(session.cliSessionId);
     deleteSession(id);
     res.json({ success: true });
   });
@@ -984,10 +1025,10 @@ priority = 90
   });
 
   // 13. Git Application Updater & System Lifecycle
-  app.get('/api/git/status', (req, res) => {
+  app.get('/api/git/status', async (req, res) => {
     try {
       const { repoUrl } = req.query;
-      const status = getGitStatus(repoUrl as string);
+      const status = await getGitStatus(repoUrl as string);
       res.json(status);
     } catch (err: any) {
       res.status(500).json({
@@ -1017,10 +1058,10 @@ priority = 90
     }
   });
 
-  app.post('/api/git/pull-update', (req, res) => {
+  app.post('/api/git/pull-update', async (req, res) => {
     try {
       const { repoUrl, branch, forceSync, installDependencies, runBuild, restartServer } = req.body || {};
-      const result = performGitUpdate({
+      const result = await performGitUpdate({
         repoUrl: repoUrl || DEFAULT_GIT_REPO_URL,
         branch: branch || DEFAULT_GIT_BRANCH,
         forceSync: Boolean(forceSync),
@@ -1038,9 +1079,9 @@ priority = 90
     }
   });
 
-  app.post('/api/system/rebuild', (req, res) => {
+  app.post('/api/system/rebuild', async (req, res) => {
     try {
-      const result = performRebuild();
+      const result = await performRebuild();
       res.json(result);
     } catch (err: any) {
       res.status(500).json({
