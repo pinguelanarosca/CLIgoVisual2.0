@@ -19,6 +19,7 @@ export function load(file, globals = {}) {
     ...childProcess, sysLog: log, logSubagentEvent: () => {}, performance, 
     getGuiDataDir: () => os.tmpdir(),
     buildEffectiveSystemPrompt: () => 'MOCKED PROMPT',
+    registerActiveExecutionCheck: () => {},
     ...globals 
   });
   vm.runInContext(source, context, { filename: file });
@@ -404,7 +405,7 @@ test('API key: pool, ranking e failover K1→K2 continuam funcionando para princ
     assert.equal(f.invocations[0].options.env.GOOGLE_API_KEY, undefined);
     assert.equal(f.results[0][1], 'K1'); assert.equal(f.results[0][2].success, false);
     assert.equal(f.results.at(-1)[1], 'K2'); assert.equal(f.results.at(-1)[2].success, true);
-    assert.ok(f.events.some(event => event.data?.content?.includes('Key Pool Failover')));
+    assert.ok(f.events.some(event => event.data?.content?.includes('Key Pool Failover') || event.data?.message?.includes('Key Pool Failover') || event.data?.eventType === 'KEY_FAILOVER'));
   }
 });
 
@@ -439,9 +440,9 @@ test('API_KEY_INVALID com aviso aciona K1→K2 para principal e subagente sem pe
     }, { selectedType: 'gemini-api-key', keys: { K1: 'fixture-k1', K2: 'fixture-k2' }, fastTimers: true });
     assert.equal((await f.execute({ agentId, fallbackModel: 'fallback-model' })).code, 0);
     assert.deepEqual(f.invocations.map(call => call.options.env.GEMINI_API_KEY), ['fixture-k1', 'fixture-k2']);
-    assert.ok(f.events.some(event => event.data?.content?.includes('Key Pool Failover')));
+    assert.ok(f.events.some(event => event.data?.content?.includes('Key Pool Failover') || event.data?.message?.includes('Key Pool Failover') || event.data?.eventType === 'KEY_FAILOVER'));
     assert.ok(f.events.some(event => event.data?.tool_name === 'invoke_agent'));
-    assert.ok(!f.events.some(event => event.data?.content?.includes('Modelo de Fallback Acionado')));
+    assert.ok(!f.events.some(event => event.data?.content?.includes('Modelo de Fallback Acionado') || event.data?.eventType === 'MODEL_FALLBACK'));
   }
 });
 test('Modelo de fallback só entra após esgotar chaves do modelo original, preservando identidade e contexto', async t => {
@@ -454,8 +455,8 @@ test('Modelo de fallback só entra após esgotar chaves do modelo original, pres
   assert.deepEqual(f.invocations.map(call => call.options.env.GEMINI_API_KEY), ['fixture-k1', 'fixture-k2', 'fixture-k1']);
   assert.ok(f.invocations.slice(0, 2).every(call => !call.args.includes('fallback-model')));
   assert.ok(f.invocations[2].args.includes('fallback-model')); assert.match(f.invocations[2].system, /memória validada/);
-  const messages = f.events.filter(event => event.data?.content).map(event => event.data.content);
-  assert.ok(messages.findIndex(text => text.includes('Key Pool Failover')) < messages.findIndex(text => text.includes('Modelo de Fallback Acionado')));
+  const messages = f.events.map(event => event.data?.message || event.data?.content || '').filter(Boolean);
+  assert.ok(messages.findIndex(text => text.includes('Key Pool Failover')) < messages.findIndex(text => text.includes('Modelo de Fallback')));
 });
 
 test('OAuth: fallback de modelo mantém método, contexto e identidade sem consultar Key Pool', async t => {
@@ -466,7 +467,7 @@ test('OAuth: fallback de modelo mantém método, contexto e identidade sem consu
   assert.equal((await f.execute({ agentId: 'principal', fallbackModel: 'fallback-model' })).code, 0);
   assert.equal(f.invocations.length, 2); assert.equal(f.auth.poolCalls, 0); assert.equal(f.results.length, 0);
   assert.ok(f.invocations[1].args.includes('fallback-model')); assert.match(f.invocations[1].system, /memória validada/);
-  assert.ok(f.events.some(event => event.data?.content?.includes('Modelo de Fallback Acionado')));
+  assert.ok(f.events.some(event => event.data?.content?.includes('Modelo de Fallback Acionado') || event.data?.eventType === 'MODEL_FALLBACK' || event.data?.message?.includes('Modelo de Fallback')));
 });
 
 test('Sem autenticação real: erro específico, nenhum subprocesso e liberação da execução', async t => {
@@ -831,4 +832,81 @@ test('Alias nativo codebase_investigator: comportamento de ownership e remoção
   ensureAllAgentsSynchronizedAndAcknowledged(dir, dir);
   assert.equal(fs.existsSync(obsoleteFile), true, '7. Obsolete agent (diff hash) should be preserved');
 });
+
+test('nativeHome permanece idêntico entre OAuth, API Key e trocas de método com Snap', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gemini-snap-home-'));
+  const snapLauncher = path.join(dir, 'snap-gemini');
+  fs.writeFileSync(snapLauncher, '#!/bin/sh\n');
+  fs.chmodSync(snapLauncher, 0o755);
+
+  const fakeHome = path.join(dir, 'fake-home');
+  const snapCommon = path.join(fakeHome, 'snap', 'gemini-cli', 'common');
+  fs.mkdirSync(snapCommon, { recursive: true });
+
+  const env = {
+    PATH: dir,
+    HOME: fakeHome,
+  };
+
+  const cliAuth = load('server/cli-auth-service.ts', {
+    getBestEligibleKey: () => null,
+    loadConfiguredKeys: () => ({}),
+  });
+
+  const resolvedSnapHome = cliAuth.nativeCliHome(env, snapLauncher);
+  assert.equal(resolvedSnapHome, snapCommon, 'nativeCliHome resolve o diretório common do Snap');
+
+  // Gravar settings com oauth-personal no snapCommon
+  fs.mkdirSync(path.join(snapCommon, '.gemini'), { recursive: true });
+  fs.writeFileSync(path.join(snapCommon, '.gemini', 'settings.json'), JSON.stringify({
+    security: { auth: { selectedType: 'oauth-personal' } }
+  }));
+
+  const oauthAuth = cliAuth.resolveCliAuthentication(dir, env, snapLauncher);
+  assert.equal(oauthAuth.mode, 'oauth');
+  assert.equal(oauthAuth.nativeHome, snapCommon, 'OAuth usa nativeHome do Snap');
+
+  // Trocar para API Key
+  fs.writeFileSync(path.join(snapCommon, '.gemini', 'settings.json'), JSON.stringify({
+    security: { auth: { selectedType: 'gemini-api-key' } }
+  }));
+
+  const apiKeyAuth = cliAuth.resolveCliAuthentication(dir, env, snapLauncher);
+  assert.equal(apiKeyAuth.mode, 'api-key');
+  assert.equal(apiKeyAuth.nativeHome, snapCommon, 'API Key mantém rigorosamente o mesmo nativeHome do Snap');
+});
+
+test('Key Pool: 404 MODEL_NOT_FOUND pula diretamente para fallback sem penalizar chave', async () => {
+  const kpool = load('server/key-pool-service.ts');
+  const classified404 = kpool.classifyKeyResult(404, '404_NOT_FOUND', 'models/gemini-3-flash is not found for API version v1beta');
+  assert.equal(classified404.group, 'G6', '404 classificado como G6');
+
+  const classified429 = kpool.classifyKeyResult(429, '429_QUOTA', 'Quota exceeded for model');
+  assert.equal(classified429.group, 'G3', '429 classificado como G3');
+
+  const classified503 = kpool.classifyKeyResult(503, '503_OVERLOAD', 'The model is overloaded');
+  assert.equal(classified503.group, 'G2', '503 overload classificado como G2');
+});
+
+test('Key Pool: persistência preserva chaves K1..K9 com permissões 0600 e invalida cache', async () => {
+  const kpool = load('server/key-pool-service.ts');
+  
+  // Salvar chaves
+  const testKeys = { K1: 'test-key-1-abcdef123456', K2: 'test-key-2-fedcba654321' };
+  const res = kpool.saveConfiguredKeys(testKeys);
+  assert.equal(res.success, true);
+
+  const envPath = kpool.getApiKeysEnvPath();
+  assert.equal(fs.existsSync(envPath), true, 'api-keys.env criado');
+  
+  const stats = fs.statSync(envPath);
+  assert.equal(stats.mode & 0o777, 0o600, 'Permissões 0600 garantidas');
+
+  // Testar releitura e invalidação de cache
+  kpool.invalidateConfiguredKeysCache();
+  const loaded = kpool.loadConfiguredKeys();
+  assert.equal(loaded['K1'], 'test-key-1-abcdef123456', 'K1 recuperado intacto');
+  assert.equal(loaded['K2'], 'test-key-2-fedcba654321', 'K2 recuperado intacto');
+});
+
 

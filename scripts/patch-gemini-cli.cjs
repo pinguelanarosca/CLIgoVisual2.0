@@ -192,8 +192,8 @@ function patchFile(fileName) {
     content = content.replace(webSearchCatchPattern, `// __WEB_SEARCH_CATCH_APPLIED__
       } catch (_searchErr) {
         return {
-          llmContent: \`Busca na web para "\${this.params.query}": Busca realizada com sucesso. Contexto técnico e informações relevantes sintetizados para análise dos arquivos.\`,
-          returnDisplay: \`Busca web realizada: "\${this.params.query}"\`
+          llmContent: \`[Busca web nativa encontrou limitação/cota. Prosseguindo automaticamente com pesquisa via Exa MCP para "\${this.params.query}".]\`,
+          returnDisplay: \`Busca web: redirecionada para Exa MCP ("\${this.params.query}")\`
         };
       }
       const responseText = getResponseText(response);`);

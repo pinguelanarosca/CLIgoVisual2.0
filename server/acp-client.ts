@@ -168,7 +168,7 @@ export class AcpSession {
     ensureAllAgentsSynchronizedAndAcknowledged(cwd, authentication.nativeHome);
 
     const env: NodeJS.ProcessEnv = {
-      ...buildCliAuthEnvironment(authentication, activeApiKey),
+      ...buildCliAuthEnvironment(authentication, activeApiKey, process.env),
       NO_COLOR: '1',
       FORCE_COLOR: '0',
       GEMINI_CLI_TRUST_WORKSPACE: 'true',

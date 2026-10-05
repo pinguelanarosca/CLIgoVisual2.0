@@ -1025,6 +1025,32 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string, nativeH
     } catch {}
   }
 
+  // Clean up duplicate agent markdown files in os.homedir() if distinct from nativeHome (e.g. Snap profile),
+  // respecting .gui-owned-agents.json and SHA-256 hash so user modifications are never touched.
+  const hostUserAgentsDir = path.join(os.homedir(), '.gemini', 'agents');
+  if (path.resolve(hostUserAgentsDir) !== path.resolve(canonicalDir) && fs.existsSync(hostUserAgentsDir)) {
+    try {
+      const hostOwnershipFile = path.join(hostUserAgentsDir, '.gui-owned-agents.json');
+      const hostOwnership: Record<string, string> = fs.existsSync(hostOwnershipFile)
+        ? JSON.parse(fs.readFileSync(hostOwnershipFile, 'utf8'))
+        : {};
+      for (const file of fs.readdirSync(hostUserAgentsDir)) {
+        if (file.endsWith('.md')) {
+          const filePath = path.join(hostUserAgentsDir, file);
+          try {
+            const content = fs.readFileSync(filePath, 'utf8');
+            const fileHash = crypto.createHash('sha256').update(content).digest('hex');
+            if (hostOwnership[file] === fileHash) {
+              fs.unlinkSync(filePath);
+              delete hostOwnership[file];
+            }
+          } catch {}
+        }
+      }
+      fs.writeFileSync(hostOwnershipFile, JSON.stringify(hostOwnership, null, 2), 'utf8');
+    } catch {}
+  }
+
   // Note: We avoid duplicating the same agents into <cwd>/.gemini/agents because Gemini CLI
   // scans both ~/.gemini/agents and <cwd>/.gemini/agents, causing 'Duplicate agent name detected' warnings.
   // Load all agents from repository defaults and any existing configs

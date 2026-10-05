@@ -452,6 +452,11 @@ export function classifyKeyResult(
 // 3. Persistência do Estado do Ranking (key-pool-state.json)
 let inMemoryState: KeyPoolState | null = null;
 let isBatteryTesting = false;
+let activeExecutionCheck: (() => boolean) | null = null;
+
+export function registerActiveExecutionCheck(fn: () => boolean) {
+  activeExecutionCheck = fn;
+}
 
 export function loadKeyPoolState(): KeyPoolState {
   if (inMemoryState) return inMemoryState;
@@ -590,6 +595,18 @@ export async function runDailyTestBattery(forceRefresh = false): Promise<{
     };
   }
 
+  // Se houver execução ativa do usuário, adiar bateria para não disputar cota
+  if (activeExecutionCheck && activeExecutionCheck()) {
+    sysLog.info('KPOOL', '[KPOOL] Execução ativa detectada no chat. Bateria de testes adiada.');
+    const state = loadKeyPoolState();
+    return {
+      success: true,
+      cycleDate: state.lastCycleDate,
+      totalTested: Object.keys(state.items).length,
+      results: Object.values(state.items),
+    };
+  }
+
   isBatteryTesting = true;
   const state = loadKeyPoolState();
   const todayStr = new Date().toISOString().split('T')[0];
@@ -620,12 +637,45 @@ export async function runDailyTestBattery(forceRefresh = false): Promise<{
   const testResults: KeyModelStatus[] = [];
 
   for (const model of OFFICIAL_POOL_MODELS) {
+    let modelNotFoundCount = 0;
+
     for (const keyId of activeKeyIds) {
+      // Pausar se o usuário iniciou uma execução ativa no meio da bateria
+      if (activeExecutionCheck && activeExecutionCheck()) {
+        sysLog.warn('KPOOL', `[KPOOL] Execução de usuário iniciada durante a bateria. Interrompendo testes para ceder prioridade.`);
+        break;
+      }
+
+      // Se o modelo retornou 404 para a primeira chave, evitar 8 testes adicionais inúteis
+      if (modelNotFoundCount >= 1) {
+        const skippedStatus: KeyModelStatus = {
+          model,
+          keyId,
+          dailyGroup: 'G6',
+          dailyLatency: null,
+          currentGroup: 'G6',
+          currentLatency: null,
+          cycleDate: todayStr,
+          lastTestAt: new Date().toISOString(),
+          httpStatus: 404,
+          errorCode: '404_MODEL_NOT_FOUND',
+          errorType: 'Modelo Inexistente no Endpoint',
+          consecutiveErrors: 1,
+          isTested: true,
+        };
+        state.items[`${model}:${keyId}`] = skippedStatus;
+        testResults.push(skippedStatus);
+        continue;
+      }
+
       const rawKey = configuredKeys[keyId];
       if (!rawKey) continue;
 
       const itemKey = `${model}:${keyId}`;
       const status = await testSingleKeyModel(model, keyId, rawKey, todayStr);
+      if (status.httpStatus === 404 || status.errorCode?.includes('404')) {
+        modelNotFoundCount++;
+      }
       state.items[itemKey] = status;
       testResults.push(status);
       saveKeyPoolState(state);

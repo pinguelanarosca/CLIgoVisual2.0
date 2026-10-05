@@ -25,6 +25,7 @@ import {
   maskApiKey,
   recordRuntimeExecutionResult,
   runDailyTestBattery,
+  registerActiveExecutionCheck,
 } from './key-pool-service.js';
 
 const persistentProcesses = new Map<string, ChildProcess>();
@@ -33,6 +34,7 @@ export interface ExecutionState {
   executionId: string;
   childProcess: ChildProcess | null;
   retryTimeout: NodeJS.Timeout | null;
+  oauthWatchdogTimer?: NodeJS.Timeout | null;
   cancelled: boolean;
   sessionId?: string;
   workDir?: string;
@@ -43,6 +45,7 @@ export interface ExecutionState {
 }
 
 const executions = new Map<string, ExecutionState>();
+registerActiveExecutionCheck(() => executions.size > 0);
 let currentCustomCliPath: string = '';
 
 export function getExecutionState(executionId: string): ExecutionState | undefined {
@@ -809,6 +812,11 @@ export function cancelExecutionById(executionId?: string): boolean {
 
   execState.cancelled = true;
 
+  if (execState.oauthWatchdogTimer) {
+    clearTimeout(execState.oauthWatchdogTimer);
+    execState.oauthWatchdogTimer = null;
+  }
+
   if (execState.retryTimeout) {
     clearTimeout(execState.retryTimeout);
     execState.retryTimeout = null;
@@ -1259,7 +1267,7 @@ export function executeGeminiCli(
       // Otherwise, the agent strictly uses its factual configured model from settings/disk, or params.model as fallback.
       let requestedModel = state?.currentModel || params.model || configuredAgent?.model || 'gemini-3.1-flash-lite';
       const chosenModel = normalizeCliModelName(requestedModel);
-      const { authentication, apiKey: activeApiKey, keyId: activeKeyId } = resolveExecutionAuthentication(chosenModel, cwd, state?.triedKeyIds || [], cliPath);
+      const { authentication, apiKey: activeApiKey, keyId: activeKeyId } = resolveExecutionAuthentication(chosenModel, cwd, state?.triedKeyIds || [], cliPath, process.env);
       if (authentication.cliPath && fs.existsSync(authentication.cliPath)) {
         cliPath = authentication.cliPath;
       }
@@ -1580,6 +1588,7 @@ ${subagentsList}
             terminateProcessTree(child);
           }
         }, 35000);
+        execState.oauthWatchdogTimer = oauthWatchdogTimer;
       }
       child.stdin?.on('error', (error) => { if (!execState.cancelled) { terminateProcessTree(child); params.onError(error); } });
 
@@ -2022,6 +2031,14 @@ ${subagentsList}
 
       child.once('close', async (code, signal) => {
         clearTimeout(executionTimer);
+        if (oauthWatchdogTimer) {
+          clearTimeout(oauthWatchdogTimer);
+          oauthWatchdogTimer = null;
+        }
+        if (execState.oauthWatchdogTimer) {
+          clearTimeout(execState.oauthWatchdogTimer);
+          execState.oauthWatchdogTimer = null;
+        }
         terminateProcessTree(child, true);
         const tDone = performance.now();
         console.log(`[PERF] [${executionId}] process_done=${(tDone - t0).toFixed(1)}ms (code: ${code ?? 0})`);
@@ -2303,24 +2320,38 @@ ${subagentsList}
         }
 
         if (hasFailed) {
-          // Registrar resultado no Key Pool para o modelo e chave atuais
-          if (activeKeyId) recordRuntimeExecutionResult(chosenModel, activeKeyId, {
-            success: false,
-            httpStatus: apiErrCode,
-            errorText: stderrText || reportedErrorText,
-          });
+          const isModelNotFound = !isBadRequestError && (
+            apiErrCode === 404 ||
+            combinedErrText.includes('404') ||
+            combinedErrText.includes('model not found') ||
+            combinedErrText.includes('not found') ||
+            combinedErrText.includes('unsupported') ||
+            combinedErrText.includes('not supported')
+          );
 
-          // 1. Tentar próxima chave elegível no Key Pool para o MESMO modelo
+          // Registrar resultado no Key Pool para o modelo e chave atuais (sem penalizar chave em caso de 404 de modelo)
+          if (activeKeyId) {
+            recordRuntimeExecutionResult(chosenModel, activeKeyId, {
+              success: false,
+              httpStatus: isModelNotFound ? 404 : apiErrCode,
+              errorText: isModelNotFound ? '404_MODEL_NOT_FOUND' : (stderrText || reportedErrorText),
+            });
+          }
+
+          // 1. Tentar próxima chave elegível no Key Pool para o MESMO modelo (APENAS se NÃO for erro 404 de modelo)
           const triedKeys = activeKeyId ? [...(state?.triedKeyIds || []), activeKeyId] : [];
-          const nextKey = authentication.mode === 'api-key' && activeKeyId ? getBestEligibleKey(chosenModel, triedKeys) : null;
+          const nextKey = !isModelNotFound && authentication.mode === 'api-key' && activeKeyId ? getBestEligibleKey(chosenModel, triedKeys) : null;
 
           if (nextKey && !execState.cancelled && !isBadRequestError) {
             params.onEvent({
-              type: 'stream_event',
+              type: 'runtime_event',
               data: {
-                type: 'message',
-                role: 'assistant',
-                content: `\n🔑 **[Key Pool Failover]** Chave **${activeKeyId}** encontrou restrição no modelo \`${chosenModel}\` (${apiErrCode || 'Erro'}). Alternando para a próxima chave do ranking: **${nextKey.keyId}** (${nextKey.latencyRank})...\n\n`,
+                eventType: 'KEY_FAILOVER',
+                message: `Chave ${activeKeyId} encontrou restrição no modelo ${chosenModel} (${apiErrCode || 'Erro'}). Alternando para a próxima chave do ranking: ${nextKey.keyId} (${nextKey.latencyRank})...`,
+                fromKey: activeKeyId,
+                toKey: nextKey.keyId,
+                model: chosenModel,
+                statusCode: apiErrCode,
               },
             });
 
@@ -2349,8 +2380,8 @@ ${subagentsList}
             return;
           }
 
-          // 2. Se todas as chaves do Key Pool para este modelo falharam: Verificação do Modelo de Fallback do Agente
-          if (!isBadRequestError && (isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isFallbackExecution && !params.isBackupExecution && !execState.cancelled) {
+          // 2. Fallback de Modelo do Agente (acionado imediatamente em 404 de modelo ou após esgotar chaves em G2/G3/G4)
+          if (!isBadRequestError && (isModelNotFound || isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isFallbackExecution && !params.isBackupExecution && !execState.cancelled) {
             try {
               const allAgents = loadAgents(cwd);
               const currentAgentObj = allAgents.find(
@@ -2361,17 +2392,22 @@ ${subagentsList}
               const fallbackModelToUse = configuredFallbackModel ? normalizeCliModelName(configuredFallbackModel) : null;
 
               if (fallbackModelToUse && fallbackModelToUse !== chosenModel) {
-                const reasonText = isQuotaError || apiErrCode === 429
+                const reasonText = isModelNotFound
+                  ? 'Modelo indisponível no endpoint (Erro 404 / Model Not Found)'
+                  : isQuotaError || apiErrCode === 429
                   ? 'Cotas de requisição esgotadas (Erro 429 / Quota Exceeded)'
                   : 'Servidor sobrecarregado / Alta demanda (Erro 503/500 / High Demand)';
                 const agentDisplayName = currentAgentObj?.displayName || currentAgentObj?.name || agentId || 'Agente';
 
                 params.onEvent({
-                  type: 'stream_event',
+                  type: 'runtime_event',
                   data: {
-                    type: 'message',
-                    role: 'assistant',
-                    content: `\n🛡️ **[Modelo de Fallback Acionado]**\nO agente titular **${agentDisplayName}** encontrou uma restrição no modelo \`${chosenModel}\`: *${reasonText}*.\n\n🔄 **Alternando automaticamente para o Modelo de Fallback: \`${fallbackModelToUse}\`** mantendo todas as instruções, contexto e identidade do agente intactos...\n\n`,
+                    eventType: 'MODEL_FALLBACK',
+                    message: `Agente titular ${agentDisplayName} alternando para Modelo de Fallback: ${fallbackModelToUse} (${reasonText}). Contexto e identidade preservados.`,
+                    fromModel: chosenModel,
+                    toModel: fallbackModelToUse,
+                    reason: reasonText,
+                    agentName: agentDisplayName,
                   },
                 });
 
@@ -2407,7 +2443,7 @@ ${subagentsList}
                   } else {
                     executions.delete(executionId);
                   }
-                }, 1200);
+                }, isModelNotFound ? 300 : 1200);
                 return;
               }
             } catch (err: any) {
@@ -2425,11 +2461,13 @@ ${subagentsList}
               const backoffDelay = retryAfter || (Math.pow(2, retryCount) * 1000 + Math.random() * 500);
               
               params.onEvent({
-                type: 'stream_event',
+                type: 'runtime_event',
                 data: {
-                  type: 'message',
-                  role: 'assistant',
-                  content: `\n⚠️ *[Tentativa ${retryCount}/3] Falha temporária (${apiErrCode}) em ${origin}. Retentando no modelo ${chosenModel} em ${Math.round(backoffDelay / 100) / 10}s...*\n\n`,
+                  eventType: 'RETRY',
+                  message: `Falha temporária (${apiErrCode}) em ${origin}. Retentando no modelo ${chosenModel} em ${Math.round(backoffDelay / 100) / 10}s... (Tentativa ${retryCount}/3)`,
+                  retryCount,
+                  model: chosenModel,
+                  statusCode: apiErrCode,
                 },
               });
               
@@ -2461,11 +2499,12 @@ ${subagentsList}
                 if (nextIdx < fallbackChain.length) {
                   const nextModel = fallbackChain[nextIdx];
                   params.onEvent({
-                    type: 'stream_event',
+                    type: 'runtime_event',
                     data: {
-                      type: 'message',
-                      role: 'assistant',
-                      content: `\n⚠️ *[Fallback de Modelo] 3 tentativas falharam no modelo ${chosenModel} (Erro ${apiErrCode}). Alternando para o modelo de fallback do agente: ${nextModel}...*\n\n`,
+                      eventType: 'MODEL_FALLBACK',
+                      message: `3 tentativas falharam no modelo ${chosenModel} (Erro ${apiErrCode}). Alternando para o modelo de fallback do agente: ${nextModel}...`,
+                      fromModel: chosenModel,
+                      toModel: nextModel,
                     },
                   });
                   sysLog.warn('CLI', `3 tentativas falharam no modelo ${chosenModel}. Alternando para o fallback ${nextModel} do agente ${agentId}.`);
@@ -2490,11 +2529,12 @@ ${subagentsList}
               // Exhausted all retries and fallbacks
               sysLog.error('CLI', `Todos os modelos de fallback falharam para o agente ${agentId}. Interrompendo tarefa (Erro: ${apiErrCode}, Origem: ${origin}).`);
               params.onEvent({
-                type: 'stream_event',
+                type: 'runtime_event',
                 data: {
-                  type: 'message',
-                  role: 'assistant',
-                  content: `\n❌ *[Erro Crítico] Todos os modelos de fallback falharam para o agente ${agentId}.*\n\n**Causa:** ${origin} (Status ${apiErrCode})\n**Detalhes:** ${reportedErrorText || 'Indisponibilidade persistente do serviço.'}\n\n`,
+                  eventType: 'RETRY_EXHAUSTED',
+                  message: `Todos os modelos de fallback falharam para o agente ${agentId} (${origin}, Status ${apiErrCode}).`,
+                  agentName: agentId,
+                  statusCode: apiErrCode,
                 },
               });
             }
