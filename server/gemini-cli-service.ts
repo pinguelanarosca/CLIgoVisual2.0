@@ -1545,13 +1545,17 @@ ${subagentsList}
       const executionTimer = setTimeout(() => terminateProcessTree(child), 300000);
       child.stdin?.on('error', (error) => { if (!execState.cancelled) { terminateProcessTree(child); params.onError(error); } });
 
-      if (isPromptLarge && child.stdin) {
-        try {
-          child.stdin.write(finalPrompt);
-          child.stdin.end();
-        } catch (stdinErr) {
-          sysLog.error('CLI', `Erro ao escrever prompt grande no stdin: ${stdinErr}`, { executionId });
+      if (child.stdin) {
+        if (isPromptLarge) {
+          try {
+            child.stdin.write(finalPrompt);
+          } catch (stdinErr) {
+            sysLog.error('CLI', `Erro ao escrever prompt grande no stdin: ${stdinErr}`, { executionId });
+          }
         }
+        try {
+          child.stdin.end();
+        } catch {}
       }
 
       execState.childProcess = child;
