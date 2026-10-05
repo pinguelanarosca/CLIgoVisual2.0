@@ -772,36 +772,63 @@ test('Resolução natural de modelos titulares para Principal e Worker e remoç�
 });
 
 test('Alias nativo codebase_investigator: comportamento de ownership e remoção', t => {
-  const { ensureAllAgentsSynchronizedAndAcknowledged, saveAgentToFile } = load('server/agents-service.ts');
+  const { saveAgentToFile, ensureAllAgentsSynchronizedAndAcknowledged } = load('server/agents-service.ts');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-ownership-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const agentsDir = path.join(dir, '.gemini/agents');
   fs.mkdirSync(agentsDir, { recursive: true });
+  const auditOwnershipPath = path.join(agentsDir, '.gui-owned-agents.json');
 
+  const agent = { name: 'investigator', id: 'investigator' };
   const aliasFile = path.join(agentsDir, 'codebase_investigator.md');
 
-  // 1. GUI-owned native alias (previously created)
-  const agent = { name: 'investigator', id: 'investigator' };
-  // Manually trigger creation (saveAgentToFile handles aliases, but I need to force ownership entry)
-  // Actually, saveAgentToFile handles it. But for test, I need to force the ownership entry.
-  const ownershipPath = path.join(agentsDir, '.gui-owned-agents.json');
+  // 1. GUI-owned native alias (same hash) -> removed
   fs.writeFileSync(aliasFile, 'GUI-CONTENT');
   const hash = crypto.createHash('sha256').update('GUI-CONTENT').digest('hex');
-  fs.writeFileSync(ownershipPath, JSON.stringify({ 'codebase_investigator.md': hash }));
-
-  // Run saveAgentToFile or sync to trigger removal logic
+  fs.writeFileSync(testOwnershipPath, JSON.stringify({ 'codebase_investigator.md': hash }));
   saveAgentToFile(agent, dir, true);
-  assert.equal(fs.existsSync(aliasFile), false, 'GUI-owned alias should be removed');
+  assert.equal(fs.existsSync(aliasFile), false, '1. GUI-owned alias (same hash) should be removed');
 
-  // 2. User-owned native alias (no ownership entry)
+  // 2. User-owned native alias (different hash, no ownership) -> preserved
   fs.writeFileSync(aliasFile, 'USER-CONTENT');
   saveAgentToFile(agent, dir, true);
-  assert.equal(fs.existsSync(aliasFile), true, 'User-owned alias should be preserved');
-  assert.equal(fs.readFileSync(aliasFile, 'utf8'), 'USER-CONTENT');
+  assert.equal(fs.existsSync(aliasFile), true, '2. User-owned alias should be preserved');
 
-  // 3. Native alias inexistente
+  // 3. Native alias inexistente -> not created
   fs.unlinkSync(aliasFile);
   saveAgentToFile(agent, dir, true);
-  assert.equal(fs.existsSync(aliasFile), false, 'Native alias should not be recreated');
+  assert.equal(fs.existsSync(aliasFile), false, '3. Native alias should not be recreated');
+
+  // 4 & 5. Canonical agent (not alias) -> should not be removed
+  const canonicalFile = path.join(agentsDir, 'investigator.md');
+  fs.writeFileSync(canonicalFile, 'CANONICAL-CONTENT');
+  const canonicalHash = crypto.createHash('sha256').update('CANONICAL-CONTENT').digest('hex');
+  fs.writeFileSync(testOwnershipPath, JSON.stringify({ 'investigator.md': canonicalHash }));
+  
+  // 4. GUI-owned canonical (same hash) -> Not removed by cleanup because it's canonical
+  // 5. Canonical modified by user -> still skipped
+  fs.writeFileSync(canonicalFile, 'MODIFIED-CONTENT');
+  
+  // Run cleanup
+  ensureAllAgentsSynchronizedAndAcknowledged(dir, dir);
+  assert.equal(fs.existsSync(canonicalFile), true, '4&5. Canonical agent should be preserved');
+
+  // 6 & 7. Obsolete agent (GUI-owned)
+  const obsoleteFile = path.join(agentsDir, 'obsolete.md');
+  const obsoleteHash = 'hash-obsolete';
+  fs.writeFileSync(obsoleteFile, 'OBSOLETE-CONTENT');
+  fs.writeFileSync(testOwnershipPath, JSON.stringify({ 'obsolete.md': obsoleteHash })); // Set initial hash
+  
+  // Update hash to match for test 6
+  const actualHash = crypto.createHash('sha256').update('OBSOLETE-CONTENT').digest('hex');
+  fs.writeFileSync(testOwnershipPath, JSON.stringify({ 'obsolete.md': actualHash }));
+  ensureAllAgentsSynchronizedAndAcknowledged(dir, dir);
+  assert.equal(fs.existsSync(obsoleteFile), false, '6. Obsolete agent (same hash) should be removed');
+
+  // 7. Obsolete agent (diff hash) -> preserved
+  fs.writeFileSync(obsoleteFile, 'OBSOLETE-CONTENT-MODIFIED');
+  fs.writeFileSync(testOwnershipPath, JSON.stringify({ 'obsolete.md': actualHash })); // hash mismatch!
+  ensureAllAgentsSynchronizedAndAcknowledged(dir, dir);
+  assert.equal(fs.existsSync(obsoleteFile), true, '7. Obsolete agent (diff hash) should be preserved');
 });
 

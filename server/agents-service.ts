@@ -10,6 +10,20 @@ import { logSubagentEvent } from './subagent-logger.js';
 
 const NATIVE_ALIASES = new Set(['codebase_investigator']);
 
+function removeIfGuiOwnedAndUnmodified(filePath: string, name: string, ownership: Record<string, string>) {
+  if (!fs.existsSync(filePath)) {
+    delete ownership[name];
+    return;
+  }
+  try {
+    const currentHash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+    if (ownership[name] === currentHash) {
+      fs.unlinkSync(filePath);
+      delete ownership[name];
+    }
+  } catch {}
+}
+
 export { buildEffectiveSystemPrompt };
 
 export function sanitizeModelName(model?: string): string {
@@ -641,20 +655,8 @@ export function saveAgentToFile(agent: AgentConfig, targetDir?: string, skipSett
       // Remove previously GUI-owned native alias files safely.
       const ownershipPath = path.join(agentsDir, '.gui-owned-agents.json');
       const ownership: Record<string, string> = fs.existsSync(ownershipPath) ? JSON.parse(fs.readFileSync(ownershipPath, 'utf8')) : {};
-      
-      const aliasFileName = `${aliasName}.md`;
-      if (ownership[aliasFileName]) {
-        try {
-          if (fs.existsSync(aliasFilePath)) {
-            const currentHash = crypto.createHash('sha256').update(fs.readFileSync(aliasFilePath)).digest('hex');
-            if (ownership[aliasFileName] === currentHash) {
-               fs.unlinkSync(aliasFilePath);
-               delete ownership[aliasFileName];
-               fs.writeFileSync(ownershipPath, JSON.stringify(ownership, null, 2));
-            }
-          }
-        } catch {}
-      }
+      removeIfGuiOwnedAndUnmodified(aliasFilePath, `${aliasName}.md`, ownership);
+      fs.writeFileSync(ownershipPath, JSON.stringify(ownership, null, 2));
       continue;
     }
     try {
@@ -1114,19 +1116,11 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string, nativeH
 
       // Remove only files previously written by this GUI and still unchanged.
       const canonical = new Set(agents.map(a => `${a.name}.md`));
-      // Native aliases to be forcibly removed if GUI-owned
-      const NATIVE_ALIASES = new Set(['codebase_investigator']);
+      const ownershipPath = path.join(dir, '.gui-owned-agents.json');
+
       for (const [name, hash] of Object.entries(ownership)) {
-        if (canonical.has(name) || NATIVE_ALIASES.has(name.replace('.md', ''))) {
-          // If it's a native alias that was GUI-owned, remove it
-          const file = path.join(dir, path.basename(name));
-          if (fs.existsSync(file)) fs.unlinkSync(file);
-          delete ownership[name];
-          continue;
-        }
-        const file = path.join(dir, path.basename(name));
-        if (fs.existsSync(file) && crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') === hash) fs.unlinkSync(file);
-        delete ownership[name];
+        if (canonical.has(name)) continue; // Canonical should be preserved
+        removeIfGuiOwnedAndUnmodified(path.join(dir, path.basename(name)), name, ownership);
       }
       fs.writeFileSync(ownershipPath, JSON.stringify(ownership, null, 2));
     } catch (dirErr) {
