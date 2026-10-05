@@ -13,7 +13,13 @@ const log = new Proxy({}, { get: () => () => {} });
 export function load(file, globals = {}) {
   let source = fs.readFileSync(path.join(root, file), 'utf8').replace(/^import[\s\S]*?;\s*/gm, '').replace(/^export\s*\{[^}]*\};?\s*/gm, '');
   source = stripTypeScriptTypes(source, { mode: 'transform' }).replace(/\bexport\s+(?=(?:async\s+)?(?:function|class|const|let|var))/g, '');
-  const context = vm.createContext({ console, Buffer, URL, AbortController, AbortSignal, TextDecoder, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, process, fs, path, os, crypto, ...childProcess, sysLog: log, logSubagentEvent: () => {}, performance, ...globals });
+  const context = vm.createContext({ 
+    console, Buffer, URL, AbortController, AbortSignal, TextDecoder, TextEncoder, 
+    setTimeout, clearTimeout, setInterval, clearInterval, process, fs, path, os, crypto, 
+    ...childProcess, sysLog: log, logSubagentEvent: () => {}, performance, 
+    getGuiDataDir: () => os.tmpdir(),
+    ...globals 
+  });
   vm.runInContext(source, context, { filename: file });
   return context;
 }
@@ -762,5 +768,14 @@ test('Resolução natural de modelos titulares para Principal e Worker e remoç�
     });
   });
   assert.equal(capturedWorkerConfig?.model, 'gemini-3.5-flash-lite');
+});
+
+test('Alias nativo codebase_investigator não deve criar arquivo físico', t => {
+  const { ensureAllAgentsSynchronizedAndAcknowledged } = load('server/agents-service.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // Force synchronization
+  ensureAllAgentsSynchronizedAndAcknowledged(dir, dir);
+  assert.equal(fs.existsSync(path.join(dir, '.gemini/agents/codebase_investigator.md')), false);
 });
 
