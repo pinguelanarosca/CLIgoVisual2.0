@@ -962,6 +962,15 @@ export function App() {
         } else if (errLower.includes('429') || errLower.includes('quota') || errLower.includes('resource_exhausted')) {
           finalContent = `⚠️ **Limite de Cota Atingido na API (Erro 429 - Quota Exceeded)**\n\n${errorMessage || 'A cota de requisições por minuto ou limite diário foi atingida para este modelo.'}\n\n💡 **Recomendações:**\n- Aguarde a renovação da cota de requisições;\n- Alterne para outro modelo disponível com limites maiores (ex: Flash Lite).`;
         } else if (
+          errLower.includes('oauth') ||
+          errLower.includes('google/oauth') ||
+          errLower.includes('autenticação google') ||
+          errLower.includes('sessão oauth') ||
+          errLower.includes('manual authorization') ||
+          (cliStatus?.authMode === 'oauth' && (errLower.includes('autenticação') || errLower.includes('unauthenticated')))
+        ) {
+          finalContent = `⚠️ **Falha de Autenticação Google/OAuth**\n\n${errorMessage || 'A autenticação Google/OAuth do Gemini CLI falhou.'}\n\n💡 **Verificação:**\n- Execute o comando no terminal para verificar/revalidar a sessão:\n  \`${cliStatus?.cliPath || 'gemini'}\`\n- Confirme se a conta Google autenticada possui acesso à API do Gemini.`;
+        } else if (
           (errLower.includes('gemini_api_key') && (errLower.includes('missing') || errLower.includes('not set') || errLower.includes('não foi encontrada') || errLower.includes('invalid') || errLower.includes('required') || errLower.includes('cadastrada no key pool'))) ||
           errLower.includes('unauthorized') ||
           errLower.includes('invalid api key') ||

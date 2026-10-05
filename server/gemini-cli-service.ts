@@ -65,7 +65,7 @@ export function getGlobalCliPath(): string {
     }
   } catch {}
 
-  const commonPaths = ['/usr/local/bin/gemini', '/usr/bin/gemini', '/bin/gemini'];
+  const commonPaths = ['/snap/bin/gemini', '/usr/local/bin/gemini', '/usr/bin/gemini', '/bin/gemini'];
   for (const p of commonPaths) {
     if (fs.existsSync(p)) {
       return p;
@@ -442,9 +442,12 @@ export function isExistingSession(sessionId?: string, workspaceDir?: string): bo
   return false;
 }
 
-export function getResolvedCliPath(): string {
+export function getResolvedCliPath(preferredAuth?: { cliPath?: string }): string {
   if (currentCustomCliPath && fs.existsSync(currentCustomCliPath)) {
     return currentCustomCliPath;
+  }
+  if (preferredAuth?.cliPath && fs.existsSync(preferredAuth.cliPath)) {
+    return preferredAuth.cliPath;
   }
   // Try local node_modules/.bin/gemini
   const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'gemini');
@@ -452,7 +455,7 @@ export function getResolvedCliPath(): string {
     return localBin;
   }
   // Fallback to system 'gemini'
-  return 'gemini';
+  return getGlobalCliPath();
 }
 
 export function setCustomCliPath(newPath: string) {
@@ -1257,6 +1260,9 @@ export function executeGeminiCli(
       let requestedModel = state?.currentModel || params.model || configuredAgent?.model || 'gemini-3.1-flash-lite';
       const chosenModel = normalizeCliModelName(requestedModel);
       const { authentication, apiKey: activeApiKey, keyId: activeKeyId } = resolveExecutionAuthentication(chosenModel, cwd, state?.triedKeyIds || [], cliPath);
+      if (authentication.cliPath && fs.existsSync(authentication.cliPath)) {
+        cliPath = authentication.cliPath;
+      }
 
       // Infer agentId if not explicitly provided
       if (!agentId && requestedModel) {
@@ -1455,7 +1461,7 @@ ${subagentsList}
         }
       }
 
-      sysLog.info('CLI', `Autenticação da execução: ${authentication.selectedType} (${activeKeyId ? `Key Pool ${activeKeyId}` : 'credenciais nativas'}).`);
+      sysLog.info('CLI', `Autenticação da execução: ${authentication.selectedType} (${activeKeyId ? `Key Pool ${activeKeyId}` : 'credenciais nativas'}) [executável: ${cliPath}, nativeHome: ${authentication.nativeHome || 'padrão'}].`);
 
       const env: NodeJS.ProcessEnv = {
         ...buildCliAuthEnvironment(authentication, activeApiKey),
@@ -1495,6 +1501,7 @@ ${subagentsList}
         executable: cliPath,
         args,
         cwd,
+        nativeHome: authentication.nativeHome,
         envSummary: {
           NODE_ENV: env.NODE_ENV,
           GEMINI_CLI_TRUST_WORKSPACE: env.GEMINI_CLI_TRUST_WORKSPACE,
@@ -1562,6 +1569,18 @@ ${subagentsList}
         child = mockChild;
       }
       const executionTimer = setTimeout(() => terminateProcessTree(child), 300000);
+      let oauthWatchdogTimer: NodeJS.Timeout | null = null;
+      let isOauthTimeout = false;
+      if (authentication.mode === 'oauth') {
+        oauthWatchdogTimer = setTimeout(() => {
+          if (!hasEmittedContent && !hasReceivedFirstAssistantEvent && !execState.cancelled) {
+            isOauthTimeout = true;
+            sysLog.warn('CLI', `Timeout de inicialização OAuth detectado (35s) sem eventos para execução [${executionId}].`);
+            reportedErrorText = `Timeout na inicialização da autenticação Google/OAuth (35s). O Gemini CLI não respondeu; verifique se a sessão OAuth nativa em ${authentication.nativeHome || 'HOME'} está válida executando "${cliPath}" no terminal.`;
+            terminateProcessTree(child);
+          }
+        }, 35000);
+      }
       child.stdin?.on('error', (error) => { if (!execState.cancelled) { terminateProcessTree(child); params.onError(error); } });
 
       if (isPromptLarge && child.stdin) {
@@ -1571,6 +1590,10 @@ ${subagentsList}
         } catch (stdinErr) {
           sysLog.error('CLI', `Erro ao escrever prompt grande no stdin: ${stdinErr}`, { executionId });
         }
+      } else if (child.stdin) {
+        try {
+          child.stdin.end();
+        } catch {}
       }
 
       execState.childProcess = child;
@@ -1590,6 +1613,8 @@ ${subagentsList}
       let reportedErrorText = '';
       let hasReceivedFirstStdout = false;
       let hasReceivedFirstAssistantEvent = false;
+      let hasEmittedContent = false;
+      let totalAssistantChars = 0;
       let tFirstStdout = 0;
 
       // Rastreamento estruturado de tool_calls / subagentes em voo com isolamento estrito por invocação
@@ -1636,12 +1661,42 @@ ${subagentsList}
                   parsed.type === 'stream_event' ||
                   parsed.type === 'tool_use' ||
                   parsed.type === 'content' ||
+                  parsed.type === 'result' ||
                   parsed.candidates ||
                   parsed.role === 'assistant'
                 ) {
                   hasReceivedFirstAssistantEvent = true;
+                  if (oauthWatchdogTimer) {
+                    clearTimeout(oauthWatchdogTimer);
+                    oauthWatchdogTimer = null;
+                  }
                   const tFirstAssistant = performance.now();
                   console.log(`[PERF] [${executionId}] first_assistant_event=${(tFirstAssistant - t0).toFixed(1)}ms (+${(tFirstAssistant - tSpawn).toFixed(1)}ms from spawn, +${(tFirstAssistant - tFirstStdout).toFixed(1)}ms from stdout)`);
+                }
+              }
+
+              if (parsed.type === 'result' && parsed.status !== 'error') {
+                hasEmittedContent = true;
+                if (oauthWatchdogTimer) {
+                  clearTimeout(oauthWatchdogTimer);
+                  oauthWatchdogTimer = null;
+                }
+              }
+
+              const candidateText = parsed.text || parsed.content || parsed.data?.text || parsed.data?.content || parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+              if (typeof candidateText === 'string' && candidateText.trim()) {
+                hasEmittedContent = true;
+                totalAssistantChars += candidateText.length;
+                if (oauthWatchdogTimer) {
+                  clearTimeout(oauthWatchdogTimer);
+                  oauthWatchdogTimer = null;
+                }
+              }
+              if (parsed.type === 'tool_use' || parsed.type === 'tool_call' || parsed.data?.type === 'tool_use' || parsed.data?.type === 'tool_call') {
+                hasEmittedContent = true;
+                if (oauthWatchdogTimer) {
+                  clearTimeout(oauthWatchdogTimer);
+                  oauthWatchdogTimer = null;
                 }
               }
 
@@ -2121,13 +2176,19 @@ ${subagentsList}
         // error follows it on the same line. Keep the original stderr in logs.
         const authStderrText = stderrText.replace(/Both GOOGLE_API_KEY and GEMINI_API_KEY are set(?:\. Using GOOGLE_API_KEY\.)?/g, '');
         const authErrorText = (authStderrText + ' ' + reportedErrorText).toLowerCase();
-        const isAuthError = (
+        const isClosedWithoutContent = !hasEmittedContent && totalAssistantChars === 0 && !hasReceivedFirstAssistantEvent && !execState.cancelled;
+        const isAuthError = isOauthTimeout || code === 41 || (
+          (isClosedWithoutContent && authentication.mode === 'oauth' && (code !== 0 || Boolean(signal))) ||
           authStderrText.includes('Please set an Auth method') ||
+          authStderrText.includes('Manual authorization is required') ||
+          authErrorText.includes('manual authorization is required') ||
+          authErrorText.includes('fatalauthenticationerror') ||
           authErrorText.includes('api_key_invalid') ||
           authErrorText.includes('api key not valid') ||
           authErrorText.includes('invalid api key') ||
           authErrorText.includes('key not valid') ||
           authErrorText.includes('unauthenticated') ||
+          (authErrorText.includes('oauth') && (authErrorText.includes('failed') || authErrorText.includes('timeout') || authErrorText.includes('error') || authErrorText.includes('invalid') || authErrorText.includes('falhou'))) ||
           authErrorText.includes('401') ||
           authErrorText.includes('403') ||
           (authStderrText.includes('GEMINI_API_KEY') && (
@@ -2440,11 +2501,13 @@ ${subagentsList}
           }
 
           let finalMessage = reportedErrorText || stderrText.trim();
-          if (code === -2 || stderrText.includes('ENOENT')) {
+          if (isOauthTimeout) {
+            finalMessage = reportedErrorText || `Timeout na inicialização da autenticação Google/OAuth (35s). O Gemini CLI não respondeu; verifique se a sessão OAuth nativa em ${authentication.nativeHome || 'HOME'} está válida executando "${cliPath}" no terminal.`;
+          } else if (code === -2 || stderrText.includes('ENOENT')) {
             finalMessage = `O executável do Gemini CLI (${cliPath}) ou o diretório de trabalho (${cwd}) não foi localizado no sistema (Erro -2 / ENOENT).`;
           } else if (isAuthError) {
             finalMessage = authentication.mode === 'oauth'
-              ? 'A autenticação Google/OAuth do Gemini CLI falhou. Verifique o login nativo no Gemini CLI.'
+              ? (reportedErrorText || (stderrText.includes('Manual authorization is required') ? 'Autorização manual do Gemini CLI necessária. Execute o Gemini CLI interativamente no terminal para autenticar via OAuth.' : `A autenticação Google/OAuth do Gemini CLI falhou. Verifique o login nativo no Gemini CLI executando "${cliPath}" no terminal.`))
               : authentication.mode === 'api-key' ? 'A autenticação por API key falhou. Verifique a credencial utilizada pelo Gemini CLI ou pelo Key Pool.'
               : 'A autenticação nativa do Gemini CLI falhou. Verifique o método selecionado no CLI.';
           } else if (isBadRequestError) {
@@ -2459,6 +2522,8 @@ Você atingiu o limite de requisições.
 • Verifique se há processos em segundo plano consumindo sua cota.`;
           } else if (isFetchFailed) {
             finalMessage = `⚠️ Falha na Comunicação de Rede com a API Gemini (Fetch failed sending request): ${reportedErrorText || stderrText.trim()}`;
+          } else if (isClosedWithoutContent) {
+            finalMessage = `O processo do Gemini CLI encerrou sem produzir resposta do modelo (exitCode: ${code ?? 0}).`;
           } else if (!finalMessage) {
             finalMessage = `O Gemini CLI encerrou com código de erro ${code ?? 0}.`;
           }
