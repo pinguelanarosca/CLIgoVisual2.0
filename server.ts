@@ -26,7 +26,7 @@ import {
 try {
   const patchScript = path.resolve(process.cwd(), 'scripts/patch-gemini-cli.cjs');
   if (fs.existsSync(patchScript)) {
-    execSync(`node "${patchScript}"`, { stdio: 'ignore' });
+    exec(`node "${patchScript}"`, () => {});
   }
 } catch {}
 
@@ -133,8 +133,16 @@ import {
 } from './server/memories-service.js';
 import { sendError } from './server/error-service.js';
 
-const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || '0.0.0.0';
+function getCommandLineArg(argName: string): string | undefined {
+  const index = process.argv.indexOf(argName);
+  if (index !== -1 && index + 1 < process.argv.length) {
+    return process.argv[index + 1];
+  }
+  return undefined;
+}
+
+const PORT = Number(process.env.PORT || getCommandLineArg('--port') || 3000);
+const HOST = process.env.HOST || getCommandLineArg('--host') || '0.0.0.0';
 
 async function startServer() {
   const app = express();
@@ -1413,6 +1421,7 @@ priority = 90
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
+        hmr: false,
         watch: {
           ignored: [
             '**/.gemini/**',
@@ -1454,6 +1463,9 @@ priority = 90
 
   const server = app.listen(PORT, HOST, () => {
     console.log(`Gemini CLI GUI server running at http://${HOST}:${PORT}`);
+  });
+  server.on('error', (err: any) => {
+    console.error(`Fatal server error on ${HOST}:${PORT}:`, err?.message || err);
   });
   registerActiveServer(server);
 }

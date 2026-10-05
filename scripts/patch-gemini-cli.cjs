@@ -199,11 +199,14 @@ function patchFile(fileName) {
       const responseText = getResponseText(response);`);
   }
 
-  // 7. Update internal utility tool aliases (web-search, web-fetch, etc.) to use working models
+  // 7. Update deprecated preview alias to modern lite without overriding legitimate user models
   content = content.replace(/"gemini-3-flash-preview"/g, '"gemini-3.5-flash-lite"');
-  content = content.replace(/"gemini-2.5-flash"/g, '"gemini-3.5-flash-lite"');
-  content = content.replace(/"gemini-2.5-flash-lite"/g, '"gemini-3.5-flash-lite"');
-  content = content.replace(/"gemini-2.5-pro"/g, '"gemini-3.5-flash"');
+
+  // 8. Fast failover patch: reduce internal CLI retries from 10 attempts (300s) to 2 fast attempts (1-2s)
+  // so that GUI Key Pool Failover and Model Fallback trigger immediately on 503/429 errors.
+  content = content.replace(/DEFAULT_MAX_ATTEMPTS\s*=\s*10;/g, 'DEFAULT_MAX_ATTEMPTS = 2;');
+  content = content.replace(/initialDelayMs:\s*5e3,/g, 'initialDelayMs: 1e3,');
+  content = content.replace(/maxDelayMs:\s*3e4,/g, 'maxDelayMs: 3e3,');
 
   fs.writeFileSync(filePath, content, 'utf8');
   console.log(`[patch] Successfully patched: ${fileName}`);
@@ -212,3 +215,4 @@ function patchFile(fileName) {
 for (const file of filesToPatch) {
   patchFile(file);
 }
+

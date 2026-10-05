@@ -81,7 +81,7 @@ export default defineConfig(() => {
       host: HOST,
       port: 3000,
       allowedHosts: ALLOWED_HOSTS,
-      hmr: process.env.DISABLE_HMR !== 'true',
+      hmr: false,
       watch: process.env.DISABLE_HMR === 'true' ? null : {
         ignored: [
           '**/.gemini/**',

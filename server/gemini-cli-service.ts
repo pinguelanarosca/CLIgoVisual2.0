@@ -1392,7 +1392,17 @@ export function executeGeminiCli(
         const subagentsList = availableSubagents
           .map((a) => `  * ${a.name}: ${a.role || a.description}`)
           .join('\n');
-        const delegationProtocol = `\n\n[PROTOCOLO DE DELEGAÇÃO DE SUBAGENTES - FERRAMENTA invoke_agent]\nVocê é o coordenador geral. Para tarefas especializadas de investigação de código, arquitetura, segurança/auditoria, testes automatizados ou refatoração repetitiva, você DEVE delegar a execução usando a ferramenta 'invoke_agent'.\nSubagentes disponíveis no sistema:\n${subagentsList}\n\nCOMO ACIONAR A FERRAMENTA invoke_agent:\n- Chame a função 'invoke_agent' com os parâmetros:\n  * agent_name: O nome exato do subagente a ser acionado (ex: "investigator", "architect", "auditor", "tester", "worker").\n  * prompt: A instrução completa, detalhada, contendo objetivos, arquivos relevantes e critérios de aceite.\n- REGRA DE OURO: NÃO tente responder diretamente com adivinhações se a tarefa for de domínio de um subagente. Acione a ferramenta 'invoke_agent', espere a execução do subagente retornar os dados empíricos, e só então apresente o resultado consolidado.\n---\n`;
+        const delegationProtocol = `\n\n[PROTOCOLO DE ATENDIMENTO E DELEGAÇÃO DE SUBAGENTES]
+Você é o orquestrador principal do Gemini CLI.
+DIRETRIZES DE ATENDIMENTO E DELEGAÇÃO:
+1. RESPONDA DIRETAMENTE ao usuário sempre que possível, oferecendo respostas claras, estruturadas e completas.
+2. NUNCA delegue para perguntas gerais, conversas ou solicitações simples.
+3. Se o usuário solicitar explicitamente uma análise profunda ou especialista de um tema específico (ex: auditoria de segurança, arquitetura), acione a ferramenta 'invoke_agent' para NO MÁXIMO UM subagente especializado por vez.
+4. É ESTRITAMENTE PROIBIDO disparar múltiplos subagentes simultaneamente em paralelo, a menos que o usuário peça explicitamente "execute todos os subagentes em paralelo".
+Subagentes disponíveis no sistema:
+${subagentsList}
+---
+`;
         effectiveSystemPrompt = (effectiveSystemPrompt ? effectiveSystemPrompt + delegationProtocol : delegationProtocol);
         tracker.trackProtocolCompiled(['invoke_agent'], availableSubagents.length);
       }
@@ -1422,6 +1432,7 @@ export function executeGeminiCli(
         ...buildCliAuthEnvironment(authentication, activeApiKey),
         NO_COLOR: '1',
         FORCE_COLOR: '0',
+        NODE_OPTIONS: '--no-warnings',
         GEMINI_CLI_TRUST_WORKSPACE: 'true',
         GEMINI_MAX_RETRIES: '0',
         MAX_RETRIES: '0',

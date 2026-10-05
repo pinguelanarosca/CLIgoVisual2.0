@@ -739,13 +739,11 @@ export function App() {
       const scheduleStreamUpdate = () => {
         if (!updateScheduled) {
           updateScheduled = true;
-          const elapsed = Date.now() - lastFlushTime;
-          if (elapsed >= 50) {
-            requestAnimationFrame(flushStreamUpdate);
+          // Render first tokens immediately for instant TTFT (Time To First Token)
+          if (lastFlushTime === 0) {
+            flushStreamUpdate();
           } else {
-            setTimeout(() => {
-              requestAnimationFrame(flushStreamUpdate);
-            }, 50 - elapsed);
+            requestAnimationFrame(flushStreamUpdate);
           }
         }
       };

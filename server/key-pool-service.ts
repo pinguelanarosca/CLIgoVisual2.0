@@ -85,13 +85,22 @@ export function maskApiKey(key?: string | null): string {
   return `${trimmed.slice(0, 6)}...${trimmed.slice(-3)}`;
 }
 
+let configuredKeysCache: { keys: Record<string, string>; mtime: number } | null = null;
+
+export function invalidateConfiguredKeysCache() {
+  configuredKeysCache = null;
+}
+
 // 1. Armazenamento seguro de chaves K1..K9 em ~/.config/gemini-gui/api-keys.env (chmod 600)
 export function loadConfiguredKeys(): Record<string, string> {
   const envPath = getApiKeysEnvPath();
-  const keys: Record<string, string> = {};
-
   if (fs.existsSync(envPath)) {
     try {
+      const stat = fs.statSync(envPath);
+      if (configuredKeysCache && configuredKeysCache.mtime === stat.mtimeMs) {
+        return configuredKeysCache.keys;
+      }
+      const keys: Record<string, string> = {};
       const content = fs.readFileSync(envPath, 'utf8');
       for (const line of content.split('\n')) {
         const trimmed = line.trim();
@@ -105,13 +114,15 @@ export function loadConfiguredKeys(): Record<string, string> {
           }
         }
       }
+      configuredKeysCache = { keys, mtime: stat.mtimeMs };
+      return keys;
     } catch (err) {
       sysLog.warn('KPOOL', `Erro ao ler api-keys.env: ${err}`);
     }
   }
 
   // O Key Pool é a ÚNICA fonte de autenticação. Nenhum fallback para process.env.
-  return keys;
+  return {};
 }
 
 export function saveConfiguredKeys(newKeys: Record<string, string | null | undefined>): { success: boolean; count: number } {
@@ -153,6 +164,7 @@ export function saveConfiguredKeys(newKeys: Record<string, string | null | undef
       fs.chmodSync(envPath, 0o600);
     } catch {}
 
+    invalidateConfiguredKeysCache();
     sysLog.info('KPOOL', `Chaves do Key Pool salvas com segurança em api-keys.env (${Object.keys(updated).length} chaves ativas).`);
     return { success: true, count: Object.keys(updated).length };
   } catch (err: any) {

@@ -47,8 +47,8 @@ Diretrizes operacionais:
     name: 'investigator',
     displayName: 'Investigator',
     role: 'Investigator: investigação, pesquisa e diagnóstico.',
-    model: 'gemini-3.7-flash',
-    fallbackModel: 'gemini-3.6-flash',
+    model: 'gemini-3.6-flash',
+    fallbackModel: 'gemini-3.5-flash-lite',
     description: 'Agente especializado em investigação profunda de código, busca e rastreamento de bugs, pesquisa em fontes e diagnóstico técnico empírico com evidências.',
     baseInstructions: `Você é o Investigator do Gemini CLI.
 
@@ -85,7 +85,7 @@ Diretrizes operacionais:
     displayName: 'Architect',
     role: 'Architect: decisões arquiteturais e estruturais.',
     model: 'gemini-3.6-flash',
-    fallbackModel: 'gemini-3.7-flash',
+    fallbackModel: 'gemini-3.5-flash-lite',
     description: 'Agente especializado em design de sistemas, arquitetura de software, modularidade, desacoplamento, contratos de interfaces e integridade estrutural.',
     baseInstructions: `Você é o Architect do Gemini CLI.
 
@@ -120,8 +120,8 @@ Diretrizes operacionais:
     name: 'auditor',
     displayName: 'Auditor',
     role: 'Auditor: revisão crítica e identificação de problemas.',
-    model: 'gemini-3.8-flash',
-    fallbackModel: 'gemini-3.6-flash',
+    model: 'gemini-3.6-flash',
+    fallbackModel: 'gemini-3.5-flash-lite',
     description: 'Agente especializado em revisão crítica rigorosa de código, auditoria de segurança, detecção de regressões, conformidade e análise de vulnerabilidades.',
     baseInstructions: `Você é o Auditor do Gemini CLI.
 
@@ -157,7 +157,7 @@ Diretrizes operacionais:
     name: 'tester',
     displayName: 'Tester',
     role: 'Tester: testes e validação.',
-    model: 'gemini-3-flash',
+    model: 'gemini-3.6-flash',
     fallbackModel: 'gemini-3.1-flash-lite',
     description: 'Agente especializado em criação e execução de testes automatizados (unitários, integração e e2e), validação comportamental e análise de falhas.',
     baseInstructions: `Você é o Tester do Gemini CLI.
