@@ -12,6 +12,7 @@ import {
   saveSessionSqlite,
   deleteSessionSqlite,
   clearAllSessionsSqlite,
+  importSessionsSqlite,
 } from './session-sqlite-service.js';
 
 function getStorageFilePath(): string {
@@ -74,12 +75,9 @@ function loadStore(): AppDataStore {
         // Sanitize projects to guarantee valid directories
         parsed.projects = parsed.projects.map((proj: ProjectItem) => {
           const validDirs = (proj.associatedDirs || [])
-            .map((d: string) => resolveLocalPath(d))
-            .filter((d: string) => fs.existsSync(d));
+            .map((d: string) => resolveLocalPath(d));
 
-          if (validDirs.length === 0) {
-            validDirs.push(os.homedir());
-          }
+
           return {
             ...proj,
             associatedDirs: validDirs,
@@ -88,12 +86,9 @@ function loadStore(): AppDataStore {
 
         // Sanitize authorizedDirs
         const validAuthDirs = (parsed.authorizedDirs || [])
-          .map((d: string) => resolveLocalPath(d))
-          .filter((d: string) => fs.existsSync(d));
+          .map((d: string) => resolveLocalPath(d));
 
-        if (validAuthDirs.length === 0) {
-          validAuthDirs.push(os.homedir());
-        }
+
         parsed.authorizedDirs = validAuthDirs;
 
         // Migrate sessions if present
@@ -105,8 +100,10 @@ function loadStore(): AppDataStore {
         cachedStore = parsed;
         return cachedStore!;
       }
-    } catch {
-      // Fall through to initial store
+      throw new Error('Formato do storage.json inválido.');
+    } catch (error) {
+      sysLog.error('PROJECT', 'storage.json inválido ou migração falhou; dados preservados.', error);
+      throw error;
     }
   }
 
@@ -132,45 +129,35 @@ function loadStore(): AppDataStore {
   return store;
 }
 
+function commitStore(store: AppDataStore): void {
+  const storageFile = getStorageFilePath();
+  const temporary = `${storageFile}.${process.pid}.tmp`;
+  const text = JSON.stringify(store, null, 2);
+  try {
+    const fd = fs.openSync(temporary, 'w', 0o600);
+    try { fs.writeFileSync(fd, text, 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(temporary, storageFile);
+  } catch (error) {
+    try { fs.unlinkSync(temporary); } catch {}
+    sysLog.error('PROJECT', 'Falha ao gravar estado; arquivo anterior preservado.', error);
+    throw error;
+  }
+}
 function saveStore(store: AppDataStore, immediate = false) {
   cachedStore = store;
-
   if (immediate) {
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
-    try {
-      const storageFile = getStorageFilePath();
-      fs.writeFileSync(storageFile, JSON.stringify(store, null, 2), 'utf8');
-    } catch (err) {
-      console.error('Failed to save store:', err);
-    }
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    commitStore(store);
     return;
   }
-
   if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    try {
-      const storageFile = getStorageFilePath();
-      fs.promises.writeFile(storageFile, JSON.stringify(cachedStore || store, null, 2), 'utf8').catch((err) => {
-        console.error('Failed to save store async:', err);
-      });
-    } catch (err) {
-      console.error('Failed to schedule store save:', err);
-    }
+    try { commitStore(cachedStore || store); } catch (error) { console.error('Failed to save store:', error); }
   }, 300);
 }
-
-process.on('exit', () => {
-  if (cachedStore) {
-    try {
-      const storageFile = getStorageFilePath();
-      fs.writeFileSync(storageFile, JSON.stringify(cachedStore, null, 2), 'utf8');
-    } catch {}
-  }
-});
+process.on('exit', () => { if (cachedStore) { try { commitStore(cachedStore); } catch {} } });
 
 // Authorized Directories API
 export function getAuthorizedDirs(): AuthorizedDir[] {
@@ -631,9 +618,7 @@ export function overwriteProjects(projects: ProjectItem[]): void {
 }
 
 export function overwriteSessions(sessions: SessionItem[]): void {
-  const store = loadStore();
-  store.sessions = sessions;
-  saveStore(store);
+  importSessionsSqlite(sessions);
   sysLog.info('PROJECT', `Sessões e histórico de chat sobrescritos via restauração de backup (${sessions.length} sessões)`);
 }
 

@@ -19,6 +19,7 @@ import { fetchJsonSafely } from '../utils/apiUtils';
 
 interface VersionsSidebarProps {
   isOpen: boolean;
+  refreshKey?: number;
   onClose: () => void;
   activeProject?: ProjectItem | null;
   authorizedDirs?: AuthorizedDir[];
@@ -27,6 +28,7 @@ interface VersionsSidebarProps {
 
 export const VersionsSidebar: React.FC<VersionsSidebarProps> = ({
   isOpen,
+  refreshKey,
   onClose,
   activeProject,
   authorizedDirs = [],
@@ -65,7 +67,7 @@ export const VersionsSidebar: React.FC<VersionsSidebarProps> = ({
       fetchVersions();
       setFeedback(null);
     }
-  }, [isOpen, activeProject?.id, workspaceDir]);
+  }, [isOpen, activeProject?.id, workspaceDir, refreshKey]);
 
   if (!isOpen) return null;
 

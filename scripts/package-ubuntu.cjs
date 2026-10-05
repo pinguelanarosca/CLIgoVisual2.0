@@ -65,6 +65,11 @@ if ! command -v node &> /dev/null; then
     exit 1
 fi
 
+if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22||(a===22&&b<13))process.exit(1); require("node:sqlite");' >/dev/null 2>&1; then
+    echo "ERRO: Node.js >=22.13.0 com node:sqlite é necessário."
+    exit 1
+fi
+
 # 2. Verificar e matar instâncias órfãs antes de iniciar
 pkill -f "dist/server.cjs" 2>/dev/null || true
 
@@ -134,7 +139,7 @@ Version: 1.0.0
 Section: devel
 Priority: optional
 Architecture: all
-Depends: nodejs (>= 18.0.0)
+Depends: nodejs (>= 22.13.0)
 Maintainer: Gemini CLI GUI Developer <developer@local>
 Description: Interface grafica local, moderna e amigavel para o Gemini CLI no Ubuntu Linux.
  Integracao direta com o processo real do Gemini CLI, agentes especializados,

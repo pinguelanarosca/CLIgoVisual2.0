@@ -144,8 +144,13 @@ echo "Porta local: \$PORT"
 echo "=================================================="
 
 # Check Node.js
+if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 13)) process.exit(1); require("node:sqlite");' >/dev/null 2>&1; then
+    echo "ERRO: Node.js >= 22.13.0 com node:sqlite é necessário."
+    exit 1
+fi
+
 if ! command -v node &> /dev/null; then
-    echo "ERRO: Node.js (>=18) é necessário. Instale via 'sudo apt install nodejs npm' ou via NodeSource."
+    echo "ERRO: Node.js (>=22.13.0) é necessário. Instale via 'sudo apt install nodejs npm' ou via NodeSource."
     exit 1
 fi
 
@@ -198,6 +203,11 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22||(a===22&&b<13))process.exit(1); require("node:sqlite");' >/dev/null 2>&1; then
+    echo "ERRO: Node.js >=22.13.0 com node:sqlite é necessário."
+    exit 1
+fi
+
 echo "Verificando e encerrando instâncias ativas do gemini-gui..."
 pkill -f "node.*/opt/gemini-gui" 2>/dev/null || true
 pkill -f "dist/server\.cjs" 2>/dev/null || true
@@ -217,8 +227,13 @@ if ! command -v git &> /dev/null; then
 fi
 
 if ! command -v node &> /dev/null; then
-    echo "ERRO: Node.js (>= 18) não está instalado no sistema."
+    echo "ERRO: Node.js (>= 22.13.0) não está instalado no sistema."
     echo "Por favor instale o Node.js antes de continuar."
+    exit 1
+fi
+
+if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 13)) process.exit(1); require("node:sqlite");' >/dev/null 2>&1; then
+    echo "ERRO: Node.js >= 22.13.0 com node:sqlite é necessário."
     exit 1
 fi
 
@@ -564,7 +579,7 @@ Este procedimento permite ao usuário final certificar que a instalação no Ubu
 
 ## 1. Verificação de Pré-requisitos
 - Execute no terminal:
-  \`node --version\` (deve ser >= 18.0.0)
+  \`node --version\` (deve ser >= 22.13.0)
   \`gemini --version\` (deve retornar a versão instalada)
 - Para remover versão antiga e instalar a versão mais recente:
   \`npm uninstall -g @google/gemini-cli\`

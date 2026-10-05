@@ -458,7 +458,7 @@ npm start`;
                 onChange={(e) => setForceSync(e.target.checked)}
                 className="rounded text-blue-600"
               />
-              <span>⚡ Reset forçado (ignorar conflitos locais)</span>
+              <span>⚡ Descartar alterações locais e substituir pelo remoto</span>
             </label>
           </div>
         </div>

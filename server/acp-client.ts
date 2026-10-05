@@ -1,5 +1,9 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import readline from 'node:readline';
+import crypto from 'node:crypto';
+import { terminateProcessTree } from './process-service.js';
+import { buildExecutionPrompt } from './execution-policy.js';
+import { buildEffectiveSystemPrompt } from './agents-service.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -57,6 +61,8 @@ export class AcpSession {
   public isClosed = false;
   public lastUsedAt = Date.now();
   private tempSettingsFile: string | null = null;
+  public fingerprint = '';
+  private firstPrompt = true;
 
   constructor(sessionId: string, cwd: string, model: string) {
     this.sessionId = sessionId;
@@ -69,14 +75,12 @@ export class AcpSession {
     console.log(`[PERF] [${this.sessionId}] acp_spawn`);
 
     const executionId = params.executionId || `init_${Date.now()}`;
-    let cwd = params.workDir || (params.authorizedDirs && params.authorizedDirs[0]) || getGuiDataDir();
-    if (!cwd || !fs.existsSync(cwd)) {
-      cwd = getGuiDataDir();
-    }
+    const cwd = params.workDir || (params.authorizedDirs && params.authorizedDirs[0]);
+    if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error('Diretório ACP inválido; selecione o projeto correto.');
     this.cwd = cwd;
 
     // Configurar o settings e MCPs uma única vez para este processo persistente
-    this.tempSettingsFile = await resolveEffectiveCliConfig(cwd, executionId);
+
     
     let requestedModel = params.model || 'gemini-3.5-flash-lite';
     if (requestedModel === 'auto') requestedModel = 'gemini-3.5-flash-lite';
@@ -111,6 +115,7 @@ export class AcpSession {
       sysLog.warn('CLI', `[ACP] Aviso ao sincronizar políticas: ${err}`);
     }
 
+    this.tempSettingsFile = await resolveEffectiveCliConfig(cwd, executionId);
     const args: string[] = [
       '--acp',
       '--skip-trust',
@@ -167,6 +172,7 @@ export class AcpSession {
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
     });
 
     if (!this.child.stdout || !this.child.stdin) {
@@ -184,6 +190,7 @@ export class AcpSession {
       sysLog.debug('CLI', `[ACP_STDERR] ${text}`);
     });
 
+    this.child.stdin?.on('error', () => this.cleanup());
     this.child.on('error', (err) => {
       sysLog.error('CLI', `[ACP] Erro no processo persistente da sessão ${this.sessionId}: ${err.message}`);
       this.cleanup();
@@ -231,6 +238,7 @@ export class AcpSession {
       throw new Error(`Sessão ACP não está pronta para executar prompt.`);
     }
 
+    if (this.activeExecution) throw Object.assign(new Error('Já existe uma execução nesta sessão ACP.'), { promptStarted: true });
     const executionId = params.executionId || `exec_${Date.now()}`;
     const tPromptSent = performance.now();
     console.log(`[PERF] [${executionId}] acp_prompt_sent`);
@@ -247,7 +255,7 @@ export class AcpSession {
     try {
       const { tools: mcpTools, discoverySource } = getExaAuditTools();
       params.onEvent({
-        type: 'final_api_request',
+        type: 'configured_request',
         data: {
           finalApiRequest: {
             model: this.model,
@@ -262,11 +270,21 @@ export class AcpSession {
       });
     } catch {}
 
-    let promptText = params.prompt;
+    let promptText = buildExecutionPrompt({ ...params, resume: this.firstPrompt ? false : params.resume });
+    const systemPrompt = buildEffectiveSystemPrompt(params.baseInstructions, params.systemInstructions, params.overrideBasePrompt);
+    if (systemPrompt) promptText = `[INSTRUÇÕES DO AGENTE]
+${systemPrompt}
+
+` + promptText;
+    if (params.sharedMemory) promptText = `[MEMÓRIA COMPARTILHADA]
+${params.sharedMemory}
+
+` + promptText;
+    this.firstPrompt = false;
     // Se for o primeiro prompt da sessão e houver cabeçalho de workspace, aplicar contexto
     if (params.resume === false) {
       const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${this.cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : this.cwd}.\nSempre inspecione e responda com base nos arquivos localizados neste diretório.\n---\n\n`;
-      promptText = workspaceHeader + params.prompt;
+      promptText = workspaceHeader + promptText;
     }
 
     return new Promise<void>((resolve, reject) => {
@@ -281,7 +299,9 @@ export class AcpSession {
         sessionId: this.acpSessionId,
         prompt: [{ type: 'text', text: promptText }],
       }, 300000)
-        .then(() => {
+        .then((result) => {
+          if (this.activeExecution?.executionId !== executionId) return;
+          if (result?.error || result?.stopReason === 'error') throw new Error(result.error?.message || 'Erro estruturado ACP.');
           const tDone = performance.now();
           console.log(`[PERF] [${executionId}] completed=${(tDone - tPromptSent).toFixed(1)}ms`);
 
@@ -289,7 +309,7 @@ export class AcpSession {
             this.activeExecution = null;
           }
 
-          params.onDone(0, undefined);
+          params.onDone(0, null);
           resolve();
         })
         .catch((err) => {
@@ -297,8 +317,7 @@ export class AcpSession {
           if (this.activeExecution?.executionId === executionId) {
             this.activeExecution = null;
           }
-          params.onError(err);
-          reject(err);
+          reject(Object.assign(err, { promptStarted: true }));
         });
     });
   }
@@ -320,11 +339,12 @@ export class AcpSession {
       sysLog.warn('CLI', `[ACP] Falha ao enviar session/cancel: ${err}`);
     }
 
-    if (this.activeExecution.resolvePrompt) {
-      this.activeExecution.resolvePrompt(null);
-    }
-    this.activeExecution.params.onDone(0, 'SIGINT');
+    const active = this.activeExecution;
     this.activeExecution = null;
+    if (this.child) terminateProcessTree(this.child, true);
+    active.params.onDone(null, 'SIGINT');
+    active.resolvePrompt?.(null);
+    this.cleanup();
     return true;
   }
 
@@ -450,7 +470,7 @@ export class AcpSession {
         params,
       };
 
-      this.sendRaw(payload);
+      try { this.sendRaw(payload); } catch (error) { clearTimeout(timer); this.pendingRequests.delete(id); reject(error); }
     });
   }
 
@@ -470,10 +490,12 @@ export class AcpSession {
       this.child.stdin.write(JSON.stringify(obj) + '\n');
     } catch (err) {
       sysLog.error('CLI', `[ACP] Falha ao escrever no stdin do processo ACP: ${err}`);
+      throw err;
     }
   }
 
   public cleanup(): void {
+    if (this.isClosed) return;
     this.isClosed = true;
     this.isReady = false;
 
@@ -484,7 +506,7 @@ export class AcpSession {
     this.pendingRequests.clear();
 
     if (this.activeExecution && this.activeExecution.rejectPrompt) {
-      this.activeExecution.rejectPrompt(new Error('Sessão ACP finalizada abruptamente.'));
+      this.activeExecution.rejectPrompt(Object.assign(new Error('Sessão ACP finalizada abruptamente.'), { promptStarted: true }));
       this.activeExecution = null;
     }
 
@@ -494,7 +516,7 @@ export class AcpSession {
     }
 
     if (this.child) {
-      try { this.child.kill('SIGTERM'); } catch {}
+      try { terminateProcessTree(this.child); } catch {}
       this.child = null;
     }
 
@@ -507,8 +529,23 @@ export class AcpSession {
 export class AcpSessionManager {
   private static instance: AcpSessionManager;
   private sessions = new Map<string, AcpSession>();
+  private initializing = new Map<string, { fingerprint: string; promise: Promise<AcpSession> }>();
 
-  private constructor() {}
+  private constructor() {
+    const timer = setInterval(() => this.pruneIdle(), 30000); timer.unref();
+    process.once('exit', () => { for (const session of this.sessions.values()) session.cleanup(); });
+  }
+  private pruneIdle() {
+    for (const [id, session] of this.sessions) if (!session.activeExecution && !this.initializing.has(id) && (session.isClosed || Date.now() - session.lastUsedAt > 5 * 60000)) this.removeSession(id);
+  }
+  private configFingerprint(params: CliExecutionParams): string {
+    const config: Record<string, any> = {};
+    for (const key of ['workDir', 'model', 'agentId', 'approvalMode', 'authorizedDirs', 'temperature', 'topP', 'topK', 'maxOutputTokens', 'thinking', 'thinkingLevel', 'thinking_level', 'systemInstructions', 'baseInstructions', 'overrideBasePrompt', 'sharedMemory', 'tools']) config[key] = (params as any)[key];
+    config.cli = getResolvedCliPath();
+    config.key = getBestEligibleKey(params.model || 'gemini-3.5-flash-lite')?.key || process.env.GEMINI_API_KEY;
+    config.files = [path.join(getGuiDataDir(), '.gemini', 'settings.json'), path.join(params.workDir || getGuiDataDir(), '.gemini', 'settings.json'), path.join(os.homedir(), '.gemini', 'settings.json')].map(file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
+    return crypto.createHash('sha256').update(JSON.stringify(config)).digest('hex');
+  }
 
   public static getInstance(): AcpSessionManager {
     if (!AcpSessionManager.instance) {
@@ -527,33 +564,36 @@ export class AcpSessionManager {
   }
 
   public async getOrCreateSession(sessionId: string, params: CliExecutionParams): Promise<AcpSession> {
-    let session = this.sessions.get(sessionId);
-
-    if (session && session.isReady && !session.isClosed) {
-      sysLog.info('CLI', `[ACP] Reutilizando processo ACP persistente para a sessão: ${sessionId}`);
-      return session;
+    this.pruneIdle();
+    const fingerprint = this.configFingerprint(params);
+    const pending = this.initializing.get(sessionId);
+    if (pending) {
+      if (pending.fingerprint !== fingerprint) throw Object.assign(new Error('Configuração mudou durante a inicialização ACP.'), { promptStarted: true });
+      return pending.promise;
     }
-
-    if (session) {
-      session.cleanup();
-      this.sessions.delete(sessionId);
+    const previous = this.sessions.get(sessionId);
+    if (previous?.activeExecution) throw Object.assign(new Error('Sessão ACP ocupada.'), { promptStarted: true });
+    if (previous?.isReady && !previous.isClosed && previous.fingerprint === fingerprint) return previous;
+    if (previous) this.removeSession(sessionId);
+    if (this.sessions.size >= 4) {
+      const idle = [...this.sessions.values()].filter(s => !s.activeExecution && !this.initializing.has(s.sessionId)).sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+      if (!idle) throw Object.assign(new Error('Limite de quatro sessões ACP ativas atingido.'), { promptStarted: true });
+      this.removeSession(idle.sessionId);
     }
-
-    let cwd = params.workDir || (params.authorizedDirs && params.authorizedDirs[0]) || getGuiDataDir();
-    const model = params.model || 'gemini-3.5-flash-lite';
-
-    session = new AcpSession(sessionId, cwd, model);
+    const session = new AcpSession(sessionId, params.workDir || getGuiDataDir(), params.model || 'gemini-3.5-flash-lite');
+    session.fingerprint = fingerprint;
     this.sessions.set(sessionId, session);
-
-    try {
-      await session.initializeSession(params);
+    const promise = session.initializeSession(params).then(() => {
+      // Initialization can update GUI-owned settings; fingerprint their final state.
+      session.fingerprint = this.configFingerprint(params);
       return session;
-    } catch (err) {
-      sysLog.error('CLI', `[ACP] Falha na inicialização da sessão ACP (${sessionId}): ${err}`);
+    }).catch(error => {
       session.cleanup();
-      this.sessions.delete(sessionId);
-      throw err;
-    }
+      if (this.sessions.get(sessionId) === session) this.sessions.delete(sessionId);
+      throw error;
+    }).finally(() => this.initializing.delete(sessionId));
+    this.initializing.set(sessionId, { fingerprint, promise });
+    return promise;
   }
 
   public cancelExecution(executionId: string): boolean {

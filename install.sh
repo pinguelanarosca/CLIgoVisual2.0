@@ -16,6 +16,11 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22||(a===22&&b<13))process.exit(1); require("node:sqlite");' >/dev/null 2>&1; then
+    echo "ERRO: Node.js >=22.13.0 com node:sqlite é necessário."
+    exit 1
+fi
+
 echo "Verificando e encerrando instâncias ativas do gemini-gui..."
 # Encerra processos do servidor compilado ou tsx vinculados a /opt/gemini-gui ou dist/server.cjs
 pkill -f "node.*/opt/gemini-gui" 2>/dev/null || true
@@ -37,8 +42,13 @@ if ! command -v git &> /dev/null; then
 fi
 
 if ! command -v node &> /dev/null; then
-    echo "ERRO: Node.js (>= 18) não está instalado no sistema."
+    echo "ERRO: Node.js (>= 22.13.0) não está instalado no sistema."
     echo "Por favor instale o Node.js antes de continuar."
+    exit 1
+fi
+
+if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 13)) process.exit(1); require("node:sqlite");' >/dev/null 2>&1; then
+    echo "ERRO: Node.js >= 22.13.0 com node:sqlite é necessário."
     exit 1
 fi
 

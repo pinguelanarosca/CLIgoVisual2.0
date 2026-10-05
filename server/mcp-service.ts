@@ -1,7 +1,9 @@
 import fs from 'node:fs';
+import { sysLog } from './logger-service.js';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
+import { terminateProcessTree } from './process-service.js';
 import { McpConfig } from '../src/types.js';
 import { getResolvedCliPath } from './gemini-cli-service.js';
 import { getGuiDataDir } from './paths-service.js';
@@ -43,6 +45,7 @@ export function getSettingsFilePath(targetDir?: string): string {
 
 export function loadMcpSettings(targetDir?: string): McpConfig[] {
   const settingsFile = getSettingsFilePath(targetDir);
+  const guiOwnedFile = path.resolve(settingsFile) === path.resolve(getSettingsFilePath());
   let mcpServers: Record<string, any> = {};
   let guiMcpServers: Record<string, any> = {};
 
@@ -52,10 +55,7 @@ export function loadMcpSettings(targetDir?: string): McpConfig[] {
       const parsed = JSON.parse(raw);
       mcpServers = parsed.mcpServers || {};
       guiMcpServers = parsed.guiMcpServers || {};
-    } catch {
-      mcpServers = {};
-      guiMcpServers = {};
-    }
+    } catch { throw new Error('settings.json inválido; configurações MCP preservadas.'); }
   }
 
   let modified = false;
@@ -72,7 +72,7 @@ export function loadMcpSettings(targetDir?: string): McpConfig[] {
   }
 
   // GitHub MCP default: only initialize if it never existed in either guiMcpServers or mcpServers
-  if (!guiMcpServers.github) {
+  if (guiOwnedFile && !guiMcpServers.github) {
     guiMcpServers.github = {
       command: INITIAL_GITHUB_MCP.command,
       args: INITIAL_GITHUB_MCP.args,
@@ -83,7 +83,7 @@ export function loadMcpSettings(targetDir?: string): McpConfig[] {
   }
 
   // Exa MCP default: only initialize if it never existed in either guiMcpServers or mcpServers
-  if (!guiMcpServers.exa) {
+  if (guiOwnedFile && !guiMcpServers.exa) {
     guiMcpServers.exa = {
       url: INITIAL_EXA_MCP.url,
       type: INITIAL_EXA_MCP.type,
@@ -93,7 +93,7 @@ export function loadMcpSettings(targetDir?: string): McpConfig[] {
       enabled: true,
     };
     modified = true;
-  } else if (!guiMcpServers.exa.headers || !guiMcpServers.exa.headers['Accept']) {
+  } else if (guiOwnedFile && guiMcpServers.exa && (!guiMcpServers.exa.headers || !guiMcpServers.exa.headers['Accept'])) {
     // Preserve required headers for SSE Exa support without altering enabled status
     guiMcpServers.exa.headers = {
       ...INITIAL_EXA_MCP.headers,
@@ -121,7 +121,7 @@ export function loadMcpSettings(targetDir?: string): McpConfig[] {
     });
   }
 
-  if (modified) {
+  if (modified && guiOwnedFile) {
     saveMcpSettings(list, targetDir);
   }
 
@@ -165,13 +165,7 @@ export function saveMcpSettings(servers: McpConfig[], targetDir?: string) {
     }
   }
 
-  const targetSettingsFiles = new Set<string>();
-  targetSettingsFiles.add(getSettingsFilePath(targetDir));
-  targetSettingsFiles.add(path.join(getGuiDataDir(), '.gemini', 'settings.json'));
-  targetSettingsFiles.add(path.join(os.homedir(), '.gemini', 'settings.json'));
-  if (targetDir) {
-    targetSettingsFiles.add(path.join(targetDir, '.gemini', 'settings.json'));
-  }
+  const targetSettingsFiles = new Set([getSettingsFilePath(targetDir)]);
 
   for (const settingsFile of targetSettingsFiles) {
     try {
@@ -184,199 +178,188 @@ export function saveMcpSettings(servers: McpConfig[], targetDir?: string) {
       if (fs.existsSync(settingsFile)) {
         try {
           settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-        } catch {
-          settings = {};
-        }
+        } catch { throw new Error('settings.json inválido; MCP não foi sobrescrito.'); }
       }
 
-      settings.mcpServers = mcpServers;
+      const owned = new Set(settings.guiManagedMcpNames || []);
+      const personal = Object.fromEntries(Object.entries(settings.mcpServers || {}).filter(([name]) => !owned.has(name)));
+      settings.mcpServers = { ...mcpServers, ...personal };
       settings.guiMcpServers = guiMcpServers;
+      settings.guiManagedMcpNames = Object.keys(guiMcpServers).filter(name => !(name in personal));
       fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2), 'utf8');
-    } catch {
-      // Ignorar erros em diretórios não graváveis
+    } catch (error) {
+      sysLog.error('MCP', 'Falha ao gravar configurações MCP', error);
+      throw error;
     }
   }
 }
 
-export async function testMcpServer(mcp: McpConfig): Promise<{ success: boolean; message: string }> {
-  // Case 1: URL / httpUrl (Remote SSE or HTTP MCP)
-  if (mcp.httpUrl || mcp.url) {
-    const targetUrl = mcp.httpUrl || mcp.url;
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
+const MCP_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+function rpcResult(data: any, id: number): any {
+  if (!data || data.jsonrpc !== '2.0' || data.id !== id) throw new Error('Resposta JSON-RPC inválida ou ID incorreto.');
+  if (data.error) throw new Error(`Erro MCP ${data.error.code}: ${data.error.message || 'sem mensagem'}`);
+  if (data.result === undefined) throw new Error('Resposta MCP sem result.');
+  return data.result;
+}
+function validateHandshake(result: any): void {
+  if (!MCP_PROTOCOLS.includes(result?.protocolVersion) || !result?.capabilities || typeof result.capabilities !== 'object' || !result?.serverInfo?.name) throw new Error('Handshake MCP inválido ou versão incompatível.');
+}
+async function readRpcResponse(response: Response, id: number, signal: AbortSignal): Promise<any> {
+  if (!response.ok) { await response.body?.cancel(); throw new Error(`HTTP ${response.status} no servidor MCP.`); }
+  if (!response.body) throw new Error('Resposta MCP vazia.');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const isSse = response.headers.get('content-type')?.includes('text/event-stream');
+  let buffer = '', size = 0;
+  const abort = () => { void reader.cancel(); };
+  signal.addEventListener('abort', abort, { once: true });
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const { value, done } = await reader.read();
+      signal.throwIfAborted();
+      if (value) { size += value.byteLength; buffer += decoder.decode(value, { stream: !done }); }
+      if (size > 4 * 1024 * 1024) throw new Error('Resposta MCP excedeu 4 MiB.');
+      if (isSse) {
+        let split: number;
+        buffer = buffer.replace(/\r\n/g, '\n');
+        while ((split = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, split); buffer = buffer.slice(split + 2);
+          const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+          if (data) { const parsed = JSON.parse(data); if (parsed.id === id) return rpcResult(parsed, id); }
+        }
+      }
+      if (done) break;
+    }
+    if (isSse) throw new Error('SSE encerrado sem resposta ao pedido MCP.');
+    return rpcResult(JSON.parse(buffer), id);
+  } finally { signal.removeEventListener('abort', abort); await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
 
-      const headers: Record<string, string> = {
-        'Accept': 'application/json, text/event-stream',
-        'Content-Type': 'application/json',
-      };
-      if (mcp.headers && typeof mcp.headers === 'object') {
-        for (const [k, v] of Object.entries(mcp.headers)) {
-          if (typeof v === 'string') {
-            headers[k] = v;
+async function connectLegacySse(url: string, headers: Record<string, string>, signal: AbortSignal): Promise<(method: string, params?: any, notification?: boolean) => Promise<any>> {
+  const response = await fetch(url, { headers: { ...headers, Accept: 'text/event-stream' }, signal });
+  if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) { await response.body?.cancel(); throw new Error('Transporte SSE legado indisponível.'); }
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let endpoint = '', nextId = 0, terminalError: Error | undefined;
+  const pending = new Map<number, { resolve: (value: any) => void; reject: (error: any) => void }>();
+  let resolveEndpoint!: () => void, rejectEndpoint!: (error: any) => void;
+  const ready = new Promise<void>((resolve, reject) => { resolveEndpoint = resolve; rejectEndpoint = reject; });
+  const fail = (error: Error) => { terminalError = error; rejectEndpoint(error); for (const item of pending.values()) item.reject(error); pending.clear(); };
+  const abort = () => { fail(new Error('Timeout/encerramento da conexão SSE MCP.')); void reader.cancel(); };
+  signal.addEventListener('abort', abort, { once: true });
+  void (async () => {
+    let buffer = '';
+    try {
+      while (true) {
+        signal.throwIfAborted();
+        const { value, done } = await reader.read();
+        if (done) throw new Error('Conexão SSE MCP encerrada antes da resposta.');
+        buffer += decoder.decode(value, { stream: true }); buffer = buffer.replace(/\r\n/g, '\n');
+        if (buffer.length > 4 * 1024 * 1024) throw new Error('Mensagem SSE MCP excedeu 4 MiB.');
+        let split: number;
+        while ((split = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, split); buffer = buffer.slice(split + 2);
+          const lines = frame.split('\n'), event = lines.find(line => line.startsWith('event:'))?.slice(6).trim();
+          const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+          if (event === 'endpoint') {
+            const target = new URL(data, url);
+            if (target.origin !== new URL(url).origin) throw new Error('Endpoint SSE MCP mudou a origem.');
+            endpoint = target.href; resolveEndpoint();
+          } else if (data) {
+            const parsed = JSON.parse(data), item = pending.get(parsed.id);
+            if (item) { pending.delete(parsed.id); try { item.resolve(rpcResult(parsed, parsed.id)); } catch (error) { item.reject(error); } }
           }
         }
       }
+    } catch (error: any) { fail(error); }
+    finally { signal.removeEventListener('abort', abort); await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  })();
+  await ready;
+  return async (method, params, notification = false) => {
+    if (terminalError || signal.aborted) throw terminalError || new Error('Conexão SSE MCP encerrada.');
+    const id = ++nextId;
+    const reply = notification ? Promise.resolve(undefined) : new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+    // Attach the rejection handler before waiting for POST; the SSE reply can arrive first.
+    const post = fetch(endpoint, { method: 'POST', headers, signal, body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }) }).then(async result => {
+      if (!result.ok) { await result.body?.cancel(); throw new Error(`HTTP ${result.status} no endpoint SSE MCP.`); }
+      await result.body?.cancel();
+    });
+    try { const [, result] = await Promise.all([post, reply]); return result; }
+    catch (error) { pending.delete(id); throw error; }
+  };
+}
 
-      let res: Response;
-      try {
-        res = await fetch(targetUrl!, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ jsonrpc: '2.0', method: 'ping', id: 1 }),
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timer);
-      }
-
-      if (res.status === 401 || res.status === 403) {
-        return {
-          success: false,
-          message: `MCP rejeitou autenticação em ${targetUrl} (Status HTTP ${res.status}). Verifique as credenciais ou headers configurados.`,
-        };
-      }
-
-      if (res.status === 404) {
-        return {
-          success: false,
-          message: `MCP não encontrado em ${targetUrl} (Status HTTP 404 - Endpoint inexistente).`,
-        };
-      }
-
-      if (res.status === 405) {
-        return {
-          success: false,
-          message: `MCP não aceita esse método em ${targetUrl} (Status HTTP 405 - Método não permitido).`,
-        };
-      }
-
-      if (res.status === 406) {
-        return {
-          success: false,
-          message: `Resposta incompatível em ${targetUrl} (Status HTTP 406 - Not Acceptable).`,
-        };
-      }
-
-      if (res.status >= 500) {
-        return {
-          success: false,
-          message: `Servidor MCP indisponível em ${targetUrl} (Status HTTP ${res.status}).`,
-        };
-      }
-
-      if (res.status >= 200 && res.status < 300) {
-        const contentType = res.headers.get('content-type') || '';
-        if (contentType.includes('text/event-stream')) {
-          return {
-            success: true,
-            message: `Servidor MCP remoto conectado com sucesso em ${targetUrl} (SSE Event Stream - Status HTTP ${res.status}).`,
-          };
+export async function testMcpServer(mcp: McpConfig, timeoutMs = 8000): Promise<{ success: boolean; message: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('Timeout do handshake/leitura MCP.')), timeoutMs);
+  let child: ReturnType<typeof spawn> | undefined;
+  const expand = (text: string) => text.replace(/\$\{?([A-Z_][A-Z0-9_]*)\}?/g, (_, name) => mcp.env?.[name] && !mcp.env[name].includes('$') ? mcp.env[name] : process.env[name] || '');
+  try {
+    let request: (method: string, params?: any, notification?: boolean) => Promise<any>;
+    const initializeParams = { protocolVersion: MCP_PROTOCOLS[0], capabilities: {}, clientInfo: { name: 'gemini-gui-test', version: '2.0.0' } };
+    if (mcp.url || mcp.httpUrl) {
+      const headers: Record<string, string> = { ...Object.fromEntries(Object.entries(mcp.headers || {}).map(([name, value]) => [name, expand(value)])), Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' };
+      let nextId = 0;
+      let legacyRequest: Awaited<ReturnType<typeof connectLegacySse>> | undefined;
+      request = async (method, params, notification = false) => {
+        if (legacyRequest) return legacyRequest(method, params, notification);
+        const id = ++nextId;
+        const response = await fetch(mcp.httpUrl || mcp.url!, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }), signal: controller.signal });
+        if (method === 'initialize' && [404, 405].includes(response.status)) {
+          await response.body?.cancel();
+          legacyRequest = await connectLegacySse(mcp.httpUrl || mcp.url!, headers, controller.signal);
+          return legacyRequest(method, params, notification);
         }
-
-        const text = await res.text();
-        try {
-          const parsed = JSON.parse(text);
-          if (parsed && (parsed.jsonrpc === '2.0' || parsed.result !== undefined || parsed.id !== undefined || parsed.error !== undefined)) {
-            return {
-              success: true,
-              message: `Servidor MCP remoto conectado com sucesso em ${targetUrl} (JSON-RPC MCP - Status HTTP ${res.status}).`,
-            };
-          }
-        } catch {
-          // não é JSON
+        const sessionId = response.headers.get('mcp-session-id');
+        if (sessionId) headers['Mcp-Session-Id'] = sessionId;
+        if (notification) {
+          if (!response.ok) { await response.body?.cancel(); throw new Error(`HTTP ${response.status} na notificação MCP.`); }
+          await response.body?.cancel(); return;
         }
-
-        if (text.length > 0 || contentType.includes('application/json')) {
-          return {
-            success: true,
-            message: `Servidor MCP remoto conectado com sucesso em ${targetUrl} (Status HTTP ${res.status}).`,
-          };
-        }
-
-        return {
-          success: false,
-          message: `Resposta inválida do servidor MCP em ${targetUrl} (Status HTTP ${res.status} - Corpo sem estrutura MCP).`,
-        };
-      }
-
-      return {
-        success: false,
-        message: `Servidor MCP remoto retornou status ${res.status} em ${targetUrl}`,
+        const result = await readRpcResponse(response, id, controller.signal);
+        if (method === 'initialize') headers['MCP-Protocol-Version'] = result.protocolVersion;
+        return result;
       };
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        return {
-          success: false,
-          message: `Timeout ao tentar conectar no servidor MCP remoto em ${targetUrl}.`,
-        };
-      }
-      return {
-        success: false,
-        message: `Erro de conexão ao tentar acessar servidor MCP remoto em ${targetUrl}: ${err.message}`,
-      };
-    }
-  }
-
-  // Case 2: Standard Command (Stdio MCP)
-  if (!mcp.command) {
-    return { success: false, message: 'Nenhum comando ou URL configurado para este MCP.' };
-  }
-
-  return new Promise((resolve) => {
-    try {
-      // Test running the binary / command with a timeout
-      const child = spawn(mcp.command!, [...(mcp.args || []), '--help'], {
-        env: { ...process.env, ...mcp.env },
-      });
-
-      let output = '';
-      let errorOutput = '';
-
-      child.stdout?.on('data', (d) => {
-        output += d.toString();
-      });
-      child.stderr?.on('data', (d) => {
-        errorOutput += d.toString();
-      });
-
-      const timer = setTimeout(() => {
-        child.kill();
-        resolve({
-          success: true,
-          message: `Processo MCP iniciou corretamente.\n\nSaída:\n${output}\n${errorOutput}`.trim(),
-        });
-      }, 5000);
-
-      child.on('error', (err) => {
-        clearTimeout(timer);
-        resolve({
-          success: false,
-          message: `Falha ao executar ${mcp.command}: ${err.message}\n\nErro:\n${errorOutput}`.trim(),
-        });
-      });
-
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        if (code === 0 || output.length > 0) {
-          resolve({
-            success: true,
-            message: `Servidor MCP respondeu com êxito (código ${code}).\n\nSaída:\n${output}\n${errorOutput}`.trim(),
-          });
-        } else {
-          resolve({
-            success: false,
-            message: `Servidor MCP encerrou com código de saída ${code}.\n\nErro:\n${errorOutput}`,
-          });
+    } else {
+      if (!mcp.command) throw new Error('Nenhum comando ou URL configurado.');
+      child = spawn(mcp.command, mcp.args || [], { env: { ...process.env, ...Object.fromEntries(Object.entries(mcp.env || {}).map(([name, value]) => [name, expand(value)])) }, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+      let nextId = 0, buffer = '', stderr = '', terminalError: Error | undefined;
+      const pending = new Map<number, { resolve: (result: any) => void; reject: (error: any) => void }>();
+      const fail = (error: Error) => { terminalError = error; for (const p of pending.values()) p.reject(error); pending.clear(); };
+      controller.signal.addEventListener('abort', () => fail(new Error('Timeout do handshake/leitura MCP.')), { once: true });
+      child.on('error', fail);
+      child.stdin?.on('error', fail);
+      child.on('close', (code, signal) => fail(new Error(`Processo MCP encerrado (status=${code}, signal=${signal || 'nenhum'}). ${stderr}`)));
+      child.stderr?.on('data', data => { const text = data.toString(); sysLog.debug('MCP', text); stderr = (stderr + text).slice(-8192); });
+      child.stdout?.on('data', chunk => {
+        buffer += chunk.toString();
+        if (buffer.length > 4 * 1024 * 1024) { fail(new Error('Mensagem MCP excedeu 4 MiB.')); return; }
+        let split: number;
+        while ((split = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, split).trim(); buffer = buffer.slice(split + 1);
+          if (!line) continue;
+          try {
+            const data = JSON.parse(line); const p = pending.get(data.id);
+            if (p) { pending.delete(data.id); try { p.resolve(rpcResult(data, data.id)); } catch (error) { p.reject(error); } }
+            else if (data.method === 'ping' && data.id !== undefined) child?.stdin?.write(JSON.stringify({ jsonrpc: '2.0', id: data.id, result: {} }) + '\n');
+          } catch { fail(new Error('stdout do MCP não contém JSON-RPC válido.')); }
         }
       });
-    } catch (err: any) {
-      resolve({
-        success: false,
-        message: `Exceção durante teste: ${err.message}`,
+      request = (method, params, notification = false) => new Promise((resolve, reject) => {
+        if (terminalError || controller.signal.aborted) return reject(terminalError || new Error('Timeout MCP.'));
+        const id = ++nextId;
+        if (!notification) pending.set(id, { resolve, reject });
+        child!.stdin!.write(JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id }), method, params }) + '\n', error => { if (error) fail(error); else if (notification) resolve(undefined); });
       });
     }
-  });
+    const handshake = await request('initialize', initializeParams);
+    validateHandshake(handshake);
+    await request('notifications/initialized', undefined, true);
+    const result = await request(handshake.capabilities.tools ? 'tools/list' : 'ping', {});
+    if (handshake.capabilities.tools && !Array.isArray(result?.tools)) throw new Error('tools/list retornou estrutura inválida.');
+    return { success: true, message: `Handshake MCP validado: ${handshake.serverInfo.name} (${handshake.protocolVersion}).` };
+  } catch (error: any) { return { success: false, message: error.message || 'Falha no teste MCP.' }; }
+  finally { clearTimeout(timer); controller.abort(); if (child) { child.stdin?.end(); terminateProcessTree(child); } }
 }
 
 export function resetDefaultMcp(targetDir?: string): McpConfig[] {
@@ -388,4 +371,3 @@ export function resetDefaultMcp(targetDir?: string): McpConfig[] {
 export function overwriteMcp(servers: McpConfig[], targetDir?: string): void {
   saveMcpSettings(servers, targetDir);
 }
-

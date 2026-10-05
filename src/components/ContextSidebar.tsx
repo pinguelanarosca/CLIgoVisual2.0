@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { fetchJsonSafely } from '../utils/apiUtils';
 import {
   Sparkles,
   X,
@@ -76,7 +77,15 @@ export const ContextSidebar: React.FC<ContextSidebarProps> = ({
     targetSession ||
     sessions.find((s) => (currentSessionId && s.id === currentSessionId) || s.messages === messages) ||
     null;
-  const activeChatMessages = activeSession ? activeSession.messages || [] : messages;
+  const [loadedSession, setLoadedSession] = useState<SessionItem | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setLoadedSession(null);
+    if (activeSession?.id) void fetchJsonSafely<SessionItem>(`/api/sessions/${activeSession.id}`).then(session => { if (!cancelled) setLoadedSession(session); });
+    return () => { cancelled = true; };
+  }, [activeSession?.id, activeSession?.updatedAt]);
+  const activeChatMessages = loadedSession?.executionContext || loadedSession?.messages || (activeSession?.id === currentSessionId ? messages : []);
+
   const sessionTitle = activeSession ? activeSession.title || 'Nova Conversa' : 'Sessão Ativa';
   
   const linkedProject = activeSession?.projectId

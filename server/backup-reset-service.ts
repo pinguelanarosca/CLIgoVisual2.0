@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { exportSessionsSqlite, validateSessionPayload } from './session-sqlite-service.js';
 import path from 'node:path';
 import os from 'node:os';
 import { loadAgents, resetAllAgentsToDefault, overwriteAgents } from './agents-service.js';
@@ -70,7 +71,7 @@ export function exportFullSystemBackup(allowedSections?: string[]): BackupExport
       ]);
 
   const allAgents = loadAgents();
-  const allSessions = getSessions();
+  const allSessions = exportSessionsSqlite();
   const allSkills = loadSkills();
   const allCommands = loadCommands();
   const allMcp = loadMcpSettings();
@@ -165,6 +166,10 @@ export function restoreSystemBackup(
   const restoredSections: string[] = [];
 
   try {
+    if (selectedSections.chatHistory || selectedSections.sessions) {
+      if (!Array.isArray(backupData.sessions)) throw new Error('Backup sem sessões completas.');
+      backupData.sessions.forEach((session: any) => validateSessionPayload(session, true));
+    }
     // 1. Agentes
     if (selectedSections.agents && Array.isArray(backupData.agents) && backupData.agents.length > 0) {
       overwriteAgents(backupData.agents);

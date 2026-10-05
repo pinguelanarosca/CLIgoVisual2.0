@@ -1,3 +1,5 @@
+import { compactExecutionHistory, toExecutorContext } from './utils/executionContext.js';
+import { retainDiagnostics } from './utils/diagnosticRetention.js';
 import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header.js';
 import { ChatView } from './components/ChatView.js';
@@ -157,6 +159,10 @@ export function App() {
       return v.toString(16);
     });
   };
+  const [versionRevision, setVersionRevision] = useState(0);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [cliSessionId, setCliSessionId] = useState<string | undefined>();
+  const [executionContext, setExecutionContext] = useState<ChatMessage[] | undefined>();
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>(() => {
     if (typeof window !== 'undefined') {
@@ -167,6 +173,9 @@ export function App() {
     }
     return generateSessionId();
   });
+  const selectionRevision = useRef(0);
+  const currentSessionIdRef = useRef(currentSessionId);
+  currentSessionIdRef.current = currentSessionId;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -339,8 +348,13 @@ export function App() {
   // Sessions Handlers & Resilient Loading Logic
   const handleNewSession = (projectId?: string | null) => {
     const newId = generateSessionId();
+    selectionRevision.current++;
+    currentSessionIdRef.current = newId;
     setCurrentSessionId(newId);
     setMessages([]);
+    setCliSessionId(undefined);
+    setExecutionContext(undefined);
+    setSessionLoading(false);
     try {
       localStorage.setItem('gemini_gui_current_session_id', newId);
     } catch {}
@@ -356,7 +370,8 @@ export function App() {
 
   const switchToMostRecentValidSession = async (
     invalidId?: string,
-    sessionPool?: SessionItem[]
+    sessionPool?: SessionItem[],
+    projectPool = projects
   ) => {
     const pool = sessionPool || sessions;
     const mostRecent = getMostRecentValidSession(pool, invalidId || currentSessionId);
@@ -365,7 +380,7 @@ export function App() {
       console.warn(
         `[Session] Alternando automaticamente do identificador inválido "${invalidId || currentSessionId}" para a sessão válida mais recente: "${mostRecent.id}" (${mostRecent.title || 'Conversa'}).`
       );
-      await handleSelectSession(mostRecent);
+      await handleSelectSession(mostRecent, projectPool, pool);
     } else {
       console.warn(
         `[Session] Nenhuma sessão alternativa válida encontrada no pool. Criando nova conversa limpa.`
@@ -374,55 +389,66 @@ export function App() {
     }
   };
 
-  const handleSelectSession = async (sess: SessionItem) => {
+  const handleSelectSession = async (sess: SessionItem, projectPool = projects, sessionPool = sessions) => {
     if (!sess || !sess.id) {
       console.warn('[Session] Tentativa de selecionar sessão nula ou inválida. Alternando para a sessão válida mais recente.');
-      await switchToMostRecentValidSession();
+      await switchToMostRecentValidSession(undefined, sessionPool, projectPool);
       return;
     }
 
+    const revision = ++selectionRevision.current;
+    setSessionLoading(true);
     try {
       if (sess.projectId) {
-        const p = projects.find((x) => x.id === sess.projectId);
-        if (p) setActiveProject(p);
+        const p = projectPool.find((x) => x.id === sess.projectId);
+        setActiveProject(p || null);
       } else {
         setActiveProject(null);
       }
 
       if (sess.messages && sess.messages.length > 0) {
+        currentSessionIdRef.current = sess.id;
         setCurrentSessionId(sess.id);
         setMessages(sess.messages);
+        setCliSessionId(sess.cliSessionId);
+        setExecutionContext(sess.executionContext);
         try {
           localStorage.setItem('gemini_gui_current_session_id', sess.id);
         } catch {}
       } else {
         const fullSess = await fetchJsonSafely<SessionItem>(`/api/sessions/${sess.id}`);
+        if (revision !== selectionRevision.current) return;
         if (!fullSess || !fullSess.id) {
           console.warn(`[Session] Sessão "${sess.id}" não encontrada no servidor (identificador inválido ou 404). Alternando automaticamente para a sessão mais recente.`);
-          const remaining = sessions.filter((s) => s.id !== sess.id);
+          const remaining = sessionPool.filter((s) => s.id !== sess.id);
           setSessions(remaining);
           try {
             localStorage.removeItem('gemini_gui_current_session_id');
           } catch {}
-          await switchToMostRecentValidSession(sess.id, remaining);
+          await switchToMostRecentValidSession(sess.id, remaining, projectPool);
           return;
         }
 
+        currentSessionIdRef.current = fullSess.id;
         setCurrentSessionId(fullSess.id);
         setMessages(fullSess.messages || []);
+        setCliSessionId(fullSess.cliSessionId);
+        setExecutionContext(fullSess.executionContext);
+        setActiveProject(projectPool.find(p => p.id === fullSess.projectId) || null);
         try {
           localStorage.setItem('gemini_gui_current_session_id', fullSess.id);
         } catch {}
       }
     } catch (err) {
+      if (revision !== selectionRevision.current) return;
       console.error(`[Session] Erro ao carregar mensagens da sessão "${sess?.id}":`, err);
-      const remaining = sessions.filter((s) => s.id !== sess?.id);
+      const remaining = sessionPool.filter((s) => s.id !== sess?.id);
       setSessions(remaining);
       try {
         localStorage.removeItem('gemini_gui_current_session_id');
       } catch {}
-      await switchToMostRecentValidSession(sess?.id, remaining);
-    }
+      await switchToMostRecentValidSession(sess?.id, remaining, projectPool);
+    } finally { if (revision === selectionRevision.current) setSessionLoading(false); }
   };
 
   const loadAllData = async () => {
@@ -478,7 +504,7 @@ export function App() {
 
         const candidate = sList.find((s) => s.id === targetId);
         if (candidate && !candidate.isArchived) {
-          await handleSelectSession(candidate);
+          await handleSelectSession(candidate, projs || [], sList);
         } else if (sList.length > 0) {
           // Identificador inválido, ausente ou arquivado:
           // Alternar automaticamente para a sessão válida mais recente
@@ -487,7 +513,7 @@ export function App() {
             console.log(
               `[Session] Identificador inicial "${targetId}" inválido ou ausente. Alternando para a sessão válida mais recente: "${mostRecent.id}"`
             );
-            await handleSelectSession(mostRecent);
+            await handleSelectSession(mostRecent, projs || [], sList);
           } else {
             handleNewSession();
           }
@@ -495,7 +521,7 @@ export function App() {
       }
     } catch (err) {
       console.error('Failed to load initial configurations:', err);
-    }
+    } finally { setSessionLoading(false); }
   };
 
   useEffect(() => {
@@ -518,16 +544,24 @@ export function App() {
 
   // Handle execution of real Gemini CLI via SSE
   const handleSendMessage = async (promptText: string) => {
+    const sessionProjectId = sessions.find(s => s.id === currentSessionId)?.projectId;
+    if (sessionLoading || isStreaming || (sessionProjectId && activeProject?.id !== sessionProjectId) || (activeProject ? !activeProject.associatedDirs[0] : !authorizedDirs[0]?.path)) {
+      console.warn('Execução bloqueada: aguarde a resolução do projeto e do diretório.');
+      return;
+    }
     // Track request metric (RPM, TPM, RPD)
     const promptTokens = estimateTokens(promptText);
     setRequestLog((prev) => [...prev, { timestamp: Date.now(), tokenCount: promptTokens }]);
 
     // Auto context compression check
-    let activeBaseMessages = messages;
+    let activeBaseMessages = executionContext || messages;
+    let contextCompressed = false;
+    let resolvedCliSessionId = cliSessionId || currentSessionId;
     if (contextSettings.autoCompress) {
-      const currentStats = calculateSessionTokens(messages);
+      const currentStats = calculateSessionTokens(activeBaseMessages);
       if (currentStats.totalTokens >= contextSettings.compressionThresholdTokens) {
-        const { compressedMessages } = compressContextMessages(messages, contextSettings);
+        const { compressedMessages } = compressContextMessages(activeBaseMessages, contextSettings);
+        contextCompressed = compressedMessages !== activeBaseMessages;
         activeBaseMessages = compressedMessages;
       }
     }
@@ -542,7 +576,7 @@ export function App() {
         : null) || DEFAULT_AGENTS[0];
 
     const startTime = Date.now();
-    const workDir = activeProject?.associatedDirs[0] || authorizedDirs[0]?.path || '/workspace';
+    const workDir = activeProject ? activeProject.associatedDirs[0] : authorizedDirs[0]?.path;
     const effectiveSysInst = buildEffectiveSystemPrompt(
       currentAgent?.baseInstructions,
       currentAgent?.systemInstructions,
@@ -594,7 +628,7 @@ export function App() {
       rawPayloadSent,
     };
 
-    const updatedMessages = [...activeBaseMessages, userMsg, assistantPlaceholder];
+    const updatedMessages = [...messages, userMsg, assistantPlaceholder];
     setMessages(updatedMessages);
     setIsStreaming(true);
 
@@ -619,8 +653,11 @@ export function App() {
           model: currentAgent?.model,
           approvalMode,
           authorizedDirs: authorizedDirs.map((d) => d.path),
-          sessionId: currentSessionId,
-          resume: messages.length > 0,
+          sessionId: resolvedCliSessionId,
+          projectId: activeProject?.id,
+          resume: messages.length > 0 && !contextCompressed && Boolean(cliSessionId),
+          resetContext: contextCompressed || (!cliSessionId && messages.length > 0),
+          contextMessages: toExecutorContext(activeBaseMessages),
           workDir,
           agentId: currentAgent?.id || currentAgent?.name,
           fallbackModel: currentAgent?.fallbackModel,
@@ -638,6 +675,7 @@ export function App() {
         }),
       });
 
+      if (!response.ok) { const error = await response.json(); throw new Error(error.error || `HTTP ${response.status}`); }
       if (!response.body) {
         throw new Error('Nenhum fluxo de resposta retornado.');
       }
@@ -652,10 +690,12 @@ export function App() {
       let capturedParameterOrigins: any = null;
       let capturedAllRealRequests: any[] = [];
 
+      let streamFinished = false;
       let updateScheduled = false;
       let lastFlushTime = 0;
       const flushStreamUpdate = () => {
         updateScheduled = false;
+        if (streamFinished) return;
         lastFlushTime = Date.now();
         const displayContent =
           assistantContent ||
@@ -740,13 +780,24 @@ export function App() {
 
             try {
               const eventPayload = JSON.parse(rawData);
-              rawEventsList.push(eventPayload);
+              if (eventPayload.type === 'session_changed' && eventPayload.sessionId) {
+                resolvedCliSessionId = eventPayload.sessionId;
+                if (currentSessionIdRef.current === currentSessionId) setCliSessionId(resolvedCliSessionId);
+                hasError = false; errorMessage = '';
+              }
+              if (eventPayload.type === 'version_created') setVersionRevision(value => value + 1);
+              if (eventPayload.type === 'done') {
+                hasError = eventPayload.exitCode !== 0 || Boolean(eventPayload.signal);
+                if (hasError && !errorMessage) errorMessage = `Processo encerrado (código ${eventPayload.exitCode}, sinal ${eventPayload.signal || 'nenhum'}).`;
+              }
+              retainDiagnostics(rawEventsList, eventPayload.type === 'final_api_request' ? { ...eventPayload, finalApiRequest: undefined, allRealRequests: undefined } : eventPayload);
 
               // Capture finalApiRequest from backend (Exclusivamente o request real capturado)
               if (eventPayload.type === 'final_api_request') {
                 const reqObj = eventPayload.finalApiRequest || eventPayload.data?.finalApiRequest;
                 if (reqObj) {
                   capturedFinalApiRequest = reqObj;
+                  retainDiagnostics(capturedAllRealRequests, { ...eventPayload, finalApiRequest: reqObj }, 20, 8 * 1024 * 1024);
                 }
                 const origins = eventPayload.parameterOrigins || eventPayload.data?.parameterOrigins;
                 if (origins) {
@@ -873,39 +924,13 @@ export function App() {
         }
       }
 
+      streamFinished = true;
       // Compute final message content & token stats
       let finalContent = assistantContent.trim();
       const errLower = (errorMessage || '').toLowerCase();
       const asstLower = (assistantContent || '').toLowerCase();
-      const isSessionResumeFailure =
-        errLower.includes('invalid session identifier') ||
-        errLower.includes('error resuming session') ||
-        errLower.includes('searched for sessions in') ||
-        errLower.includes('use --list-sessions') ||
-        asstLower.includes('invalid session identifier') ||
-        asstLower.includes('error resuming session') ||
-        asstLower.includes('searched for sessions in');
-
-      if (isSessionResumeFailure) {
-        finalContent = `⚠️ **Identificador de Sessão Inválido no Gemini CLI**\n\nA sessão (\`${currentSessionId}\`) não pôde ser retomada porque não existe no armazenamento do Gemini CLI.\n\n🔄 **Recuperação Automática:** Alternando você automaticamente para a sessão válida mais recente para que possa continuar sem interrupções.`;
-        setTimeout(() => {
-          fetchJsonSafely<SessionItem[]>('/api/sessions').then((freshList) => {
-            if (freshList && Array.isArray(freshList)) {
-              setSessions(freshList);
-              const mostRecent = getMostRecentValidSession(freshList, currentSessionId);
-              if (mostRecent) {
-                handleSelectSession(mostRecent);
-              } else {
-                handleNewSession();
-              }
-            } else {
-              switchToMostRecentValidSession(currentSessionId);
-            }
-          }).catch(() => {
-            switchToMostRecentValidSession(currentSessionId);
-          });
-        }, 300);
-      } else if (hasError && !finalContent) {
+      const isSessionResumeFailure = false;
+      if (hasError && !finalContent) {
         if (errLower.includes('503') || errLower.includes('high demand') || errLower.includes('unavailable') || errLower.includes('overloaded')) {
           finalContent = `⚠️ **API Gemini Temporariamente Sobrecarregada (Erro 503 - High Demand)**\n\n${errorMessage || 'O modelo está enfrentando um pico de demanda temporário nos servidores do Google.'}\n\n💡 **Recomendações:**\n- Alterne para um modelo com maior taxa de disponibilidade como o **Gemini 3.5 Flash Lite** ou **Gemini 2.5 Flash**;\n- Aguarde alguns instantes e tente novamente.`;
         } else if (errLower.includes('429') || errLower.includes('quota') || errLower.includes('resource_exhausted')) {
@@ -1015,7 +1040,9 @@ export function App() {
           rawPayloadReceived,
         };
 
-        const finalMsgList = activeBaseMessages.concat([userMsg, finalAssistantMsg]);
+        const finalMsgList = messages.concat([userMsg, finalAssistantMsg]);
+        const nextExecutionContext = executionContext || contextCompressed ? compactExecutionHistory(activeBaseMessages.concat([userMsg, finalAssistantMsg])) : undefined;
+        if (currentSessionIdRef.current === currentSessionId) setExecutionContext(nextExecutionContext);
 
         const title =
           promptText.length > 40 ? promptText.slice(0, 40) + '...' : promptText;
@@ -1025,6 +1052,8 @@ export function App() {
 
         const savedSession: SessionItem = {
           id: currentSessionId,
+          cliSessionId: resolvedCliSessionId,
+          executionContext: nextExecutionContext,
           title: existingSess?.title || title,
           projectId: effectiveProjectId,
           isArchived: existingSess?.isArchived || false,
@@ -1035,11 +1064,12 @@ export function App() {
           statusGrade: 'CONFIGURED',
         };
 
-        await fetch('/api/sessions', {
-          method: 'POST',
+        const saveResponse = await fetch(existingSess ? `/api/sessions/${currentSessionId}/messages` : '/api/sessions', {
+          method: existingSess ? 'PUT' : 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(savedSession),
+          body: JSON.stringify(existingSess ? { messages: finalMsgList, cliSessionId: resolvedCliSessionId, executionContext: nextExecutionContext } : savedSession),
         });
+        if (!saveResponse.ok) throw new Error('Não foi possível salvar o histórico; as mensagens permanecem na interface.');
 
         // Reload sessions list
         const sessList = await fetchJsonSafely<SessionItem[]>('/api/sessions');
@@ -1365,10 +1395,11 @@ export function App() {
     if (!sess) return;
     const updatedSess = { ...sess, ...updates };
 
-    const res = await fetch('/api/sessions', {
-      method: 'POST',
+    const replacingMessages = Array.isArray(updates.messages);
+    const res = await fetch(replacingMessages ? `/api/sessions/${id}/messages` : `/api/sessions/${id}`, {
+      method: replacingMessages ? 'PUT' : 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updatedSess),
+      body: JSON.stringify(replacingMessages ? { messages: updates.messages, cliSessionId: updates.cliSessionId, executionContext: updates.executionContext } : { ...updates, ...('projectId' in updates ? { projectId: updates.projectId || null } : {}) }),
     });
     if (res.ok) {
       const data = await fetchJsonSafely<SessionItem[]>('/api/sessions');
@@ -1376,10 +1407,10 @@ export function App() {
         setSessions(data);
 
         if (id === currentSessionId) {
-          setMessages(updatedSess.messages || []);
-          if (updates.projectId) {
+          if (replacingMessages) setMessages(updatedSess.messages || []);
+          if ('projectId' in updates) {
             const p = projects.find((x) => x.id === updates.projectId);
-            if (p) setActiveProject(p);
+            setActiveProject(p || null);
           }
         }
       }
@@ -1387,11 +1418,18 @@ export function App() {
   };
 
   const handleUpdateSessionMessages = async (sessionId: string, newMessages: ChatMessage[]) => {
-    await handleUpdateSession(sessionId, { messages: newMessages });
+    if (isStreaming) return;
+    const context = compactExecutionHistory(newMessages);
+    const response = await fetch(`/api/sessions/${sessionId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ executionContext: context, cliSessionId: '' }) });
+    if (!response.ok) throw new Error('Não foi possível salvar a compressão do contexto.');
+    if (sessionId === currentSessionId) { setExecutionContext(context); setCliSessionId(undefined); }
+    const list = await fetchJsonSafely<SessionItem[]>('/api/sessions'); if (list) setSessions(list);
   };
 
   const handleDeriveSession = async (originalSess: SessionItem) => {
-    const { compressedMessages } = compressContextMessages(originalSess.messages || [], contextSettings);
+    const fullOriginal = await fetchJsonSafely<SessionItem>(`/api/sessions/${originalSess.id}`);
+    if (!fullOriginal) return;
+    const { compressedMessages } = compressContextMessages(fullOriginal.messages || [], contextSettings);
     const newSessionId = generateSessionId();
     const freshMessages = compressedMessages.map((m, idx) => ({
       ...m,
@@ -1405,6 +1443,7 @@ export function App() {
       updatedAt: new Date().toISOString(),
       messageCount: freshMessages.length,
       messages: freshMessages,
+      executionContext: compactExecutionHistory(freshMessages),
       statusGrade: 'CONFIGURED',
     };
 
@@ -1418,8 +1457,7 @@ export function App() {
       const data = await fetchJsonSafely<SessionItem[]>('/api/sessions');
       if (data) {
         setSessions(data);
-        setCurrentSessionId(newSessionId);
-        setMessages(freshMessages);
+        await handleSelectSession(derivedSession);
       }
     }
   };
@@ -1443,6 +1481,7 @@ export function App() {
       updatedAt: new Date().toISOString(),
       messageCount: 1,
       messages: [singleMsg],
+      executionContext: compactExecutionHistory([singleMsg]),
       statusGrade: 'CONFIGURED',
     };
 
@@ -1456,8 +1495,7 @@ export function App() {
       const data = await fetchJsonSafely<SessionItem[]>('/api/sessions');
       if (data) {
         setSessions(data);
-        setCurrentSessionId(newSessionId);
-        setMessages([singleMsg]);
+        await handleSelectSession(derivedSession);
       }
     }
   };
@@ -1478,6 +1516,7 @@ export function App() {
       updatedAt: new Date().toISOString(),
       messageCount: sliced.length,
       messages: sliced,
+      executionContext: compactExecutionHistory(sliced),
       statusGrade: 'CONFIGURED',
     };
 
@@ -1491,8 +1530,7 @@ export function App() {
       const data = await fetchJsonSafely<SessionItem[]>('/api/sessions');
       if (data) {
         setSessions(data);
-        setCurrentSessionId(newSessionId);
-        setMessages(sliced);
+        await handleSelectSession(derivedSession);
       }
     }
   };
@@ -1517,9 +1555,9 @@ export function App() {
     for (const id of ids) {
       const sess = sessions.find((s) => s.id === id);
       if (sess) {
-        const updatedSess = { ...sess, isArchived: true };
-        await fetch('/api/sessions', {
-          method: 'POST',
+        const updatedSess = { isArchived: true };
+        await fetch(`/api/sessions/${id}`, {
+          method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updatedSess),
         });
@@ -1637,11 +1675,10 @@ export function App() {
   const handleUnarchiveSession = async (id: string) => {
     const sess = sessions.find((s) => s.id === id);
     if (!sess) return;
-    const updated = { ...sess, isArchived: false };
-    const res = await fetch('/api/sessions', {
-      method: 'POST',
+    const res = await fetch(`/api/sessions/${id}`, {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updated),
+      body: JSON.stringify({ isArchived: false }),
     });
     if (res.ok) {
       const sessRes = await fetch('/api/sessions');
@@ -1796,7 +1833,7 @@ export function App() {
               onDeriveChat={handleDeriveChat}
               onOpenSharedMemory={() => setRightPanelMode((prev) => (prev === 'memory' ? null : 'memory'))}
               activeMemoryVersion={activeMemoryVersion}
-              onUpdateMessages={(newMsgs) => setMessages(newMsgs)}
+              onUpdateMessages={(newMsgs) => { if (!isStreaming) { setExecutionContext(compactExecutionHistory(newMsgs)); setCliSessionId(undefined); void handleUpdateSessionMessages(currentSessionId, newMsgs); } }}
               onOpenMarkdownDoc={handleOpenMarkdownDoc}
             />
           ) : (
@@ -1851,6 +1888,7 @@ export function App() {
 
             {rightPanelMode === 'versions' && (
               <VersionsSidebar
+                refreshKey={versionRevision}
                 isOpen={true}
                 onClose={() => setRightPanelMode(null)}
                 activeProject={activeProject}
@@ -1926,7 +1964,7 @@ export function App() {
                 currentSessionId={currentSessionId}
                 onUpdateSessionMessages={handleUpdateSessionMessages}
                 messages={messages}
-                onUpdateMessages={(newMsgs) => setMessages(newMsgs)}
+                onUpdateMessages={(newMsgs) => { if (!isStreaming) { setExecutionContext(compactExecutionHistory(newMsgs)); setCliSessionId(undefined); void handleUpdateSessionMessages(currentSessionId, newMsgs); } }}
                 agent={
                   agents.find(
                     (a) =>
@@ -2067,7 +2105,7 @@ export function App() {
         onRefreshStatus={refreshStatus}
         onResetDefaultAgentsConfig={handleResetDefaultAgents}
         messages={messages}
-        onUpdateMessages={(newMsgs) => setMessages(newMsgs)}
+        onUpdateMessages={(newMsgs) => { if (!isStreaming) { setExecutionContext(compactExecutionHistory(newMsgs)); setCliSessionId(undefined); void handleUpdateSessionMessages(currentSessionId, newMsgs); } }}
         sessions={sessions}
         currentSessionId={currentSessionId}
         onUpdateSessionMessages={handleUpdateSessionMessages}

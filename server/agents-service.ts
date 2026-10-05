@@ -271,6 +271,7 @@ function saveMetadata(metadata: Record<string, any>, targetDir?: string) {
 }
 
 export function ensureAgentsSeeded(targetDir?: string): AgentConfig[] {
+  if (targetDir && path.resolve(targetDir) !== path.resolve(getGuiDataDir())) return loadAgents(targetDir);
   const agentsDir = getAgentsDirectory(targetDir);
   if (!fs.existsSync(agentsDir)) {
     fs.mkdirSync(agentsDir, { recursive: true });
@@ -285,10 +286,11 @@ export function ensureAgentsSeeded(targetDir?: string): AgentConfig[] {
   for (const defaultAgent of DEFAULT_AGENTS) {
     const agentFilePath = path.join(agentsDir, `${defaultAgent.name}.md`);
     if (!fs.existsSync(agentFilePath)) {
-      saveAgentToFile(defaultAgent, targetDir);
+      saveAgentToFile(defaultAgent, targetDir, true);
     } else if (!metadata[defaultAgent.name]) {
-      // If file exists but metadata is missing, we need to save to populate metadata
-      saveAgentToFile(defaultAgent, targetDir);
+      // Existing content is the source of truth; never replace it with defaults.
+      const existing = parseAgentMarkdown(fs.readFileSync(agentFilePath, 'utf8'), defaultAgent.name, {});
+      if (existing) { metadata[defaultAgent.name] = existing; saveMetadata(metadata, targetDir); }
     }
   }
 
@@ -307,7 +309,7 @@ export function ensureAgentsSeeded(targetDir?: string): AgentConfig[] {
     for (const aliasName of aliases) {
       const aliasFilePath = path.join(agentsDir, `${aliasName}.md`);
       if (!fs.existsSync(aliasFilePath)) {
-        saveAgentToFile({ ...defaultAgent, name: aliasName }, targetDir);
+        saveAgentToFile({ ...defaultAgent, name: aliasName }, targetDir, true);
       }
     }
   }
@@ -325,6 +327,7 @@ export function ensureAgentsSeeded(targetDir?: string): AgentConfig[] {
  * - Preserva todos os metadados estendidos em .metadata.json e sincroniza com modelConfigs do settings.json.
  */
 export function migrateExistingAgents(targetDir?: string): { migratedCount: number; agents: string[] } {
+  if (targetDir && path.resolve(targetDir) !== path.resolve(getGuiDataDir())) return { migratedCount: 0, agents: [] };
   const agentsDir = getAgentsDirectory(targetDir);
   if (!fs.existsSync(agentsDir)) {
     return { migratedCount: 0, agents: [] };
@@ -468,6 +471,16 @@ export const ALIAS_TO_PRIMARY: Record<string, string> = {
 };
 
 export function loadAgents(targetDir?: string): AgentConfig[] {
+  if (targetDir && path.resolve(targetDir) !== path.resolve(getGuiDataDir())) {
+    const merged = new Map(loadAgents().map(agent => [agent.name, agent]));
+    const directory = getAgentsDirectory(targetDir), metadata = loadMetadata(targetDir);
+    if (fs.existsSync(directory)) for (const file of fs.readdirSync(directory).filter(name => name.endsWith('.md'))) {
+      const name = file.slice(0, -3);
+      const agent = parseAgentMarkdown(fs.readFileSync(path.join(directory, file), 'utf8'), name, metadata[name] || {});
+      if (agent) merged.set(agent.name, agent);
+    }
+    return [...merged.values()];
+  }
   const agentsDir = getAgentsDirectory(targetDir);
   if (!fs.existsSync(agentsDir)) {
     fs.mkdirSync(agentsDir, { recursive: true });
@@ -747,15 +760,13 @@ export function syncAgentsToSettings(
   activeConfig?: Partial<AgentConfig>
 ) {
   try {
-    const base = targetDir || getGuiDataDir();
+    const base = getGuiDataDir();
     const settingsPath = path.join(base, '.gemini', 'settings.json');
     let settings: any = {};
     if (fs.existsSync(settingsPath)) {
       try {
         settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      } catch {
-        settings = {};
-      }
+      } catch (error) { throw new Error('settings.json inválido; sincronização interrompida.'); }
     }
 
     if (!settings.mcpServers) settings.mcpServers = {};
@@ -764,8 +775,8 @@ export function syncAgentsToSettings(
     if (!settings.modelConfigs.overrides) settings.modelConfigs.overrides = [];
 
     // Carregar todos os agentes para compor as configurações
-    const allAgents = loadAgents(targetDir);
-    const metadata = loadMetadata(targetDir);
+    const allAgents = loadAgents();
+    const metadata = loadMetadata();
 
     // Mapear parâmetros por agente e por modelo
     const agentConfigsByName = new Map<string, any>();
@@ -919,8 +930,16 @@ export function syncAgentsToSettings(
       }
     }
 
-    settings.modelConfigs.customAliases = newAliases;
-    settings.modelConfigs.overrides = newOverrides;
+    const previousAliases = new Set(settings.guiManagedAgentAliases || []);
+    const previousScopes = new Set(settings.guiManagedAgentScopes || []);
+    const personalAliases = Object.fromEntries(Object.entries(settings.modelConfigs.customAliases).filter(([name]) => !previousAliases.has(name)));
+    settings.modelConfigs.customAliases = { ...newAliases, ...personalAliases };
+    settings.modelConfigs.overrides = [
+      ...settings.modelConfigs.overrides.filter((item: any) => !previousScopes.has(item.match?.overrideScope)),
+      ...newOverrides.filter(item => !settings.modelConfigs.overrides.some((old: any) => !previousScopes.has(old.match?.overrideScope) && old.match?.overrideScope === item.match?.overrideScope)),
+    ];
+    settings.guiManagedAgentAliases = Object.keys(newAliases).filter(name => !(name in personalAliases));
+    settings.guiManagedAgentScopes = newOverrides.map(item => item.match?.overrideScope).filter(scope => scope && !settings.modelConfigs.overrides.some((old: any) => !previousScopes.has(old.match?.overrideScope) && old.match?.overrideScope === scope && !newOverrides.includes(old)));
 
     // Preservar e registrar policyPaths se existirem políticas
     const policiesDir = path.join(base, '.gemini', 'policies');
@@ -932,32 +951,6 @@ export function syncAgentsToSettings(
     }
 
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-
-    // Sincronizar também no diretório home do usuário (~/.gemini/settings.json)
-    try {
-      const userGeminiDir = path.join(os.homedir(), '.gemini');
-      if (!fs.existsSync(userGeminiDir)) {
-        fs.mkdirSync(userGeminiDir, { recursive: true });
-      }
-      const userSettings = path.join(userGeminiDir, 'settings.json');
-      fs.writeFileSync(userSettings, JSON.stringify(settings, null, 2), 'utf8');
-    } catch {
-      // Ignorar se houver restrição
-    }
-
-    // Sincronizar também no diretório de dados da GUI se base for um workspace específico
-    if (path.resolve(base) !== path.resolve(getGuiDataDir())) {
-      try {
-        const guiGeminiDir = path.join(getGuiDataDir(), '.gemini');
-        if (!fs.existsSync(guiGeminiDir)) {
-          fs.mkdirSync(guiGeminiDir, { recursive: true });
-        }
-        const guiSettings = path.join(guiGeminiDir, 'settings.json');
-        fs.writeFileSync(guiSettings, JSON.stringify(settings, null, 2), 'utf8');
-      } catch {
-        // Ignorar se houver restrição
-      }
-    }
 
     sysLog.info('AGENT', `Configurações de modelos e agentes sincronizadas com sucesso no settings.json.`);
   } catch (err) {
@@ -982,7 +975,7 @@ export function overwriteAgents(agents: AgentConfig[], targetDir?: string): Agen
  * Robustly synchronizes all agents across:
  * 1. Global User directory (~/.gemini/agents) - Gemini CLI user-level agent discovery
  * 2. GUI Data directory (~/.local/share/gemini-gui/.gemini/agents) - GUI persistence
- * 3. Project directory (<cwd>/.gemini/agents) - Workspace local discovery
+ * Project agent files are read without synchronization writes.
  * 
  * Also updates ~/.gemini/acknowledgments/agents.json with the SHA-256 hash of each .md file
  * so that Gemini CLI never blocks or ignores agents due to missing trust acknowledgments.
@@ -1002,33 +995,14 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
 
   // Note: We avoid duplicating the same agents into <cwd>/.gemini/agents because Gemini CLI
   // scans both ~/.gemini/agents and <cwd>/.gemini/agents, causing 'Duplicate agent name detected' warnings.
-  const workspaceDirsToClean = new Set<string>();
-  if (path.resolve(process.cwd()) !== path.resolve(os.homedir())) {
-    workspaceDirsToClean.add(path.join(process.cwd(), '.gemini', 'agents'));
-  }
-  if (cwd && path.resolve(cwd) !== path.resolve(os.homedir()) && path.resolve(cwd) !== path.resolve(process.cwd())) {
-    workspaceDirsToClean.add(path.join(cwd, '.gemini', 'agents'));
-  }
-
   // Load all agents from repository defaults and any existing configs
   const agents = loadAgents();
-  const allAliases: Record<string, string[]> = {
-    investigator: ['codebase_investigator', 'code_investigator', 'investigator_agent'],
-    principal: ['orquestrador', 'orchestrator', 'principal_orchestrator'],
-    architect: ['software_architect', 'architect_agent'],
-    auditor: ['security_auditor', 'auditor_agent'],
-    tester: ['qa_tester', 'tester_agent'],
-    worker: ['code_worker', 'worker_agent'],
-  };
-
   const ackFile = path.join(os.homedir(), '.gemini', 'acknowledgments', 'agents.json');
   let ackMap: Record<string, string> = {};
   if (fs.existsSync(ackFile)) {
     try {
       ackMap = JSON.parse(fs.readFileSync(ackFile, 'utf8'));
-    } catch {
-      ackMap = {};
-    }
+    } catch { throw new Error('Acknowledgments de agentes inválidos; arquivo pessoal preservado.'); }
   }
 
   let totalFiles = 0;
@@ -1040,6 +1014,8 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
         fs.mkdirSync(dir, { recursive: true });
       }
 
+      const ownershipPath = path.join(dir, '.gui-owned-agents.json');
+      const ownership: Record<string, string> = fs.existsSync(ownershipPath) ? JSON.parse(fs.readFileSync(ownershipPath, 'utf8')) : {};
       for (const agent of agents) {
         const effectivePrompt = buildEffectiveSystemPrompt(
           agent.baseInstructions,
@@ -1061,7 +1037,16 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
         const content = fmLines.join('\n');
 
         const filePath = path.join(dir, `${agent.name}.md`);
-        fs.writeFileSync(filePath, content, 'utf8');
+        if (fs.existsSync(filePath) && path.resolve(dir) !== path.resolve(path.join(getGuiDataDir(), '.gemini', 'agents'))) {
+          const current = fs.readFileSync(filePath, 'utf8');
+          const currentHash = crypto.createHash('sha256').update(current).digest('hex');
+          if (current !== content && ownership[`${agent.name}.md`] !== currentHash) {
+            sysLog.warn('AGENT', `Agente existente preservado por conflito: ${filePath}`);
+            continue;
+          }
+        }
+        if (!fs.existsSync(filePath) || fs.readFileSync(filePath, 'utf8') !== content) fs.writeFileSync(filePath, content, 'utf8');
+        ownership[`${agent.name}.md`] = crypto.createHash('sha256').update(content).digest('hex');
         totalFiles++;
 
         // Acknowledge in agents.json: Gemini CLI requires acknowledgedAgents[projectPath][agentName] = hash
@@ -1086,60 +1071,33 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
           (ackMap as any)[projectRoot][agent.name] = hash;
         }
 
-        // Also guarantee for user homedir and process cwd
-        const homeDir = os.homedir();
-        if (!ackMap[homeDir] || typeof ackMap[homeDir] !== 'object') {
-          (ackMap as any)[homeDir] = {};
+        // Never acknowledge a GUI hash for a different personal/project agent.
+        for (const root of new Set([os.homedir(), cwd || process.cwd()])) {
+          const candidates = [path.join(root, '.gemini', 'agents', `${agent.name}.md`), path.join(os.homedir(), '.gemini', 'agents', `${agent.name}.md`)];
+          if (candidates.some(file => fs.existsSync(file) && crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== hash)) continue;
+          if (!ackMap[root]) (ackMap as any)[root] = {};
+          if (typeof ackMap[root] === 'object') (ackMap as any)[root][agent.name] = hash;
         }
-        (ackMap as any)[homeDir][agent.name] = hash;
-
-        const procCwd = process.cwd();
-        if (!ackMap[procCwd] || typeof ackMap[procCwd] !== 'object') {
-          (ackMap as any)[procCwd] = {};
-        }
-        (ackMap as any)[procCwd][agent.name] = hash;
 
         ackUpdated++;
       }
 
-      // Clean up any old alias .md files that cause duplicate agent name collision warnings
-      const existingMdFiles = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
-      const canonicalAgentFileNames = new Set(agents.map(a => `${a.name}.md`));
-      for (const mdFile of existingMdFiles) {
-        if (!canonicalAgentFileNames.has(mdFile)) {
-          try {
-            fs.unlinkSync(path.join(dir, mdFile));
-          } catch {}
-        }
+      // Remove only files previously written by this GUI and still unchanged.
+      const canonical = new Set(agents.map(a => `${a.name}.md`));
+      for (const [name, hash] of Object.entries(ownership)) {
+        if (canonical.has(name)) continue;
+        const file = path.join(dir, path.basename(name));
+        if (fs.existsSync(file) && crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') === hash) fs.unlinkSync(file);
+        delete ownership[name];
       }
+      fs.writeFileSync(ownershipPath, JSON.stringify(ownership, null, 2));
     } catch (dirErr) {
       console.warn(`[AgentsService] Aviso ao sincronizar diretório ${dir}:`, dirErr);
     }
   }
 
-  // Clean up duplicate agents from workspace directories to prevent Gemini CLI duplicate warnings
-  for (const wsDir of workspaceDirsToClean) {
-    try {
-      if (fs.existsSync(wsDir)) {
-        const mdFiles = fs.readdirSync(wsDir).filter(f => f.endsWith('.md'));
-        for (const mdFile of mdFiles) {
-          try {
-            fs.unlinkSync(path.join(wsDir, mdFile));
-          } catch {}
-        }
-      }
-    } catch {}
-  }
-
   // Save updated acknowledgments to all relevant locations
-  const ackLocations = [
-    path.join(os.homedir(), '.gemini', 'acknowledgments', 'agents.json'),
-    path.join(getGuiDataDir(), '.gemini', 'acknowledgments', 'agents.json'),
-    path.join(process.cwd(), '.gemini', 'acknowledgments', 'agents.json'),
-  ];
-  if (cwd && path.resolve(cwd) !== path.resolve(process.cwd())) {
-    ackLocations.push(path.join(cwd, '.gemini', 'acknowledgments', 'agents.json'));
-  }
+  const ackLocations = [ackFile, path.join(getGuiDataDir(), '.gemini', 'acknowledgments', 'agents.json')];
 
   for (const targetAckFile of ackLocations) {
     try {
@@ -1156,7 +1114,7 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
   // Synchronize settings.json in ~/.gemini, cwd, and gui data dir
   try {
     syncAgentsToSettings();
-    if (cwd) syncAgentsToSettings(cwd);
+
   } catch {}
 
   logSubagentEvent({
@@ -1177,5 +1135,3 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string): {
     directories: Array.from(targetDirs),
   };
 }
-
-

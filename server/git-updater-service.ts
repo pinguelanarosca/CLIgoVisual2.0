@@ -1,4 +1,5 @@
-import { execSync, spawnSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { runProcess } from './process-service.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import { GitAppStatus, GitCommitInfo, GitUpdateCheckResult, GitUpdateResult } from '../src/types.js';
@@ -6,15 +7,6 @@ import { sysLog } from './logger-service.js';
 
 export const DEFAULT_GIT_REPO_URL = 'https://github.com/pinguelanarosca/CLIgoVisual2.0';
 export const DEFAULT_GIT_BRANCH = 'main';
-
-function getGitVersion(): string | undefined {
-  try {
-    const out = execSync('git --version', { encoding: 'utf-8', timeout: 5000 });
-    return out.trim();
-  } catch {
-    return undefined;
-  }
-}
 
 function parseGithubRepo(repoUrl: string): { owner: string; repo: string } | null {
   try {
@@ -29,144 +21,35 @@ function parseGithubRepo(repoUrl: string): { owner: string; repo: string } | nul
   }
 }
 
-export function getGitStatus(customRepoUrl?: string): GitAppStatus {
+export async function getGitStatus(customRepoUrl?: string): Promise<GitAppStatus> {
   const cwd = process.cwd();
-  const gitVersion = getGitVersion();
-  const gitAvailable = Boolean(gitVersion);
   const repoUrl = customRepoUrl || DEFAULT_GIT_REPO_URL;
-  const branch = DEFAULT_GIT_BRANCH;
-
-  if (!gitAvailable) {
-    return {
-      isGitRepo: false,
-      repoUrl,
-      branch,
-      hasUncommittedChanges: false,
-      uncommittedFilesCount: 0,
-      gitAvailable: false,
-    };
-  }
-
-  // Garantir registro do safe.directory para evitar erro 'dubious ownership' do Git
+  const base: GitAppStatus = { isGitRepo: false, repoUrl, branch: DEFAULT_GIT_BRANCH, hasUncommittedChanges: false, uncommittedFilesCount: 0, gitAvailable: false };
+  try { base.gitVersion = (await runProcess('git', ['--version'], cwd, 5000)).trim(); base.gitAvailable = true; } catch { return base; }
   try {
-    execSync(`git config --global --add safe.directory "${cwd}"`, { stdio: 'ignore', timeout: 3000 });
-  } catch {}
-
-  try {
-    const isRepo = execSync('git rev-parse --is-inside-work-tree', {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-      timeout: 4000,
-    }).trim() === 'true';
-
-    if (!isRepo) {
-      return {
-        isGitRepo: false,
-        repoUrl,
-        branch,
-        hasUncommittedChanges: false,
-        uncommittedFilesCount: 0,
-        gitAvailable: true,
-        gitVersion,
-      };
-    }
-
-    let currentBranch = branch;
-    try {
-      currentBranch = execSync('git rev-parse --abbrev-ref HEAD', {
-        cwd,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-        timeout: 4000,
-      }).trim();
-    } catch {}
-
-    let currentCommit = '';
-    let currentCommitShort = '';
-    try {
-      currentCommit = execSync('git rev-parse HEAD', {
-        cwd,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-        timeout: 4000,
-      }).trim();
-      currentCommitShort = currentCommit.substring(0, 7);
-    } catch {}
-
-    let commitMessage = '';
-    let commitDate = '';
-    try {
-      commitMessage = execSync('git log -1 --pretty=format:"%s"', {
-        cwd,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-        timeout: 4000,
-      }).trim().replace(/^"|"$/g, '');
-
-      commitDate = execSync('git log -1 --pretty=format:"%cd" --date=relative', {
-        cwd,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-        timeout: 4000,
-      }).trim().replace(/^"|"$/g, '');
-    } catch {}
-
-    let remoteUrl = '';
-    try {
-      remoteUrl = execSync('git config --get remote.origin.url', {
-        cwd,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-        timeout: 4000,
-      }).trim();
-    } catch {}
-
-    let uncommittedFilesCount = 0;
-    try {
-      const statusOutput = execSync('git status --porcelain', {
-        cwd,
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-        timeout: 4000,
-      }).trim();
-      if (statusOutput) {
-        uncommittedFilesCount = statusOutput.split('\n').filter(Boolean).length;
-      }
-    } catch {}
-
-    return {
-      isGitRepo: true,
-      repoUrl: remoteUrl || repoUrl,
-      branch: currentBranch || branch,
-      currentCommit,
-      currentCommitShort,
-      commitMessage,
-      commitDate,
-      hasUncommittedChanges: uncommittedFilesCount > 0,
-      uncommittedFilesCount,
-      remoteUrl: remoteUrl || undefined,
-      gitAvailable: true,
-      gitVersion,
-    };
-  } catch {
-    return {
-      isGitRepo: false,
-      repoUrl,
-      branch,
-      hasUncommittedChanges: false,
-      uncommittedFilesCount: 0,
-      gitAvailable: true,
-      gitVersion,
-    };
-  }
+    if ((await runProcess('git', ['rev-parse', '--is-inside-work-tree'], cwd, 4000)).trim() !== 'true') return base;
+    base.isGitRepo = true;
+    const [branch, commit, message, date, status] = await Promise.all([
+      runProcess('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd, 4000),
+      runProcess('git', ['rev-parse', 'HEAD'], cwd, 4000),
+      runProcess('git', ['log', '-1', '--format=%s'], cwd, 4000),
+      runProcess('git', ['log', '-1', '--format=%cd', '--date=relative'], cwd, 4000),
+      runProcess('git', ['status', '--porcelain'], cwd, 4000),
+    ]);
+    base.branch = branch.trim(); base.currentCommit = commit.trim(); base.currentCommitShort = commit.trim().slice(0, 7);
+    base.commitMessage = message.trim(); base.commitDate = date.trim();
+    base.uncommittedFilesCount = status.split('\n').filter(Boolean).length;
+    base.hasUncommittedChanges = base.uncommittedFilesCount > 0;
+    try { base.remoteUrl = (await runProcess('git', ['remote', 'get-url', 'origin'], cwd, 4000)).trim(); base.repoUrl = base.remoteUrl || repoUrl; } catch {}
+    return base;
+  } catch (error) { if (base.isGitRepo) throw error; return base; }
 }
 
 export async function checkRemoteGitUpdates(
   repoUrl: string = DEFAULT_GIT_REPO_URL,
   branch: string = DEFAULT_GIT_BRANCH
 ): Promise<GitUpdateCheckResult> {
-  const currentStatus = getGitStatus(repoUrl);
+  const currentStatus = await getGitStatus(repoUrl);
   const cleanRepoUrl = repoUrl.trim() || DEFAULT_GIT_REPO_URL;
   const targetBranch = branch.trim() || DEFAULT_GIT_BRANCH;
 
@@ -176,11 +59,7 @@ export async function checkRemoteGitUpdates(
 
   // 1. Query remote commit hash via git ls-remote
   try {
-    const lsOutput = execSync(`git ls-remote "${cleanRepoUrl}" refs/heads/${targetBranch} HEAD`, {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 10000,
-    }).trim();
+    const lsOutput = (await runProcess('git', ['ls-remote', cleanRepoUrl, `refs/heads/${targetBranch}`, 'HEAD'], process.cwd(), 10000)).trim();
 
     const lines = lsOutput.split('\n');
     let foundSpecific = false;
@@ -221,6 +100,7 @@ export async function checkRemoteGitUpdates(
           'User-Agent': 'Gemini-GUI-GitUpdater',
           Accept: 'application/vnd.github.v3+json',
         },
+        signal: AbortSignal.timeout(10000),
       });
 
       if (res.ok) {
@@ -372,243 +252,72 @@ export function scheduleServerRestart(delayMs: number = 1500) {
   }, delayMs);
 }
 
-export function performRebuild(): { success: boolean; message: string; logs: string[]; error?: string } {
-  const cwd = process.cwd();
-  const logs: string[] = [];
-
-  sysLog.info('SYSTEM', 'Iniciando recompilação do projeto (npm run build)...');
-  logs.push('⚙️ [Build] Executando npm run build...');
-
+let maintenanceRunning = false;
+export async function performRebuild(): Promise<{ success: boolean; message: string; logs: string[]; error?: string }> {
+  if (maintenanceRunning) return { success: false, message: 'Outra atualização/compilação está em andamento.', logs: [] };
+  maintenanceRunning = true;
+  const logs = ['⚙️ [Build] Executando npm run build...'];
   try {
-    const res = spawnSync('npm run build', {
-      cwd,
-      shell: true,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 120000,
-    });
-
-    if (res.stdout && res.stdout.trim()) {
-      logs.push(`📤 stdout: ${res.stdout.trim()}`);
-    }
-    if (res.stderr && res.stderr.trim()) {
-      logs.push(`⚠️ stderr: ${res.stderr.trim()}`);
-    }
-
-    if (res.status !== 0 && res.status !== null) {
-      const err = res.stderr || res.stdout || 'Falha ao executar npm run build';
-      sysLog.error('SYSTEM', `Falha ao recompilar aplicação: ${err}`);
-      return {
-        success: false,
-        message: `Falha na compilação: ${err}`,
-        logs,
-        error: err,
-      };
-    }
-
-    sysLog.success('SYSTEM', 'Aplicação recompilada com sucesso (dist/ atualizado).');
-    logs.push('✅ Compilação concluída com sucesso!');
-    return {
-      success: true,
-      message: 'Aplicação recompilada com sucesso!',
-      logs,
-    };
-  } catch (err: any) {
-    sysLog.error('SYSTEM', `Erro ao recompilar aplicação: ${err.message}`);
-    return {
-      success: false,
-      message: `Erro na compilação: ${err.message}`,
-      logs: [...logs, `❌ Erro: ${err.message}`],
-      error: err.message,
-    };
-  }
+    const output = await runProcess('npm', ['run', 'build'], process.cwd(), 120000, text => logs.push(`⚠️ stderr: ${text}`));
+    if (output.trim()) logs.push(`📤 stdout: ${output.trim()}`);
+    sysLog.success('SYSTEM', 'Aplicação recompilada com sucesso.');
+    return { success: true, message: 'Aplicação recompilada com sucesso!', logs };
+  } catch (error: any) {
+    if (error.stdout) logs.push(`📤 stdout: ${error.stdout}`);
+    if (error.stderr) logs.push(`⚠️ stderr: ${error.stderr}`);
+    sysLog.error('SYSTEM', `Falha na compilação: ${error.message}`);
+    return { success: false, message: `Falha na compilação: ${error.message}`, error: error.message, logs };
+  } finally { maintenanceRunning = false; }
 }
 
-export function performGitUpdate(
+export async function performGitUpdate(
   optionsOrRepoUrl: PerformGitUpdateOptions | string = DEFAULT_GIT_REPO_URL,
-  maybeBranch: string = DEFAULT_GIT_BRANCH,
-  maybeForceSync: boolean = false
-): GitUpdateResult {
-  let options: PerformGitUpdateOptions;
-  if (typeof optionsOrRepoUrl === 'string') {
-    options = {
-      repoUrl: optionsOrRepoUrl,
-      branch: maybeBranch,
-      forceSync: maybeForceSync,
-      installDependencies: true,
-      runBuild: true,
-      restartServer: false,
-    };
-  } else {
-    options = {
-      installDependencies: true,
-      runBuild: true,
-      restartServer: false,
-      ...optionsOrRepoUrl,
-    };
-  }
-
-  const cwd = process.cwd();
-  const cleanRepoUrl = (options.repoUrl || '').trim() || DEFAULT_GIT_REPO_URL;
-  const targetBranch = (options.branch || '').trim() || DEFAULT_GIT_BRANCH;
-  const forceSync = Boolean(options.forceSync);
-  const shouldInstallDeps = options.installDependencies !== false;
-  const shouldBuild = options.runBuild !== false;
-  const shouldRestart = Boolean(options.restartServer);
+  maybeBranch = DEFAULT_GIT_BRANCH,
+  maybeForceSync = false
+): Promise<GitUpdateResult> {
+  const options = typeof optionsOrRepoUrl === 'string' ? { repoUrl: optionsOrRepoUrl, branch: maybeBranch, forceSync: maybeForceSync } : optionsOrRepoUrl;
   const logs: string[] = [];
-
-  const runCmd = (cmd: string, description: string, timeoutMs: number = 60000) => {
-    logs.push(`⚙️ [${description}] Executando: ${cmd}`);
-    const res = spawnSync(cmd, {
-      cwd,
-      shell: true,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: timeoutMs,
-    });
-    if (res.stdout && res.stdout.trim()) {
-      logs.push(`📤 stdout: ${res.stdout.trim()}`);
+  if (maintenanceRunning) return { success: false, message: 'Outra atualização/compilação está em andamento.', logs };
+  maintenanceRunning = true;
+  const cwd = process.cwd(), repoUrl = options.repoUrl || DEFAULT_GIT_REPO_URL, branch = options.branch || DEFAULT_GIT_BRANCH;
+  const run = async (command: string, args: string[], description: string, timeout = 60000) => {
+    logs.push(`⚙️ [${description}] Executando: ${command} ${args.join(' ')}`);
+    try {
+      const out = await runProcess(command, args, cwd, timeout, text => logs.push(`⚠️ stderr: ${text}`));
+      if (out.trim()) logs.push(`📤 stdout: ${out.trim()}`);
+      return out.trim();
+    } catch (error: any) {
+      if (error.stdout) logs.push(`📤 stdout: ${error.stdout}`);
+      if (error.stderr) logs.push(`⚠️ stderr: ${error.stderr}`);
+      throw error;
     }
-    if (res.stderr && res.stderr.trim()) {
-      logs.push(`⚠️ stderr: ${res.stderr.trim()}`);
-    }
-    if (res.status !== 0 && res.status !== null) {
-      throw new Error(`Erro na etapa "${description}": ${res.stderr || res.stdout || 'Falha no comando'}`);
-    }
-    return res.stdout ? res.stdout.trim() : '';
   };
-
   try {
-    // 0. Garantir safe.directory antes de qualquer operação
-    try {
-      execSync(`git config --global --add safe.directory "${cwd}"`, { stdio: 'ignore', timeout: 3000 });
-    } catch {}
-
-    // 0. Verificar se o diretório de instalação e a pasta .git possuem permissão de escrita
-    const gitDir = path.join(cwd, '.git');
-    const hasGitDir = fs.existsSync(gitDir);
-
-    try {
-      // Tentar auto-ajustar permissões do usuário atual caso tenha sido relaxado pelo instalador
-      try {
-        execSync(`chmod -R u+rwX,g+rwX "${cwd}" 2>/dev/null`, { timeout: 2000 });
-      } catch {}
-
-      fs.accessSync(cwd, fs.constants.W_OK);
-      if (hasGitDir) {
-        fs.accessSync(gitDir, fs.constants.W_OK);
-      }
-    } catch {
-      logs.push(`⚠️ Permissão de escrita insuficiente no diretório da aplicação: ${cwd}`);
-      logs.push(`💡 O diretório foi instalado como outro usuário (ex: root). Para liberar a atualização automática pela interface gráfica, execute uma única vez no terminal:`);
-      logs.push(`   sudo chown -R $USER: "${cwd}" && chmod -R 777 "${cwd}"`);
-      throw new Error(`Permissão negada no diretório ${cwd}. O usuário atual não possui permissão de escrita para atualizar os arquivos. Corrija executando no terminal: sudo chown -R $USER: "${cwd}" && chmod -R 777 "${cwd}"`);
+    await run('git', ['check-ref-format', '--branch', branch], 'Validar branch');
+    const status = await getGitStatus(repoUrl);
+    if (!status.isGitRepo) throw new Error('O diretório não contém um repositório Git válido. Atualização interrompida para preservar arquivos existentes.');
+    if (!options.forceSync && status.hasUncommittedChanges) throw new Error('Existem alterações locais. Atualização interrompida; preserve/commit seu trabalho ou escolha descarte explícito.');
+    await run('git', ['fetch', repoUrl, branch], '1/4 Buscar atualizações');
+    if (options.forceSync) await run('git', ['reset', '--hard', 'FETCH_HEAD'], '1/4 Descarte explicitamente solicitado');
+    else await run('git', ['merge', '--ff-only', 'FETCH_HEAD'], '1/4 Atualizar sem conflitos');
+    const updatedCommit = await run('git', ['rev-parse', 'HEAD'], 'Verificar commit');
+    logs.push(`✅ [1/4] Código sincronizado (${updatedCommit.slice(0, 7)}).`);
+    let installedDeps = false, rebuilt = false;
+    if (options.installDependencies !== false) {
+      await run('npm', ['install', '--prefer-offline', '--no-audit'], '2/4 Dependências', 120000); installedDeps = true;
     }
-
-    const status = getGitStatus(cleanRepoUrl);
-
-    // 1. Etapa Git: Fetch & Merge/Reset
-    if (!status.isGitRepo && !hasGitDir) {
-      runCmd('git init', '1/4 Inicializar repositório Git local');
-      runCmd(`git remote add origin "${cleanRepoUrl}" || git remote set-url origin "${cleanRepoUrl}"`, '1/4 Configurar Remote Origin');
-      runCmd(`git fetch origin ${targetBranch}`, '1/4 Buscar ramos remotos');
-      
-      try {
-        runCmd(`git checkout -B ${targetBranch} origin/${targetBranch}`, '1/4 Checkout do branch remoto');
-      } catch {
-        runCmd(`git reset --hard origin/${targetBranch}`, '1/4 Reset para branch remota');
-      }
-    } else {
-      runCmd(`git config --global --add safe.directory "${cwd}" || true`, '1/4 Garantir repositório seguro');
-      runCmd(`git remote set-url origin "${cleanRepoUrl}" || git remote add origin "${cleanRepoUrl}"`, '1/4 Atualizar URL do Remote Origin');
-      runCmd(`git fetch origin ${targetBranch}`, '1/4 Buscar atualizações remotas');
-
-      if (forceSync) {
-        runCmd(`git reset --hard origin/${targetBranch}`, '1/4 Sincronização forçada com o remoto');
-      } else {
-        try {
-          runCmd(`git merge origin/${targetBranch} -m "Merge update from ${cleanRepoUrl}"`, '1/4 Mesclar atualizações');
-        } catch {
-          logs.push(`⚠️ Conflito no merge detectado. Aplicando sincronização limpa do branch ${targetBranch}...`);
-          runCmd(`git reset --hard origin/${targetBranch}`, '1/4 Reset forçado para versão mais recente');
-        }
-      }
+    if (options.runBuild !== false) {
+      await run('npm', ['run', 'build'], '3/4 Compilação', 120000); rebuilt = true;
     }
-
-    // Check new commit
-    let newCommit = '';
-    try {
-      newCommit = execSync('git rev-parse HEAD', { cwd, encoding: 'utf-8' }).trim();
-    } catch {}
-
-    logs.push(`✅ [1/4] Código fonte sincronizado com sucesso (Commit ${newCommit ? newCommit.substring(0, 7) : 'recente'})!`);
-
-    // 2. Etapa NPM Install: Se solicitado
-    let installedDeps = false;
-    if (shouldInstallDeps) {
-      try {
-        logs.push('📦 [2/4] Atualizando dependências (npm install)...');
-        runCmd('npm install --prefer-offline --no-audit', '2/4 Instalação de dependências npm', 120000);
-        installedDeps = true;
-        logs.push('✅ [2/4] Dependências npm verificadas/atualizadas com sucesso!');
-      } catch (depErr: any) {
-        logs.push(`⚠️ [2/4] Aviso ao rodar npm install: ${depErr.message}. Prosseguindo com o build...`);
-      }
-    }
-
-    // 3. Etapa Build: Recompilar Vite e backend bundle
-    let rebuilt = false;
-    if (shouldBuild) {
-      try {
-        logs.push('🛠️ [3/4] Recompilando frontend e backend (npm run build)...');
-        runCmd('npm run build', '3/4 Compilação do projeto', 120000);
-        rebuilt = true;
-        logs.push('✅ [3/4] Projeto recompilado com sucesso (dist/ atualizado)!');
-      } catch (buildErr: any) {
-        logs.push(`❌ [3/4] Falha ao recompilar projeto: ${buildErr.message}`);
-        throw buildErr;
-      }
-    }
-
-    // 4. Etapa Reinício: Se solicitado
-    if (shouldRestart) {
-      logs.push('🔄 [4/4] Reinício do servidor agendado em 1.5s...');
-      scheduleServerRestart(1500);
-    }
-
-    const summaryMsg = `Aplicação atualizada com sucesso para o commit ${newCommit ? newCommit.substring(0, 7) : 'recente'}!${
-      shouldRestart ? ' O servidor está reiniciando agora.' : ''
-    }`;
-
-    sysLog.success('GIT', summaryMsg, {
-      repoUrl: cleanRepoUrl,
-      branch: targetBranch,
-      commit: newCommit ? newCommit.substring(0, 7) : undefined,
-      rebuilt,
-      installedDeps,
-      restarting: shouldRestart,
-    });
-
-    return {
-      success: true,
-      message: summaryMsg,
-      updatedCommit: newCommit,
-      logs,
-      requiresRestart: !shouldRestart,
-      restarting: shouldRestart,
-      rebuilt,
-      installedDeps,
-    };
-  } catch (err: any) {
-    logs.push(`❌ Erro no processo de atualização: ${err.message}`);
-    sysLog.error('GIT', `Erro ao atualizar aplicação via Git: ${err.message}`, { repoUrl: cleanRepoUrl, branch: targetBranch });
-    return {
-      success: false,
-      message: `Falha ao atualizar a aplicação via Git: ${err.message}`,
-      logs,
-      error: err.message,
-    };
-  }
+    if (options.restartServer) { logs.push('🔄 [4/4] Reinício agendado.'); scheduleServerRestart(1500); }
+    const message = `Aplicação atualizada para ${updatedCommit.slice(0, 7)}.`;
+    sysLog.success('GIT', message, { installedDeps, rebuilt });
+    return { success: true, message, logs, updatedCommit, installedDeps, rebuilt, requiresRestart: !options.restartServer, restarting: Boolean(options.restartServer) };
+  } catch (error: any) {
+    logs.push(`❌ Atualização interrompida: ${error.message}`);
+    sysLog.error('GIT', error.message);
+    return { success: false, message: error.message, error: error.message, logs };
+  } finally { maintenanceRunning = false; }
 }
 
 export function generateManualUpdateCommands(

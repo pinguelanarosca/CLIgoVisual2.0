@@ -1,5 +1,8 @@
 import { spawn, execSync, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
+import { terminateProcessTree } from './process-service.js';
+import { buildExecutionPrompt, consumeSessionRecovery, executionFailed, validateExecutionContext, ContextMessage } from './execution-policy.js';
+import { retainDiagnostics } from '../src/utils/diagnosticRetention.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -30,6 +33,10 @@ export interface ExecutionState {
   cancelled: boolean;
   sessionId?: string;
   workDir?: string;
+  sessionRecoveries?: number;
+  attempts?: number;
+  finished?: boolean;
+  finish?: (code: number | null, signal: string | null) => void;
 }
 
 const executions = new Map<string, ExecutionState>();
@@ -88,16 +95,18 @@ export function queryBinaryVersion(binPath: string): Promise<string> {
     try {
       const child = spawn(binPath, ['--version'], {
         env: { ...process.env, NO_COLOR: '1', GEMINI_CLI_NO_RELAUNCH: '1' },
+        detached: process.platform !== 'win32',
       });
       let stdout = '';
       const timer = setTimeout(() => {
-        try { child.kill(); } catch {}
+        terminateProcessTree(child);
         resolve(stdout.trim() || '');
       }, 3000);
 
       child.stdout?.on('data', (d) => { stdout += d.toString(); });
       child.on('close', (code) => {
         clearTimeout(timer);
+        terminateProcessTree(child, true);
         if (code === 0 && stdout.trim()) {
           resolve(stdout.trim());
         } else {
@@ -485,13 +494,14 @@ export async function detectCliStatus(
     try {
       const child = spawn(cliPath, ['--version'], {
         env: { ...process.env, NO_COLOR: '1' },
+        detached: process.platform !== 'win32',
       });
 
       let stdout = '';
       let stderr = '';
 
       const timer = setTimeout(() => {
-        try { child.kill(); } catch {}
+        terminateProcessTree(child);
         safeResolve({
           available: Boolean(localVersion || globalVersion),
           version: localVersion || globalVersion || 'Timeout',
@@ -550,6 +560,7 @@ export async function detectCliStatus(
 
       child.on('close', (code) => {
         clearTimeout(timer);
+        terminateProcessTree(child, true);
         if (code === 0 && stdout.trim()) {
           safeResolve({
             available: true,
@@ -645,6 +656,8 @@ export interface CliExecutionParams {
   overrideBasePrompt?: boolean;
   baseInstructions?: string;
   sharedMemory?: string;
+  contextMessages?: ContextMessage[];
+  resetContext?: boolean;
   tools?: string[];
   onEvent: (event: { type: string; data: any }) => void;
   onDone: (exitCode: number | null, signal: string | null) => void;
@@ -745,11 +758,11 @@ export function cancelExecutionById(executionId?: string): boolean {
   if (execState.childProcess && !execState.childProcess.killed) {
     sysLog.warn('CLI', `Execução ativa do Gemini CLI cancelada pelo usuário (ExecutionID: ${executionId}, SIGKILL).`);
     try {
-      execState.childProcess.kill('SIGKILL');
+      terminateProcessTree(execState.childProcess, true);
     } catch {}
-    execState.childProcess = null;
   }
 
+  if (!execState.childProcess) execState.finish?.(null, 'SIGINT');
   executions.delete(executionId);
   return true;
 }
@@ -916,6 +929,7 @@ export async function runExaHandshakeAndDiscovery(params?: CliExecutionParams): 
 
 export async function resolveEffectiveCliConfig(cwd: string, executionId: string): Promise<string> {
   const base = getGuiDataDir();
+  loadMcpSettings(base);
   
   // 1. Ler o settings.json original da GUI se existir
   const guiSettingsPath = path.join(base, '.gemini', 'settings.json');
@@ -923,41 +937,22 @@ export async function resolveEffectiveCliConfig(cwd: string, executionId: string
   if (fs.existsSync(guiSettingsPath)) {
     try {
       settings = JSON.parse(fs.readFileSync(guiSettingsPath, 'utf8'));
-    } catch {
-      settings = {};
-    }
+    } catch { throw new Error('Configuração da GUI inválida; execução interrompida.'); }
   }
 
   // Remove GUI-specific persistence metadata so runtime config complies with strict Gemini CLI schema
   delete settings.guiMcpServers;
+  delete settings.guiManagedMcpNames;
+  delete settings.guiManagedAgentAliases;
+  delete settings.guiManagedAgentScopes;
 
   // 2. Garantir mcpServers corretos e habilitados
   if (!settings.mcpServers) {
     settings.mcpServers = {};
   }
   
-  const guiMcps = loadMcpSettings(base);
-  for (const mcp of guiMcps) {
-    if (mcp.enabled !== false) {
-      const serverConfig: any = {
-        env: mcp.env || {}
-      };
-      if (mcp.command) serverConfig.command = mcp.command;
-      if (mcp.args && mcp.args.length > 0) serverConfig.args = mcp.args;
-      if (mcp.url) {
-        serverConfig.url = mcp.url;
-      } else if (mcp.httpUrl) {
-        serverConfig.httpUrl = mcp.httpUrl;
-      }
-      if (mcp.type) serverConfig.type = mcp.type;
-      if (mcp.trust !== undefined) serverConfig.trust = mcp.trust;
-      if (mcp.headers) serverConfig.headers = mcp.headers;
-
-      settings.mcpServers[mcp.name] = serverConfig;
-    } else {
-      delete settings.mcpServers[mcp.name];
-    }
-  }
+  // saveMcpSettings already merges GUI-owned runtime entries with personal MCPs.
+  // Rebuilding this from GUI display state would override those ownership rules.
 
   // 3. Substituir as variáveis de ambiente reais no settings.json temporário de execução
   if (settings.mcpServers && settings.mcpServers.exa) {
@@ -1062,7 +1057,7 @@ export async function resolveEffectiveCliConfig(cwd: string, executionId: string
   }
 
   settings.modelConfigs.customAliases = { ...settings.modelConfigs.customAliases, ...newAliases };
-  settings.modelConfigs.overrides = newOverrides;
+  settings.modelConfigs.overrides = [...settings.modelConfigs.overrides.filter((item: any) => !newOverrides.some(next => next.match.overrideScope === item.match?.overrideScope)), ...newOverrides];
 
   // 5. Resolver as políticas (policyPaths e adminPolicyPaths)
   const globalPoliciesDir = path.join(base, '.gemini', 'policies');
@@ -1073,8 +1068,8 @@ export async function resolveEffectiveCliConfig(cwd: string, executionId: string
       policyPaths.push(wsPoliciesDir);
     }
   }
-  settings.policyPaths = policyPaths;
-  settings.adminPolicyPaths = policyPaths;
+  settings.policyPaths = [...new Set([...(settings.policyPaths || []), ...policyPaths])];
+  settings.adminPolicyPaths = [...new Set([...(settings.adminPolicyPaths || []), ...policyPaths])];
 
   // 6. Gravar o arquivo temporário exclusivo
   const systemPromptDir = path.join(base, 'tmp');
@@ -1082,7 +1077,7 @@ export async function resolveEffectiveCliConfig(cwd: string, executionId: string
     fs.mkdirSync(systemPromptDir, { recursive: true });
   }
   const tempSettingsFile = path.join(systemPromptDir, `settings-runtime-${executionId}.json`);
-  fs.writeFileSync(tempSettingsFile, JSON.stringify(settings, null, 2), 'utf8');
+  fs.writeFileSync(tempSettingsFile, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
 
   return tempSettingsFile;
 }
@@ -1108,6 +1103,10 @@ export function executeGeminiCli(
   console.log(`[PERF] [${executionId}] request_received`);
 
   let execState = executions.get(executionId);
+  if (execState && !state && !isRetry) {
+    params.onError(new Error('Já existe uma execução com este executionId.'));
+    return { executionId, cancel: () => {} };
+  }
   if (!execState) {
     execState = {
       executionId,
@@ -1118,14 +1117,22 @@ export function executeGeminiCli(
       workDir: params.workDir,
     };
     executions.set(executionId, execState);
-  } else if (!isRetry) {
-    execState.cancelled = false;
-    execState.childProcess = null;
-    if (execState.retryTimeout) {
-      clearTimeout(execState.retryTimeout);
-      execState.retryTimeout = null;
-    }
   }
+
+  if (!execState.finish) {
+    const onDone = params.onDone, onError = params.onError;
+    execState.finish = (code, signal) => { if (execState.finished) return; execState.finished = true; onDone(code, signal); };
+    const finishError = (error: Error) => { if (execState.finished) return; execState.finished = true; executions.delete(executionId); onError(error); };
+    params = { ...params, onDone: execState.finish, onError: finishError };
+  }
+  execState.attempts = (execState.attempts || 0) + 1;
+  if (execState.attempts > 30) { params.onError(new Error('Limite global de tentativas da execução atingido.')); return { executionId, cancel: () => cancelExecutionById(executionId) }; }
+  try { validateExecutionContext(params.sharedMemory, params.contextMessages); }
+  catch (error: any) { params.onError(error); return { executionId, cancel: () => cancelExecutionById(executionId) }; }
+  if (params.resetContext && !state) params = { ...params, sessionId: crypto.randomUUID(), resume: false, resetContext: false };
+  params = { ...params, sessionId: ensureValidUUID(params.sessionId) || crypto.randomUUID() };
+  execState.sessionId = params.sessionId;
+  params.onEvent({ type: 'session_changed', data: { sessionId: params.sessionId, recovery: execState.sessionRecoveries || 0 } });
 
   if (execState.cancelled) {
     sysLog.warn('CLI', `Execução [${executionId}] ignorada pois o estado atual é cancelado.`);
@@ -1135,7 +1142,8 @@ export function executeGeminiCli(
 
   let cwd = params.workDir || (params.authorizedDirs && params.authorizedDirs[0]) || getGuiDataDir();
   if (!cwd || !fs.existsSync(cwd)) {
-    cwd = getGuiDataDir();
+    params.onError(new Error('Diretório de execução inexistente; selecione o projeto correto.'));
+    return { executionId, cancel: () => cancelExecutionById(executionId) };
   }
 
   const effectiveSessionId = ensureValidUUID(params.sessionId);
@@ -1155,16 +1163,6 @@ export function executeGeminiCli(
 
       if (execState.cancelled) return;
 
-      // 3. Resolver a configuração efetiva e salvar no settings temporário exclusivo
-      tempSettingsFile = await resolveEffectiveCliConfig(cwd, executionId);
-      const tConfig = performance.now();
-      console.log(`[PERF] [${executionId}] config_done=${(tConfig - t0).toFixed(1)}ms`);
-
-      if (execState.cancelled) {
-        try { fs.unlinkSync(tempSettingsFile); } catch {}
-        return;
-      }
-
       let cliPath = getResolvedCliPath();
 
       // 4. Decisão de sessão sem varredura pesada síncrona no disco
@@ -1172,7 +1170,7 @@ export function executeGeminiCli(
       const shouldResume = Boolean(effectiveSessionId && params.resume !== false);
       const tResume = performance.now();
       console.log(`[PERF] [${executionId}] resume_decision_done=${(tResume - t0).toFixed(1)}ms (resume: ${shouldResume})`);
-      const finalPrompt = params.prompt;
+      const finalPrompt = buildExecutionPrompt({ ...params, resume: params.resume !== false && isExistingSession(effectiveSessionId || '', cwd) });
 
       // Workspace context header
       const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : cwd}.\nSempre inspecione e responda com base nos arquivos localizados neste diretório.\n---\n`;
@@ -1237,6 +1235,9 @@ export function executeGeminiCli(
         sysLog.warn('CLI', `Aviso ao sincronizar políticas no settings.json: ${err}`);
       }
 
+      tempSettingsFile = await resolveEffectiveCliConfig(cwd, executionId);
+      console.log(`[PERF] [${executionId}] config_done=${(performance.now() - t0).toFixed(1)}ms`);
+      if (execState.cancelled) { try { fs.unlinkSync(tempSettingsFile); } catch {} return; }
       const isDebug = process.env.GEMINI_GUI_DEBUG === '1';
       // Se o prompt for muito grande (>8KB ou com anexos), enviar via stdin para evitar ARG_MAX / E2BIG do sistema operacional
       const isPromptLarge = finalPrompt.length > 8192;
@@ -1379,11 +1380,8 @@ export function executeGeminiCli(
         GOOGLE_GENAI_API_KEY: activeApiKey,
       };
 
-      // Injetar caminho de settings do sistema apenas se estiver rodando como root (uid 0),
-      // pois o Gemini CLI emite Security Warning e descarta o arquivo se o diretório não pertencer ao root.
-      if (tempSettingsFile && typeof process.getuid === 'function' && process.getuid() === 0) {
-        env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = tempSettingsFile;
-      }
+      // CLI 0.59 supports an explicit runtime settings path without modifying user/workspace settings.
+      if (tempSettingsFile) env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = tempSettingsFile;
 
       if (systemPromptFile) {
         env.GEMINI_SYSTEM_MD = systemPromptFile;
@@ -1431,6 +1429,16 @@ export function executeGeminiCli(
       try { fs.mkdirSync(requestDumpDir, { recursive: true }); } catch {}
       env.GEMINI_CLI_REQUEST_DUMP_DIR = requestDumpDir;
 
+      let capturedRequestCount = 0;
+      const diagnosticDir = path.join(getGuiDataDir(), 'request-diagnostics');
+      fs.mkdirSync(diagnosticDir, { recursive: true, mode: 0o700 });
+      const diagnosticPath = path.join(diagnosticDir, `${executionId.replace(/[^a-zA-Z0-9_-]/g, '_')}-${Date.now()}.jsonl`);
+      const diagnosticStream = fs.createWriteStream(diagnosticPath, { flags: 'a', mode: 0o600 });
+      diagnosticStream.on('error', error => { sysLog.error('CLI', `Falha ao salvar diagnóstico completo: ${diagnosticPath}`, error); execState.childProcess?.stdout?.resume(); });
+      const retainRequest = (request: any) => {
+        if (!diagnosticStream.destroyed && !diagnosticStream.write(JSON.stringify(request) + '\n')) { child.stdout?.pause(); diagnosticStream.once('drain', () => child.stdout?.resume()); }
+        retainDiagnostics(capturedRealRequests, request, 20, 8 * 1024 * 1024);
+      };
       const capturedRealRequests: Array<{
         requestId?: string;
         promptId?: string;
@@ -1454,8 +1462,10 @@ export function executeGeminiCli(
         cwd,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 300000,
+        detached: process.platform !== 'win32',
       });
+      const executionTimer = setTimeout(() => terminateProcessTree(child), 300000);
+      child.stdin?.on('error', (error) => { if (!execState.cancelled) { terminateProcessTree(child); params.onError(error); } });
 
       if (isPromptLarge && child.stdin) {
         try {
@@ -1636,16 +1646,16 @@ export function executeGeminiCli(
                 const finalReq = parsed.finalApiRequest || parsed.data?.finalApiRequest;
                 if (finalReq) {
                   const reqItem = {
-                    requestId: parsed.requestId || parsed.promptId || `req_${Date.now()}_${capturedRealRequests.length + 1}`,
+                    requestId: parsed.requestId || parsed.promptId || `req_${Date.now()}_${capturedRequestCount + 1}`,
                     promptId: parsed.promptId,
                     sessionId: parsed.sessionId || effectiveSessionId || params.sessionId,
                     model: parsed.model || finalReq.model,
                     role: parsed.role,
                     timestamp: parsed.timestamp || new Date().toISOString(),
                     finalApiRequest: finalReq,
-                    callIndex: capturedRealRequests.length + 1,
+                    callIndex: ++capturedRequestCount,
                   };
-                  capturedRealRequests.push(reqItem);
+                  retainRequest(reqItem);
 
                   if (reqItem.role === 'subagent' || parsed.role === 'subagent') {
                     lastSubagentRequestId = reqItem.requestId;
@@ -1665,8 +1675,8 @@ export function executeGeminiCli(
                   params.onEvent({
                     type: 'final_api_request',
                     data: {
-                      finalApiRequest: finalReq,
-                      allRealRequests: capturedRealRequests,
+                      finalApiRequest: JSON.stringify(finalReq).length <= 512 * 1024 ? finalReq : { model: finalReq.model, diagnosticPath, truncated: true, contents: [] },
+                      diagnosticPath,
                       requestId: reqItem.requestId,
                       promptId: reqItem.promptId,
                       sessionId: reqItem.sessionId,
@@ -1771,7 +1781,9 @@ export function executeGeminiCli(
         params.onError(err);
       });
 
-      child.on('close', (code, signal) => {
+      child.once('close', async (code, signal) => {
+        clearTimeout(executionTimer);
+        terminateProcessTree(child, true);
         const tDone = performance.now();
         console.log(`[PERF] [${executionId}] process_done=${(tDone - t0).toFixed(1)}ms (code: ${code ?? 0})`);
 
@@ -1786,7 +1798,7 @@ export function executeGeminiCli(
         }
 
         // Se o evento final_api_request não foi capturado do stream de stdout, inspecionar o diretório de dump em disco
-        if (capturedRealRequests.length === 0 && fs.existsSync(requestDumpDir)) {
+        if (capturedRequestCount === 0 && fs.existsSync(requestDumpDir)) {
           try {
             const dumpedFiles = fs.readdirSync(requestDumpDir).filter(f => f.endsWith('.json')).sort();
             for (const df of dumpedFiles) {
@@ -1796,21 +1808,21 @@ export function executeGeminiCli(
               const finalReq = parsedDump.finalApiRequest || parsedDump.data?.finalApiRequest;
               if (finalReq) {
                 const reqItem = {
-                  requestId: parsedDump.requestId || parsedDump.promptId || `req_${Date.now()}_${capturedRealRequests.length + 1}`,
+                  requestId: parsedDump.requestId || parsedDump.promptId || `req_${Date.now()}_${capturedRequestCount + 1}`,
                   promptId: parsedDump.promptId,
                   sessionId: parsedDump.sessionId || effectiveSessionId || params.sessionId,
                   model: parsedDump.model || finalReq.model,
                   role: parsedDump.role,
                   timestamp: parsedDump.timestamp || new Date().toISOString(),
                   finalApiRequest: finalReq,
-                  callIndex: capturedRealRequests.length + 1,
+                  callIndex: ++capturedRequestCount,
                 };
-                capturedRealRequests.push(reqItem);
+                retainRequest(reqItem);
                 params.onEvent({
                   type: 'final_api_request',
                   data: {
-                    finalApiRequest: finalReq,
-                    allRealRequests: capturedRealRequests,
+                    finalApiRequest: JSON.stringify(finalReq).length <= 512 * 1024 ? finalReq : { model: finalReq.model, diagnosticPath, truncated: true, contents: [] },
+                    diagnosticPath,
                     requestId: reqItem.requestId,
                     promptId: reqItem.promptId,
                     sessionId: reqItem.sessionId,
@@ -1824,6 +1836,10 @@ export function executeGeminiCli(
             }
           } catch {}
         }
+        await new Promise<void>(resolve => {
+          if (diagnosticStream.destroyed || diagnosticStream.writableFinished) return resolve();
+          diagnosticStream.once('finish', resolve); diagnosticStream.once('error', () => resolve()); diagnosticStream.end();
+        });
         try { fs.rmSync(requestDumpDir, { recursive: true, force: true }); } catch {}
         if (code !== 0 && (stderrText.includes("No previous sessions found") || stderrText.includes("Invalid session identifier"))) {
           sysLog.warn('CLI', `Sessão ${params.sessionId} não encontrada, limpando cache.`);
@@ -1852,6 +1868,8 @@ export function executeGeminiCli(
           return;
         }
 
+        if (execState.finished) return;
+
         // Se o Gemini CLI acusar que a sessão já existe e tentamos sem resume
         const isSessionAlreadyExistsError =
           stderrText.includes('already exists. Use --resume to resume it') ||
@@ -1870,6 +1888,10 @@ export function executeGeminiCli(
           reportedErrorText.includes('Error resuming session') ||
           reportedErrorText.includes('Invalid session identifier');
 
+        if ((isSessionResumeError || isSessionAlreadyExistsError || code === 42) && !consumeSessionRecovery(execState)) {
+          params.onError(new Error('Recuperação de sessão esgotada após duas tentativas. O histórico da GUI foi preservado.'));
+          return;
+        }
         // 1. Se falhou ao retomar OU se a sessão está inacessível/corrompida
         if (isSessionResumeError || (isSessionAlreadyExistsError && params.resume)) {
           const freshSessionId = crypto.randomUUID();
@@ -1974,8 +1996,8 @@ export function executeGeminiCli(
         );
 
         const hasUnresolvedToolCalls = activeToolCalls.size > 0;
-        const isProcessExitFailure = (code !== 0 && code !== null);
-        const hasFailed = isProcessExitFailure || (hasUnresolvedToolCalls && isProcessExitFailure);
+        const isProcessExitFailure = code !== 0 || Boolean(signal);
+        const hasFailed = executionFailed(code, signal, reportedErrorText, isQuotaError || isFetchFailed || isOverloadedError || isAuthError || isBadRequestError);
 
         // Se houver chamadas de ferramentas/subagentes pendentes sem fechamento formal, emitir tool_result terminal
         if (hasUnresolvedToolCalls) {
@@ -2274,7 +2296,7 @@ Você atingiu o limite de requisições.
             error: finalMessage,
             stderr: stderrText,
           });
-          tracker.trackFlowSummary(code ?? 1, finalMessage);
+          tracker.trackFlowSummary(code || 1, finalMessage);
         } else {
           // Gravar sucesso no Key Pool para o modelo e chave atuais
           recordRuntimeExecutionResult(chosenModel, activeKeyId, {
@@ -2308,7 +2330,7 @@ Você atingiu o limite de requisições.
         }
 
         executions.delete(executionId);
-        params.onDone(code, signal);
+        params.onDone(hasFailed ? code || 1 : 0, signal);
       });
 
     } catch (err: any) {
@@ -2324,16 +2346,19 @@ Você atingiu o limite de requisições.
 
   if (isAcpPersistentMode && !isRetry && effectiveSessionId) {
     const runAcpFlow = async () => {
+      let acquiredSession = false;
       try {
         const session = await acpManager.getOrCreateSession(effectiveSessionId, params);
-        if (execState.cancelled) return;
+        acquiredSession = true;
+        if (execState.cancelled) { acpManager.removeSession(effectiveSessionId); return; }
         await session.executePrompt({ ...params, executionId, sessionId: effectiveSessionId });
         executions.delete(executionId);
       } catch (err: any) {
         sysLog.warn('CLI', `Sessão ACP falhou ou foi desconectada. Realizando fallback transparente para execução one-shot: ${err?.message || err}`);
-        acpManager.removeSession(effectiveSessionId);
+        if (acquiredSession) acpManager.removeSession(effectiveSessionId);
         if (!execState.cancelled) {
-          runAsyncFlow();
+          if (err?.promptStarted) params.onError(err);
+          else runAsyncFlow();
         }
       }
     };

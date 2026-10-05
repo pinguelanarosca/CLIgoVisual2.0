@@ -61,7 +61,7 @@ export function ensureDefaultUserPolicies(): void {
     }
 
     const mcpPolicyPath = path.join(wsDir, 'allow-mcp.toml');
-    fs.writeFileSync(mcpPolicyPath, DEFAULT_ALLOW_MCP_TOML, 'utf8');
+    if (!fs.existsSync(mcpPolicyPath)) fs.writeFileSync(mcpPolicyPath, DEFAULT_ALLOW_MCP_TOML, 'utf8');
   } catch (err) {
     // ignore write errors
   }
@@ -98,7 +98,7 @@ export function syncPoliciesToSettings(targetDir?: string): void {
   try {
     ensureDefaultUserPolicies();
 
-    const base = targetDir || getGuiDataDir();
+    const base = getGuiDataDir();
     const wsDir = path.join(base, '.gemini', 'policies');
 
     if (!fs.existsSync(wsDir)) {
@@ -110,15 +110,13 @@ export function syncPoliciesToSettings(targetDir?: string): void {
     if (fs.existsSync(settingsPath)) {
       try {
         settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      } catch {
-        settings = {};
-      }
+      } catch { throw new Error('Configuração de políticas inválida; arquivo preservado.'); }
     }
 
     const allPaths: string[] = [wsDir];
 
-    settings.policyPaths = allPaths;
-    settings.adminPolicyPaths = allPaths;
+    settings.policyPaths = [...new Set([...(settings.policyPaths || []), ...allPaths])];
+    settings.adminPolicyPaths = [...new Set([...(settings.adminPolicyPaths || []), ...allPaths])];
 
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
 

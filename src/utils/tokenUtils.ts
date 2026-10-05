@@ -267,7 +267,7 @@ export function compressContextMessages(
       },
       ...recentMessages,
     ];
-  } else if (settings.strategy === 'truncate_tools') {
+  } else if (effectiveSettings.strategy === 'truncate_tools') {
     // Truncate long tool responses and long message contents in old messages
     const truncatedOld = oldMessages.map((msg) => {
       let content = msg.content;

@@ -74,7 +74,7 @@ Os seguintes caminhos e artefatos são de propriedade e uso exclusivo da aplica�
 ## 🛠️ Como Executar em Desenvolvimento
 
 ### Pré-requisitos
-- Node.js 18+ ou 20+
+- Node.js 22.13.0 ou superior
 - Gemini CLI instalado localmente (`gemini --version`) ou chave `GEMINI_API_KEY`
 
 ### Instalação e Desenvolvimento

@@ -8,3 +8,22 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Recovery archives may contain personal configuration.
+.audit-recovery/
+
+.gemini/
+tmp/
+root/
+response.txt
+logs/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+*.p12
+__pycache__/
+*.pyc

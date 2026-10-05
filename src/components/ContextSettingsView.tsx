@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { fetchJsonSafely } from '../utils/apiUtils';
 import {
   Sparkles,
   Sliders,
@@ -69,7 +70,14 @@ export const ContextSettingsView: React.FC<ContextSettingsViewProps> = ({
   );
 
   const targetSession = sessions.find((s) => s.id === selectedSessionId);
-  const targetMessages = targetSession?.messages || messages;
+  const [loadedSession, setLoadedSession] = useState<SessionItem | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setLoadedSession(null);
+    if (targetSession?.id) void fetchJsonSafely<SessionItem>(`/api/sessions/${targetSession.id}`).then(session => { if (!cancelled) setLoadedSession(session); });
+    return () => { cancelled = true; };
+  }, [targetSession?.id, targetSession?.updatedAt]);
+  const targetMessages = loadedSession?.executionContext || loadedSession?.messages || (targetSession?.id === currentSessionId ? messages : []);
 
   const breakdown = calculateContextBreakdown(
     targetMessages,

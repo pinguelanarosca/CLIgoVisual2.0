@@ -1,299 +1,172 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
-import { SessionItem, ChatMessage } from '../src/types.js';
+import { SessionItem } from '../src/types.js';
 import { getGuiDataDir } from './paths-service.js';
 import { sysLog } from './logger-service.js';
 
 let db: DatabaseSync | null = null;
-
+let transactionDepth = 0;
 function getDb(): DatabaseSync {
   if (db) return db;
-
   const dataDir = getGuiDataDir();
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-
-  const dbPath = path.join(dataDir, 'sessions.db');
-  db = new DatabaseSync(dbPath);
-
-  // Enable WAL mode & foreign keys for performance
-  try {
-    db.exec('PRAGMA journal_mode = WAL;');
-    db.exec('PRAGMA foreign_keys = ON;');
-  } catch (err) {
-    // Ignore PRAGMA errors if unsupported
-  }
-
-  // Create tables
-  db.exec(`
+  fs.mkdirSync(dataDir, { recursive: true });
+  const database = new DatabaseSync(path.join(dataDir, 'sessions.db'));
+  database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  database.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      projectId TEXT,
-      title TEXT NOT NULL,
-      isArchived INTEGER DEFAULT 0,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      messageCount INTEGER DEFAULT 0,
-      statusGrade TEXT DEFAULT 'VALIDATED'
+      id TEXT PRIMARY KEY, projectId TEXT, title TEXT NOT NULL,
+      isArchived INTEGER DEFAULT 0, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL,
+      messageCount INTEGER DEFAULT 0, statusGrade TEXT DEFAULT 'VALIDATED', payloadJson TEXT
     );
-
     CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      sessionId TEXT NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT,
-      timestamp TEXT,
-      model TEXT,
-      agentName TEXT,
-      sequence INTEGER NOT NULL,
-      payloadJson TEXT,
+      id TEXT PRIMARY KEY, sessionId TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+      timestamp TEXT, model TEXT, agentName TEXT, sequence INTEGER NOT NULL, payloadJson TEXT,
       FOREIGN KEY (sessionId) REFERENCES sessions(id) ON DELETE CASCADE
     );
-
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(projectId);
     CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updatedAt DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(sessionId, sequence ASC);
   `);
-
-  sysLog.info('SQLITE', `Banco de dados SQLite de sessões inicializado em ${dbPath}`);
-  return db;
+  if (!(database.prepare('PRAGMA table_info(sessions)').all() as any[]).some(c => c.name === 'payloadJson')) {
+    const backups = path.join(dataDir, 'backups');
+    fs.mkdirSync(backups, { recursive: true, mode: 0o700 });
+    const backup = path.join(backups, `sessions-before-schema-${Date.now()}.db`);
+    database.prepare('VACUUM INTO ?').run(backup);
+    fs.chmodSync(backup, 0o600);
+    database.exec('ALTER TABLE sessions ADD COLUMN payloadJson TEXT;');
+    sysLog.info('SQLITE', `Backup consistente antes da migração: ${backup}`);
+  }
+  db = database;
+  sysLog.info('SQLITE', 'Banco de sessões inicializado.');
+  return database;
 }
 
-export function migrateSessionsFromStore(legacySessions: SessionItem[]): void {
-  if (!legacySessions || legacySessions.length === 0) return;
-
+function transaction<T>(operation: () => T): T {
+  if (transactionDepth) return operation();
   const database = getDb();
-  const countRow = database.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number } | undefined;
-  if (countRow && countRow.count > 0) {
-    return; // Migration already done or SQLite contains sessions
+  database.exec('BEGIN IMMEDIATE');
+  transactionDepth++;
+  try {
+    const result = operation();
+    database.exec('COMMIT');
+    return result;
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  } finally { transactionDepth--; }
+}
+
+export function validateSessionPayload(session: any, requireMessages = false): void {
+  if (!session || typeof session !== 'object' || typeof session.id !== 'string' || !session.id.trim()) throw new Error('ID de sessão inválido.');
+  for (const key of ['title', 'projectId', 'createdAt', 'updatedAt', 'statusGrade', 'cliSessionId']) {
+    if (session[key] !== undefined && session[key] !== null && typeof session[key] !== 'string') throw new Error(`Campo de sessão inválido: ${key}`);
   }
-
-  sysLog.info('SQLITE', `Migrando ${legacySessions.length} sessão(ões) do storage.json para SQLite...`);
-
-  const insertSession = database.prepare(`
-    INSERT OR REPLACE INTO sessions (id, projectId, title, isArchived, createdAt, updatedAt, messageCount, statusGrade)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const insertMessage = database.prepare(`
-    INSERT OR REPLACE INTO messages (id, sessionId, role, content, timestamp, model, agentName, sequence, payloadJson)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const session of legacySessions) {
-    try {
-      insertSession.run(
-        session.id,
-        session.projectId || null,
-        session.title || 'Sessão sem título',
-        session.isArchived ? 1 : 0,
-        session.createdAt || new Date().toISOString(),
-        session.updatedAt || new Date().toISOString(),
-        session.messages?.length || 0,
-        session.statusGrade || 'VALIDATED'
-      );
-
-      if (Array.isArray(session.messages)) {
-        session.messages.forEach((msg, idx) => {
-          const payload = {
-            toolCalls: msg.toolCalls,
-            error: msg.error,
-            audioUrl: msg.audioUrl,
-            isNarrating: msg.isNarrating,
-            finalApiRequest: msg.finalApiRequest,
-            parameterOrigins: msg.parameterOrigins,
-            rawPayloadSent: msg.rawPayloadSent,
-            rawPayloadReceived: msg.rawPayloadReceived,
-          };
-
-          insertMessage.run(
-            msg.id,
-            session.id,
-            msg.role,
-            msg.content || '',
-            msg.timestamp || new Date().toISOString(),
-            msg.model || null,
-            msg.agentName || null,
-            idx,
-            JSON.stringify(payload)
-          );
-        });
-      }
-    } catch (err) {
-      sysLog.error('SQLITE', `Erro ao migrar sessão ${session.id}`, err);
+  if (session.isArchived !== undefined && typeof session.isArchived !== 'boolean') throw new Error('isArchived inválido.');
+  if (requireMessages && !Array.isArray(session.messages)) throw new Error('Backup sem mensagens completas.');
+  if (session.messages !== undefined) {
+    if (!Array.isArray(session.messages)) throw new Error('Lista de mensagens inválida.');
+    const seen = new Set<string>();
+    for (const msg of session.messages) {
+      if (!msg || typeof msg.id !== 'string' || !msg.id.trim() || seen.has(msg.id)) throw new Error('ID de mensagem inválido ou duplicado.');
+      seen.add(msg.id);
+      if (!['user', 'assistant', 'system', 'model', 'tool'].includes(msg.role) || typeof msg.content !== 'string') throw new Error('Papel ou conteúdo de mensagem inválido.');
+      for (const key of ['timestamp', 'model', 'agentName']) if (msg[key] !== undefined && msg[key] !== null && typeof msg[key] !== 'string') throw new Error(`Campo de mensagem inválido: ${key}`);
     }
   }
-
-  sysLog.info('SQLITE', 'Migração para SQLite concluída com sucesso!');
+  if (session.executionContext !== undefined && (!Array.isArray(session.executionContext) || session.executionContext.some((m: any) => !m || !['user', 'assistant', 'system'].includes(m.role) || typeof m.content !== 'string'))) throw new Error('Contexto de sessão inválido.');
+  // Serialize before touching the database (also rejects cyclic objects / BigInt).
+  JSON.stringify(session);
 }
 
+function mapSession(row: any, messages: any[] = []): SessionItem {
+  return {
+    ...JSON.parse(row.payloadJson || '{}'), id: row.id, title: row.title,
+    projectId: row.projectId || undefined, isArchived: Boolean(row.isArchived),
+    createdAt: row.createdAt, updatedAt: row.updatedAt, messageCount: row.messageCount,
+    statusGrade: row.statusGrade || 'VALIDATED', messages,
+  };
+}
 export function getSessionsSqlite(projectId?: string): SessionItem[] {
   const database = getDb();
-  let stmt;
-  let rows: any[];
-
-  if (projectId) {
-    stmt = database.prepare('SELECT * FROM sessions WHERE projectId = ? ORDER BY updatedAt DESC');
-    rows = stmt.all(projectId);
-  } else {
-    stmt = database.prepare('SELECT * FROM sessions ORDER BY updatedAt DESC');
-    rows = stmt.all();
-  }
-
-  return rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    projectId: row.projectId || undefined,
-    isArchived: Boolean(row.isArchived),
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    messageCount: row.messageCount,
-    statusGrade: row.statusGrade || 'VALIDATED',
-    messages: [], // Message details loaded on demand or per session fetch
-  }));
+  const rows = projectId
+    ? database.prepare('SELECT * FROM sessions WHERE projectId = ? ORDER BY updatedAt DESC').all(projectId)
+    : database.prepare('SELECT * FROM sessions ORDER BY updatedAt DESC').all();
+  return rows.map(row => { const session = mapSession(row); delete session.executionContext; return session; });
 }
-
 export function getSessionByIdSqlite(id: string): SessionItem | null {
   const database = getDb();
-  const sessionRow = database.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as any;
-  if (!sessionRow) return null;
-
-  const msgRows = database.prepare('SELECT * FROM messages WHERE sessionId = ? ORDER BY sequence ASC').all(id) as any[];
-
-  const messages: ChatMessage[] = msgRows.map((msgRow) => {
-    let extra: any = {};
-    if (msgRow.payloadJson) {
-      try {
-        extra = JSON.parse(msgRow.payloadJson);
-      } catch {}
-    }
-
-    return {
-      id: msgRow.id,
-      role: msgRow.role,
-      content: msgRow.content || '',
-      timestamp: msgRow.timestamp,
-      model: msgRow.model || undefined,
-      agentName: msgRow.agentName || undefined,
-      toolCalls: extra.toolCalls,
-      error: extra.error,
-      audioUrl: extra.audioUrl,
-      isNarrating: extra.isNarrating,
-      finalApiRequest: extra.finalApiRequest,
-      parameterOrigins: extra.parameterOrigins,
-      rawPayloadSent: extra.rawPayloadSent,
-      rawPayloadReceived: extra.rawPayloadReceived,
-    };
+  const row = database.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+  if (!row) return null;
+  const messages = database.prepare('SELECT * FROM messages WHERE sessionId = ? ORDER BY sequence ASC').all(id).map((m: any) => {
+    const payload = JSON.parse(m.payloadJson || '{}');
+    return { ...payload, id: payload.id || m.id, role: m.role, content: m.content || '', timestamp: m.timestamp, model: m.model || undefined, agentName: m.agentName || undefined };
   });
-
-  return {
-    id: sessionRow.id,
-    title: sessionRow.title,
-    projectId: sessionRow.projectId || undefined,
-    isArchived: Boolean(sessionRow.isArchived),
-    createdAt: sessionRow.createdAt,
-    updatedAt: sessionRow.updatedAt,
-    messageCount: sessionRow.messageCount,
-    statusGrade: sessionRow.statusGrade || 'VALIDATED',
-    messages,
-  };
+  return mapSession(row, messages);
 }
-
+export function exportSessionsSqlite(): SessionItem[] {
+  return transaction(() => getSessionsSqlite().map(s => getSessionByIdSqlite(s.id)!));
+}
 export function saveSessionSqlite(session: SessionItem): SessionItem {
-  const database = getDb();
-  const now = new Date().toISOString();
-
-  const insertSession = database.prepare(`
-    INSERT OR REPLACE INTO sessions (id, projectId, title, isArchived, createdAt, updatedAt, messageCount, statusGrade)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  insertSession.run(
-    session.id,
-    session.projectId || null,
-    session.title || 'Nova Sessão',
-    session.isArchived ? 1 : 0,
-    session.createdAt || now,
-    now,
-    session.messages ? session.messages.length : session.messageCount || 0,
-    session.statusGrade || 'VALIDATED'
-  );
-
-  if (Array.isArray(session.messages)) {
-    // Replace all messages for this session
-    database.prepare('DELETE FROM messages WHERE sessionId = ?').run(session.id);
-
-    const insertMessage = database.prepare(`
-      INSERT OR REPLACE INTO messages (id, sessionId, role, content, timestamp, model, agentName, sequence, payloadJson)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const seenIdsInThisBatch = new Set<string>();
-
-    session.messages.forEach((msg, idx) => {
-      const payload = {
-        toolCalls: msg.toolCalls,
-        error: msg.error,
-        audioUrl: msg.audioUrl,
-        isNarrating: msg.isNarrating,
-        finalApiRequest: msg.finalApiRequest,
-        parameterOrigins: msg.parameterOrigins,
-        rawPayloadSent: msg.rawPayloadSent,
-        rawPayloadReceived: msg.rawPayloadReceived,
-      };
-
-      // Determine unique ID for the message
-      let msgId = msg.id && typeof msg.id === 'string' && msg.id.trim() ? msg.id.trim() : `msg_${session.id}_${idx}_${Date.now()}`;
-      
-      // If the ID was already used by another message in this batch, or belongs to another session
-      if (seenIdsInThisBatch.has(msgId)) {
-        msgId = `${session.id}_${msgId}_${idx}_${Date.now()}`;
-      } else {
-        try {
-          const existingMsg = database.prepare('SELECT sessionId FROM messages WHERE id = ?').get(msgId) as { sessionId: string } | undefined;
-          if (existingMsg && existingMsg.sessionId !== session.id) {
-            msgId = `${session.id}_${msgId}_${idx}`;
-          }
-        } catch {}
-      }
-      seenIdsInThisBatch.add(msgId);
-
-      try {
-        insertMessage.run(
-          msgId,
-          session.id,
-          msg.role || 'user',
-          msg.content || '',
-          msg.timestamp || now,
-          msg.model || null,
-          msg.agentName || null,
-          idx,
-          JSON.stringify(payload)
-        );
-      } catch (insertErr) {
-        sysLog.warn('SQLITE', `Aviso ao inserir mensagem ${msgId} na sessão ${session.id}:`, insertErr);
-      }
-    });
-  }
-
-  return {
-    ...session,
-    updatedAt: now,
-    messageCount: session.messages ? session.messages.length : session.messageCount || 0,
-  };
+  validateSessionPayload(session);
+  return transaction(() => {
+    const database = getDb();
+    const previousRow = database.prepare('SELECT * FROM sessions WHERE id = ?').get(session.id);
+    const previous = previousRow ? mapSession(previousRow) : null;
+    const saved = { ...previous, ...session, createdAt: previous?.createdAt || session.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const messages = session.messages || [];
+    const messageCount = session.messages === undefined ? previous?.messageCount || 0 : messages.length;
+    const { messages: _, ...metadata } = saved;
+    database.prepare(`INSERT INTO sessions (id, projectId, title, isArchived, createdAt, updatedAt, messageCount, statusGrade, payloadJson)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+      projectId=excluded.projectId, title=excluded.title, isArchived=excluded.isArchived,
+      updatedAt=excluded.updatedAt, messageCount=excluded.messageCount, statusGrade=excluded.statusGrade, payloadJson=excluded.payloadJson`).run(
+      saved.id, saved.projectId || null, saved.title || 'Nova Sessão', saved.isArchived ? 1 : 0,
+      saved.createdAt, saved.updatedAt, messageCount, saved.statusGrade || 'VALIDATED', JSON.stringify(metadata));
+    if (session.messages !== undefined) {
+      database.prepare('DELETE FROM messages WHERE sessionId = ?').run(session.id);
+      const insert = database.prepare('INSERT INTO messages (id, sessionId, role, content, timestamp, model, agentName, sequence, payloadJson) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      messages.forEach((m, i) => insert.run(JSON.stringify([session.id, m.id]), session.id, m.role, m.content, m.timestamp || saved.updatedAt, m.model || null, m.agentName || null, i, JSON.stringify(m)));
+    }
+    if (session.messages !== undefined) return getSessionByIdSqlite(session.id)!;
+    return mapSession(database.prepare('SELECT * FROM sessions WHERE id = ?').get(session.id));
+  });
 }
-
+export function updateSessionMetadataSqlite(id: string, updates: Partial<SessionItem>): SessionItem {
+  if (!getDb().prepare('SELECT id FROM sessions WHERE id = ?').get(id)) throw new Error('Sessão não encontrada.');
+  if (!updates || typeof updates !== 'object' || Array.isArray(updates)) throw new Error('Metadados inválidos.');
+  const allowed = ['title', 'projectId', 'isArchived', 'statusGrade', 'cliSessionId', 'executionContext'];
+  if (Object.keys(updates).some(key => !allowed.includes(key))) throw new Error('A atualização de metadados não aceita mensagens.');
+  return saveSessionSqlite({ ...updates, id } as SessionItem);
+}
+export function replaceSessionMessagesSqlite(id: string, updates: Pick<SessionItem, 'messages' | 'cliSessionId' | 'executionContext'>): SessionItem {
+  if (!updates || typeof updates !== 'object' || Array.isArray(updates)) throw new Error('Mensagens inválidas.');
+  if (Object.keys(updates).some(key => !['messages', 'cliSessionId', 'executionContext'].includes(key))) throw new Error('A substituição de mensagens não aceita metadados.');
+  validateSessionPayload({ ...updates, id }, true);
+  return transaction(() => {
+    if (!getDb().prepare('SELECT id FROM sessions WHERE id = ?').get(id)) throw new Error('Sessão não encontrada.');
+    return saveSessionSqlite({ ...updates, id } as SessionItem);
+  });
+}
+export function importSessionsSqlite(sessions: SessionItem[]): void {
+  if (!Array.isArray(sessions)) throw new Error('Backup de sessões inválido.');
+  const ids = new Set<string>();
+  sessions.forEach(s => { validateSessionPayload(s, true); if (ids.has(s.id)) throw new Error('Sessão duplicada no backup.'); ids.add(s.id); });
+  // Snapshot includes WAL content; never copy just the main database file.
+  const backups = path.join(getGuiDataDir(), 'backups');
+  fs.mkdirSync(backups, { recursive: true, mode: 0o700 });
+  const backup = path.join(backups, `sessions-before-restore-${Date.now()}.db`);
+  getDb().prepare('VACUUM INTO ?').run(backup);
+  fs.chmodSync(backup, 0o600);
+  transaction(() => { getDb().exec('DELETE FROM sessions'); sessions.forEach(session => { saveSessionSqlite(session); if (session.updatedAt) getDb().prepare('UPDATE sessions SET updatedAt = ? WHERE id = ?').run(session.updatedAt, session.id); }); });
+}
+export function migrateSessionsFromStore(sessions: SessionItem[]): void {
+  if (!sessions?.length) return;
+  sessions.forEach(s => validateSessionPayload(s, true));
+  transaction(() => { sessions.forEach(s => { if (!getSessionByIdSqlite(s.id)) saveSessionSqlite(s); }); });
+  sysLog.info('SQLITE', `Migração concluída: ${sessions.length} sessões verificadas.`);
+}
 export function deleteSessionSqlite(id: string): boolean {
-  const database = getDb();
-  database.prepare('DELETE FROM messages WHERE sessionId = ?').run(id);
-  database.prepare('DELETE FROM sessions WHERE id = ?').run(id);
-  return true;
+  return transaction(() => { getDb().prepare('DELETE FROM sessions WHERE id = ?').run(id); return true; });
 }
-
-export function clearAllSessionsSqlite(): void {
-  const database = getDb();
-  database.prepare('DELETE FROM messages').run();
-  database.prepare('DELETE FROM sessions').run();
-}
+export function clearAllSessionsSqlite(): void { transaction(() => getDb().exec('DELETE FROM sessions')); }

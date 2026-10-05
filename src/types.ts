@@ -299,6 +299,8 @@ export interface ChatMessage {
 
 export interface SessionItem {
   id: string;
+  cliSessionId?: string;
+  executionContext?: ChatMessage[];
   title: string;
   projectId?: string;
   isArchived?: boolean;
@@ -575,6 +577,7 @@ export interface AppVersionItem {
   workspaceDir: string;
   changedFiles: string[];
   snapshotDirName: string;
+  manifest?: Record<string, { exists: boolean; mode?: number; sha256?: string }>;
   isBackup?: boolean;
 }
 
