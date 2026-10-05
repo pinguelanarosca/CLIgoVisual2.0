@@ -198,7 +198,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   const toolCallsList = data.output.toolCalls || message.toolCalls || [];
   const toolDeclarations = activeRequestObj?.tools?.[0]?.functionDeclarations || [];
 
-  const resolvedModel = activeRequestObj?.model || agent?.model || 'models/gemini-2.5-flash';
+  const resolvedModel = activeRequestObj?.model || agent?.model || 'models/gemini-3.1-flash-lite';
   const genConfig = activeRequestObj?.generationConfig || {};
   const tempVal = genConfig.temperature !== undefined ? genConfig.temperature : '0.2';
   const topPVal = genConfig.topP !== undefined ? genConfig.topP : '0.95';

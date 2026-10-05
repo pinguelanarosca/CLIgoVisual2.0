@@ -100,9 +100,9 @@ export const ModelSelectorModal: React.FC<ModelSelectorModalProps> = ({
         <div className="bg-blue-50/80 dark:bg-blue-950/40 border-b border-blue-200/60 dark:border-blue-900/60 px-4 sm:px-5 py-2.5 flex items-start sm:items-center gap-2.5 text-xs text-blue-900 dark:text-blue-200 shrink-0">
           <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5 sm:mt-0" />
           <div className="leading-snug">
-            <span className="font-semibold">Prioridade prática para uso geral de texto: </span>
+            <span className="font-semibold">Prioridade prática por capacidade (RPD primeiro): </span>
             <span className="font-mono text-[11px] text-blue-800 dark:text-blue-300">
-              Gemini 3.8 Flash → 3.7 → 3.6 → 3.5 → 3 → 3.1 Flash Lite → 2.5 Flash → 2.5 Flash Lite → 3.5 Flash Lite
+              gemini-3.5-flash-lite / gemini-3.1-flash-lite (RPD 500) → gemini-3.8-flash → 3.7 → 3.6 → 3.5 → 3-flash (RPD 20)
             </span>
           </div>
         </div>

@@ -128,15 +128,15 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
     {
       role: 'Principal / Orchestrator',
       id: 'principal',
-      primaryModel: 'gemini-3.5-flash-lite',
-      defaultFallbackModel: 'gemini-3.1-flash-lite',
-      quota: '1.5k RPM / 500 RPD',
+      primaryModel: 'gemini-3.1-flash-lite',
+      defaultFallbackModel: 'gemini-3.5-flash-lite',
+      quota: '150 RPM / 500 RPD',
     },
     {
       role: 'Investigator',
       id: 'investigator',
       primaryModel: 'gemini-3.7-flash',
-      defaultFallbackModel: 'gemini-3.6-flash',
+      defaultFallbackModel: 'gemini-3.5-flash',
       quota: '50 RPM / 20 RPD',
     },
     {
@@ -156,16 +156,16 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
     {
       role: 'Tester',
       id: 'tester',
-      primaryModel: 'gemini-3-flash',
-      defaultFallbackModel: 'gemini-3.1-flash-lite',
+      primaryModel: 'gemini-3.5-flash',
+      defaultFallbackModel: 'gemini-3-flash',
       quota: '50 RPM / 20 RPD',
     },
     {
       role: 'Worker',
       id: 'worker',
-      primaryModel: 'gemini-3.1-flash-lite',
-      defaultFallbackModel: 'gemini-3.5-flash-lite',
-      quota: '150 RPM / 500 RPD',
+      primaryModel: 'gemini-3.5-flash-lite',
+      defaultFallbackModel: 'gemini-3.1-flash-lite',
+      quota: '1.5k RPM / 500 RPD',
     },
   ];
 
@@ -215,7 +215,7 @@ export const ModelCatalogView: React.FC<ModelCatalogViewProps> = ({
       group: 'stable',
       title: '1. Texto, Chat e Raciocínio',
       icon: Cpu,
-      priorityNote: 'Prioridade prática de uso: Gemini 3.8 Flash → 3.7 → 3.6 → 3.5 → 3 → 3.1 Flash Lite → 2.5 Flash → 2.5 Flash Lite → 3.5 Flash Lite.',
+      priorityNote: 'Prioridade de seleção por capacidade (RPD): gemini-3.5-flash-lite / gemini-3.1-flash-lite (RPD 500) → Família Flash RPD 20 (3.8 Flash, 3.7 Flash, 3.6 Flash, 3.5 Flash, 3 Flash).',
     },
     {
       group: 'audio',

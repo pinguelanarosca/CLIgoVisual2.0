@@ -277,7 +277,7 @@ export const RawPayloadViewer: React.FC<RawPayloadViewerProps> = ({ data, isUser
                   <div className="p-2.5 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-between">
                     <div>
                       <span className="text-zinc-500">Modelo Efetivo Resolvido:</span>{' '}
-                      <code className="text-emerald-400 font-bold text-xs">{activeRequestObj.model || 'models/gemini-2.5-flash'}</code>
+                      <code className="text-emerald-400 font-bold text-xs">{activeRequestObj.model || 'models/gemini-3.1-flash-lite'}</code>
                     </div>
                     <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-400">
                       {data.parameterOrigins?.['model']?.source || 'Gemini CLI Target'}
