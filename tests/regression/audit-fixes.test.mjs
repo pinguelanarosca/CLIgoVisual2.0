@@ -401,6 +401,56 @@ test('API key: pool, ranking e failover K1→K2 continuam funcionando para princ
   }
 });
 
+const dualKeyNotice = 'Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.';
+test('Aviso de duas variáveis sozinho não transforma sucesso em falha de autenticação', async t => {
+  const f = cliFixture(t, child => { child.stderr.write(dualKeyNotice); child.emit('close', 0, null); },
+    { selectedType: 'gemini-api-key', keys: { K1: 'fixture-k1' } });
+  assert.equal((await f.execute()).code, 0);
+  assert.equal(f.invocations.length, 1); assert.equal(f.results[0][2].success, true);
+});
+test('Aviso não mascara API_KEY_INVALID, chave inválida, 401 ou 403 no mesmo stderr/resultado', async t => {
+  for (const [message, structured] of [['API_KEY_INVALID: API key not valid (400)', false], ['invalid api key (400)', false], ['HTTP 401 unauthenticated', false], ['HTTP 403 unauthorized', false], ['API_KEY_INVALID: API key not valid (400)', true]]) {
+    const f = cliFixture(t, child => {
+      child.stderr.write(dualKeyNotice + (structured ? '' : ' ' + message));
+      if (structured) child.stdout.write(JSON.stringify({ type: 'result', status: 'error', error: { message } }) + '\n');
+      child.emit('close', 1, null);
+    }, { selectedType: 'gemini-api-key', keys: { K1: 'fixture-k1' }, fastTimers: true });
+    const result = await f.execute({ fallbackModel: 'fallback-model' });
+    assert.equal(result.code, 1);
+    assert.match(f.events.filter(event => event.type === 'process_error').at(-1).data.message, /autenticação/i, message);
+    assert.equal(f.invocations.length, 1); // Auth inválida não ganha um novo fallback de modelo.
+  }
+});
+test('API_KEY_INVALID com aviso aciona K1→K2 para principal e subagente sem perder invoke_agent', async t => {
+  for (const agentId of ['principal', 'worker']) {
+    const f = cliFixture(t, (child, attempt) => {
+      child.stderr.write(dualKeyNotice);
+      for (const event of attempt === 1 ? [{ type: 'result', status: 'error', error: { message: 'API_KEY_INVALID: API key not valid (400)' } }]
+        : [{ type: 'tool_use', tool_name: 'invoke_agent', tool_id: 'invoke-auth', parameters: { agent_name: 'worker' } },
+          { type: 'tool_result', tool_name: 'invoke_agent', tool_id: 'invoke-auth', status: 'success', output: 'OK' }, { type: 'result', status: 'success' }]) child.stdout.write(JSON.stringify(event) + '\n');
+      child.emit('close', attempt === 1 ? 1 : 0, null);
+    }, { selectedType: 'gemini-api-key', keys: { K1: 'fixture-k1', K2: 'fixture-k2' }, fastTimers: true });
+    assert.equal((await f.execute({ agentId, fallbackModel: 'fallback-model' })).code, 0);
+    assert.deepEqual(f.invocations.map(call => call.options.env.GEMINI_API_KEY), ['fixture-k1', 'fixture-k2']);
+    assert.ok(f.events.some(event => event.data?.content?.includes('Key Pool Failover')));
+    assert.ok(f.events.some(event => event.data?.tool_name === 'invoke_agent'));
+    assert.ok(!f.events.some(event => event.data?.content?.includes('Modelo de Fallback Acionado')));
+  }
+});
+test('Modelo de fallback só entra após esgotar chaves do modelo original, preservando identidade e contexto', async t => {
+  const f = cliFixture(t, (child, attempt) => {
+    child.stderr.write(dualKeyNotice);
+    child.stdout.write(JSON.stringify(attempt < 3 ? { type: 'result', status: 'error', error: { message: attempt === 1 ? 'API_KEY_INVALID: API key not valid (400)' : 'RESOURCE_EXHAUSTED quota 429' } } : { type: 'result', status: 'success' }) + '\n');
+    child.emit('close', attempt < 3 ? 1 : 0, null);
+  }, { selectedType: 'gemini-api-key', keys: { K1: 'fixture-k1', K2: 'fixture-k2' }, fastTimers: true });
+  assert.equal((await f.execute({ agentId: 'principal', fallbackModel: 'fallback-model' })).code, 0);
+  assert.deepEqual(f.invocations.map(call => call.options.env.GEMINI_API_KEY), ['fixture-k1', 'fixture-k2', 'fixture-k1']);
+  assert.ok(f.invocations.slice(0, 2).every(call => !call.args.includes('fallback-model')));
+  assert.ok(f.invocations[2].args.includes('fallback-model')); assert.match(f.invocations[2].system, /memória validada/);
+  const messages = f.events.filter(event => event.data?.content).map(event => event.data.content);
+  assert.ok(messages.findIndex(text => text.includes('Key Pool Failover')) < messages.findIndex(text => text.includes('Modelo de Fallback Acionado')));
+});
+
 test('OAuth: fallback de modelo mantém método, contexto e identidade sem consultar Key Pool', async t => {
   const f = cliFixture(t, (child, attempt) => {
     child.stdout.write(JSON.stringify(attempt === 1 ? { type: 'result', status: 'error', error: { message: 'RESOURCE_EXHAUSTED quota 429' } } : { type: 'result', status: 'success' }) + '\n');

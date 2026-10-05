@@ -1982,23 +1982,26 @@ export function executeGeminiCli(
         const combinedErrText = (stderrText + ' ' + reportedErrorText).toLowerCase();
         const apiErrCode = getApiErrorCode(code, stderrText, reportedErrorText);
 
-        const isAuthNotice = stderrText.includes('Both GOOGLE_API_KEY and GEMINI_API_KEY are set');
-        const isAuthError = !isAuthNotice && (
-          stderrText.includes('Please set an Auth method') ||
-          combinedErrText.includes('api_key_invalid') ||
-          combinedErrText.includes('api key not valid') ||
-          combinedErrText.includes('invalid api key') ||
-          combinedErrText.includes('key not valid') ||
-          combinedErrText.includes('unauthenticated') ||
-          combinedErrText.includes('401') ||
-          combinedErrText.includes('403') ||
-          (stderrText.includes('GEMINI_API_KEY') && (
-            stderrText.includes('not set') ||
-            stderrText.includes('missing') ||
-            stderrText.includes('unauthorized') ||
-            stderrText.includes('invalid') ||
-            stderrText.includes('required') ||
-            stderrText.includes('não foi encontrada')
+        // Ignore only the CLI's informational notice, including when a real
+        // error follows it on the same line. Keep the original stderr in logs.
+        const authStderrText = stderrText.replace(/Both GOOGLE_API_KEY and GEMINI_API_KEY are set(?:\. Using GOOGLE_API_KEY\.)?/g, '');
+        const authErrorText = (authStderrText + ' ' + reportedErrorText).toLowerCase();
+        const isAuthError = (
+          authStderrText.includes('Please set an Auth method') ||
+          authErrorText.includes('api_key_invalid') ||
+          authErrorText.includes('api key not valid') ||
+          authErrorText.includes('invalid api key') ||
+          authErrorText.includes('key not valid') ||
+          authErrorText.includes('unauthenticated') ||
+          authErrorText.includes('401') ||
+          authErrorText.includes('403') ||
+          (authStderrText.includes('GEMINI_API_KEY') && (
+            authStderrText.includes('not set') ||
+            authStderrText.includes('missing') ||
+            authStderrText.includes('unauthorized') ||
+            authStderrText.includes('invalid') ||
+            authStderrText.includes('required') ||
+            authStderrText.includes('não foi encontrada')
           ))
         );
 
@@ -2052,8 +2055,8 @@ export function executeGeminiCli(
         if (hasUnresolvedToolCalls) {
           for (const unres of activeToolCalls.values()) {
             let toolFailureReason = reportedErrorText;
-            if (!toolFailureReason && stderrText.trim() && !isAuthNotice) {
-              toolFailureReason = stderrText.trim();
+            if (!toolFailureReason && authStderrText.trim()) {
+              toolFailureReason = authStderrText.trim();
             }
             if (isQuotaError) {
               toolFailureReason = 'Cota de requisições excedida na API Gemini (Erro 429 / Quota Exceeded / RESOURCE_EXHAUSTED) durante a execução do subagente.';
