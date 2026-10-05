@@ -74,6 +74,21 @@ export const AgentsSettingsSection: React.FC<AgentsSettingsSectionProps> = ({
             <Plus className="w-3.5 h-3.5" />
             <span>Novo Agente</span>
           </button>
+          {onSelectAgent && (
+            <button
+              type="button"
+              onClick={() => onSelectAgent(selectedAgentId === 'all' ? 'principal' : 'all')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shrink-0 ${
+                selectedAgentId === 'all'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+              }`}
+              title="Ativa o modo de evocação simultânea de todos os agentes no chat"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+              <span>{selectedAgentId === 'all' ? 'Modo Simultâneo Ativo' : 'Evocar Todos Simultaneamente'}</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={async () => {

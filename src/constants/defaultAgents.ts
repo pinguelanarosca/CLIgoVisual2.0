@@ -6,15 +6,15 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     name: 'principal',
     displayName: 'Principal / Orchestrator',
     role: 'Principal/Orchestrator: coordenação, roteamento e consolidação.',
-    model: 'gemini-3.5-flash-lite',
-    fallbackModel: 'gemini-3.1-flash-lite',
+    model: 'gemini-3.1-flash-lite',
+    fallbackModel: 'gemini-3.5-flash-lite',
     description: 'Coordenação geral, decomposição de tarefas complexas, roteamento e delegação estruturada para agentes especializados (investigator, architect, auditor, tester, worker) e consolidação dos resultados.',
     baseInstructions: `Você é o Principal Orchestrator do Gemini CLI.
 
 Sua função primária:
 - Coordenar o trabalho, interpretar a solicitação e decidir a estratégia de execução.
 - Executar diretamente tarefas simples, objetivas e de baixo risco.
-- Delegar tarefas complexas ou especializadas ao subagente mais adequado.
+- Delegar tarefas complexas ou especializadas ao subagente mais adequado, podendo evocar múltiplos ou todos os agentes simultaneamente em paralelo quando a tarefa demandar visões conjuntas ou quando solicitado pelo usuário.
 - Consolidar os resultados dos subagentes e apresentar uma resposta única e coerente.
 
 Diretrizes operacionais:
@@ -47,8 +47,8 @@ Diretrizes operacionais:
     name: 'investigator',
     displayName: 'Investigator',
     role: 'Investigator: investigação, pesquisa e diagnóstico.',
-    model: 'gemini-3.6-flash',
-    fallbackModel: 'gemini-3.5-flash-lite',
+    model: 'gemini-3.7-flash',
+    fallbackModel: 'gemini-3.5-flash',
     description: 'Agente especializado em investigação profunda de código, busca e rastreamento de bugs, pesquisa em fontes e diagnóstico técnico empírico com evidências.',
     baseInstructions: `Você é o Investigator do Gemini CLI.
 
@@ -85,7 +85,7 @@ Diretrizes operacionais:
     displayName: 'Architect',
     role: 'Architect: decisões arquiteturais e estruturais.',
     model: 'gemini-3.6-flash',
-    fallbackModel: 'gemini-3.5-flash-lite',
+    fallbackModel: 'gemini-3.7-flash',
     description: 'Agente especializado em design de sistemas, arquitetura de software, modularidade, desacoplamento, contratos de interfaces e integridade estrutural.',
     baseInstructions: `Você é o Architect do Gemini CLI.
 
@@ -120,8 +120,8 @@ Diretrizes operacionais:
     name: 'auditor',
     displayName: 'Auditor',
     role: 'Auditor: revisão crítica e identificação de problemas.',
-    model: 'gemini-3.6-flash',
-    fallbackModel: 'gemini-3.5-flash-lite',
+    model: 'gemini-3.8-flash',
+    fallbackModel: 'gemini-3.6-flash',
     description: 'Agente especializado em revisão crítica rigorosa de código, auditoria de segurança, detecção de regressões, conformidade e análise de vulnerabilidades.',
     baseInstructions: `Você é o Auditor do Gemini CLI.
 
@@ -157,8 +157,8 @@ Diretrizes operacionais:
     name: 'tester',
     displayName: 'Tester',
     role: 'Tester: testes e validação.',
-    model: 'gemini-3.6-flash',
-    fallbackModel: 'gemini-3.1-flash-lite',
+    model: 'gemini-3.5-flash',
+    fallbackModel: 'gemini-3-flash',
     description: 'Agente especializado em criação e execução de testes automatizados (unitários, integração e e2e), validação comportamental e análise de falhas.',
     baseInstructions: `Você é o Tester do Gemini CLI.
 
@@ -194,8 +194,8 @@ Diretrizes operacionais:
     name: 'worker',
     displayName: 'Worker',
     role: 'Worker: tarefas repetitivas e de alto volume.',
-    model: 'gemini-3.1-flash-lite',
-    fallbackModel: 'gemini-3.5-flash-lite',
+    model: 'gemini-3.5-flash-lite',
+    fallbackModel: 'gemini-3.1-flash-lite',
     description: 'Agente especializado em tarefas de alto volume, geração de código boilerplate, refatorações diretas, transformações em lote e implementação de rotina.',
     baseInstructions: `Você é o Worker do Gemini CLI.
 

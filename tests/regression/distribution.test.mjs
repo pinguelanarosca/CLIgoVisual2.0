@@ -31,18 +31,17 @@ function repo(t) {
 function models(source) {
   return [...source.matchAll(/id: '(principal|investigator|architect|auditor|tester|worker)'[\s\S]*?model: '([^']+)'[\s\S]*?fallbackModel: '([^']+)'/g)].map(m => m.slice(1));
 }
-test('Catálogos e fallbacks permanecem exatamente iguais ao estado anterior à auditoria', () => {
-  const backend = [
-    ['principal', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
-    ['investigator', 'gemini-3.7-flash', 'gemini-3.6-flash'],
+test('Catálogos e fallbacks unificados entre frontend e backend com prioridade RPD', () => {
+  const expected = [
+    ['principal', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'],
+    ['investigator', 'gemini-3.7-flash', 'gemini-3.5-flash'],
     ['architect', 'gemini-3.6-flash', 'gemini-3.7-flash'],
-    ['auditor', 'gemini-3.6-flash', 'gemini-3.7-flash'],
-    ['tester', 'gemini-3-flash', 'gemini-3.1-flash-lite'],
-    ['worker', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'],
+    ['auditor', 'gemini-3.8-flash', 'gemini-3.6-flash'],
+    ['tester', 'gemini-3.5-flash', 'gemini-3-flash'],
+    ['worker', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
   ];
-  const frontend = backend.map(row => row[0] === 'auditor' ? ['auditor', 'gemini-3.8-flash', 'gemini-3.6-flash'] : row);
-  assert.deepEqual(models(fs.readFileSync(path.join(root, 'server/agents-service.ts'), 'utf8')), backend);
-  assert.deepEqual(models(fs.readFileSync(path.join(root, 'src/constants/defaultAgents.ts'), 'utf8')), frontend);
+  assert.deepEqual(models(fs.readFileSync(path.join(root, 'server/agents-service.ts'), 'utf8')), expected);
+  assert.deepEqual(models(fs.readFileSync(path.join(root, 'src/constants/defaultAgents.ts'), 'utf8')), expected);
 });
 test('Snapshot preserva fonte atual, exclusões e commit sem incluir artefatos ou configuração Git local', t => {
   const source = repo(t), output = path.join(fixture(t), 'source');

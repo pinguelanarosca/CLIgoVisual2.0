@@ -720,12 +720,12 @@ export interface CliExecutionParams {
 }
 
 export const AGENT_FALLBACK_CHAINS: Record<string, string[]> = {
-  auditor: ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite'],
-  investigator: ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'],
+  principal: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'],
+  worker: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+  auditor: ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'],
+  investigator: ['gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'],
   architect: ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite'],
-  principal: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash'],
-  tester: ['gemini-3-flash', 'gemini-3.5-flash-lite'],
-  worker: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'],
+  tester: ['gemini-3.5-flash', 'gemini-3-flash', 'gemini-3.5-flash-lite'],
 };
 
 export function normalizeCliModelName(rawModel?: string): string {
@@ -1240,7 +1240,9 @@ export function executeGeminiCli(
       const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : cwd}.\nSempre inspecione e responda com base nos arquivos localizados neste diretório.\n---\n`;
 
       // Resolve agent and factual configured model from disk
-      let agentId = (params.agentId || '').toLowerCase().trim();
+      let rawAgentId = (params.agentId || '').toLowerCase().trim();
+      const isInvokeAll = rawAgentId === 'all';
+      let agentId = isInvokeAll ? 'principal' : rawAgentId;
       const allDiscoveredAgents = loadAgents(cwd);
       const configuredAgent = allDiscoveredAgents.find(
         (a) => a.id.toLowerCase() === agentId || a.name.toLowerCase() === agentId
@@ -1387,18 +1389,34 @@ export function executeGeminiCli(
       }
 
       // Injetar Protocolo de Delegação de Subagentes para o Agente Principal / Orquestrador
-      const isOrchestrator = !agentId || agentId === 'principal' || agentId.includes('orchestrator');
+      const isOrchestrator = !agentId || agentId === 'principal' || agentId.includes('orchestrator') || isInvokeAll;
+      const promptRequestsAllAgents = Boolean(
+        params.prompt &&
+        (/(evoc|cham|execut|consult|dispar).*todos.*agente/i.test(params.prompt) ||
+        /@todos\b/i.test(params.prompt || '') ||
+        /\/todos\b/i.test(params.prompt || ''))
+      );
+
       if (isOrchestrator && availableSubagents.length > 0) {
         const subagentsList = availableSubagents
           .map((a) => `  * ${a.name}: ${a.role || a.description}`)
           .join('\n');
+
+        const invokeAllDirectives = (isInvokeAll || promptRequestsAllAgents)
+          ? `\n[MODO ATIVO: EVOCAÇÃO SIMULTÂNEA DE TODOS OS AGENTES]
+O usuário solicitou expressamente a evocação simultânea de todos os agentes.
+Você DEVE emitir chamadas da ferramenta 'invoke_agent' SIMULTANEAMENTE em paralelo para TODOS os ${availableSubagents.length} subagentes especializados disponíveis:
+${availableSubagents.map((a) => `  - invoke_agent(agent_name='${a.name}', prompt='Instrução clara adaptada ao papel de ${a.name} para analisar e contribuir com a solicitação do usuário')`).join('\n')}
+Emita TODAS as chamadas em paralelo nesta mesma resposta. Ao receber as respostas de todos os subagentes em paralelo, sintetize um relatório técnico estruturado e unificado consolidando as análises de cada um.\n`
+          : '';
+
         const delegationProtocol = `\n\n[PROTOCOLO DE ATENDIMENTO E DELEGAÇÃO DE SUBAGENTES]
 Você é o orquestrador principal do Gemini CLI.
 DIRETRIZES DE ATENDIMENTO E DELEGAÇÃO:
-1. RESPONDA DIRETAMENTE ao usuário sempre que possível, oferecendo respostas claras, estruturadas e completas.
-2. NUNCA delegue para perguntas gerais, conversas ou solicitações simples.
-3. Se o usuário solicitar explicitamente uma análise profunda ou especialista de um tema específico (ex: auditoria de segurança, arquitetura), acione a ferramenta 'invoke_agent' para NO MÁXIMO UM subagente especializado por vez.
-4. É ESTRITAMENTE PROIBIDO disparar múltiplos subagentes simultaneamente em paralelo, a menos que o usuário peça explicitamente "execute todos os subagentes em paralelo".
+1. RESPONDA DIRETAMENTE ao usuário sempre que possível para perguntas gerais, conversas e solicitações simples.
+2. DELEGAÇÃO ESPECIALIZADA: Se o usuário solicitar uma análise técnica aprofundada (arquitetura, auditoria, testes, investigação ou tarefas práticas), acione a ferramenta 'invoke_agent' para o(s) subagente(s) adequado(s).
+3. EVOCAÇÃO SIMULTÂNEA: É TOTALMENTE PERMITIDO e SUPORTADO evocar subagentes simultaneamente em paralelo (emitindo múltiplas chamadas 'invoke_agent' na mesma rodada) sempre que a solicitação demandar visões multidisciplinares conjuntas (ex: arquiteto + auditor + tester) ou quando o usuário solicitar evocar/consultar todos os agentes ao mesmo tempo.
+4. Quando solicitado evocar todos os agentes simultaneamente, acione em paralelo todos os subagentes disponíveis (${availableSubagents.map((a) => a.name).join(', ')}), aguarde os retornos e consolide as conclusões em um parecer final unificado.${invokeAllDirectives}
 Subagentes disponíveis no sistema:
 ${subagentsList}
 ---
@@ -1671,8 +1689,14 @@ ${subagentsList}
                   parsed.data?.tool_id ||
                   parsed.data?.id;
 
-                const prevCall = callId ? activeToolCalls.get(callId) : undefined;
-                if (callId) {
+                let prevCall = callId ? activeToolCalls.get(callId) : undefined;
+                if (!prevCall && !callId && activeToolCalls.size === 1) {
+                  const entry = activeToolCalls.entries().next().value;
+                  if (entry) {
+                    prevCall = entry[1];
+                    activeToolCalls.delete(entry[0]);
+                  }
+                } else if (callId) {
                   activeToolCalls.delete(callId);
                 }
 

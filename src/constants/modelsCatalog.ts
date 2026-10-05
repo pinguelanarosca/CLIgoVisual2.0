@@ -1,9 +1,35 @@
 import { ModelCatalogItem } from '../types.js';
 
 export const MODELS_CATALOG: ModelCatalogItem[] = [
-  // 1. Texto, chat, raciocínio e geração textual
+  // 1. Texto, chat, raciocínio e geração textual (Prioridade: RPD restante > RPM disponível > adequação ao agente > potência)
   {
     order: 1,
+    id: 'gemini-3.5-flash-lite',
+    name: 'Gemini 3.5 Flash Lite',
+    rpm: '1 / 1521',
+    tpm: '250K',
+    rpd: '1 / 500',
+    category: 'Txt Out',
+    group: 'stable',
+    groupName: '1. Texto, chat, raciocínio e geração textual',
+    description: 'Maior capacidade diária e teto de requisições por minuto (RPD 500 / RPM 1521). Otimizado para Worker e tarefas contínuas de alto volume.',
+    recommendedRole: 'Worker',
+  },
+  {
+    order: 2,
+    id: 'gemini-3.1-flash-lite',
+    name: 'Gemini 3.1 Flash Lite',
+    rpm: '0 / 150',
+    tpm: '250K',
+    rpd: '0 / 500',
+    category: 'Txt Out',
+    group: 'stable',
+    groupName: '1. Texto, chat, raciocínio e geração textual',
+    description: 'Alta capacidade diária (RPD 500) e cadência contínua. Alocado para o Principal / Orchestrator para coordenação e roteamento ininterruptos.',
+    recommendedRole: 'Principal / Orchestrator',
+  },
+  {
+    order: 3,
     id: 'gemini-3.8-flash',
     name: 'Gemini 3.8 Flash',
     rpm: '0 / 50',
@@ -16,7 +42,7 @@ export const MODELS_CATALOG: ModelCatalogItem[] = [
     recommendedRole: 'Auditor',
   },
   {
-    order: 2,
+    order: 4,
     id: 'gemini-3.7-flash',
     name: 'Gemini 3.7 Flash',
     rpm: '0 / 50',
@@ -29,7 +55,7 @@ export const MODELS_CATALOG: ModelCatalogItem[] = [
     recommendedRole: 'Investigator',
   },
   {
-    order: 3,
+    order: 5,
     id: 'gemini-3.6-flash',
     name: 'Gemini 3.6 Flash',
     rpm: '0 / 50',
@@ -42,7 +68,7 @@ export const MODELS_CATALOG: ModelCatalogItem[] = [
     recommendedRole: 'Architect',
   },
   {
-    order: 4,
+    order: 6,
     id: 'gemini-3.5-flash',
     name: 'Gemini 3.5 Flash',
     rpm: '0 / 50',
@@ -51,10 +77,11 @@ export const MODELS_CATALOG: ModelCatalogItem[] = [
     category: 'Txt Out',
     group: 'stable',
     groupName: '1. Texto, chat, raciocínio e geração textual',
-    description: 'Equilíbrio sólido entre geração de código, velocidade e operações de texto multimodais.',
+    description: 'Equilíbrio sólido entre geração de código, velocidade e testes automatizados.',
+    recommendedRole: 'Tester',
   },
   {
-    order: 5,
+    order: 7,
     id: 'gemini-3-flash',
     name: 'Gemini 3 Flash',
     rpm: '0 / 50',
@@ -64,23 +91,9 @@ export const MODELS_CATALOG: ModelCatalogItem[] = [
     group: 'stable',
     groupName: '1. Texto, chat, raciocínio e geração textual',
     description: 'Validação ágil de comportamentos, construção de suítes de testes automatizados e checagem de regressões.',
-    recommendedRole: 'Tester',
   },
   {
-    order: 6,
-    id: 'gemini-3.1-flash-lite',
-    name: 'Gemini 3.1 Flash Lite',
-    rpm: '0 / 150',
-    tpm: '250K',
-    rpd: '0 / 500',
-    category: 'Txt Out',
-    group: 'stable',
-    groupName: '1. Texto, chat, raciocínio e geração textual',
-    description: 'Alta cadência de requisições, refatoração de boilerplate e execução contínua de tarefas repetitivas.',
-    recommendedRole: 'Worker',
-  },
-  {
-    order: 7,
+    order: 8,
     id: 'gemini-2.5-flash',
     name: 'Gemini 2.5 Flash',
     rpm: '0 / 50',
@@ -92,7 +105,7 @@ export const MODELS_CATALOG: ModelCatalogItem[] = [
     description: 'Geração estável consolidada para produção com suporte amplo a ferramentas padrão.',
   },
   {
-    order: 8,
+    order: 9,
     id: 'gemini-2.5-flash-lite',
     name: 'Gemini 2.5 Flash Lite',
     rpm: '0 / 100',
@@ -102,19 +115,6 @@ export const MODELS_CATALOG: ModelCatalogItem[] = [
     group: 'stable',
     groupName: '1. Texto, chat, raciocínio e geração textual',
     description: 'Versão ultra-leve para processamento rápido, baixa latência e menor overhead.',
-  },
-  {
-    order: 9,
-    id: 'gemini-3.5-flash-lite',
-    name: 'Gemini 3.5 Flash Lite',
-    rpm: '1 / 1521',
-    tpm: '250K',
-    rpd: '1 / 500',
-    category: 'Txt Out',
-    group: 'stable',
-    groupName: '1. Texto, chat, raciocínio e geração textual',
-    description: 'Coordenação geral, roteamento e maior teto de requisições por minuto disponível no sistema.',
-    recommendedRole: 'Principal / Orchestrator',
   },
 
   // 2. Voz, transcrição, tradução e áudio em tempo real

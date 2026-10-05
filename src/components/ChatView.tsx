@@ -557,9 +557,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     };
                   }
                   if (type === 'command' || type === 'invoke_agent') {
+                    const isAll = selectedAgentId === 'all';
                     return {
                       state: 'executando',
-                      label: title || 'Executando comando no terminal...',
+                      label: title || (type === 'invoke_agent'
+                        ? (isAll ? 'Evocando todos os agentes simultaneamente em paralelo...' : 'Evocando subagente especializado...')
+                        : 'Executando comando no terminal...'),
                     };
                   }
                   return {
@@ -1165,6 +1168,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   onChange={(e) => onSelectAgent(e.target.value)}
                   className="bg-transparent text-[10.5px] font-medium text-zinc-200 outline-hidden cursor-pointer"
                 >
+                  <option value="all" className="bg-zinc-950 text-indigo-300 font-semibold">
+                    ⚡ Todos os Agentes (Simultâneo)
+                  </option>
                   {(agents && agents.length > 0 ? agents : DEFAULT_AGENTS).map((agent) => (
                     <option key={agent.id} value={agent.id} className="bg-zinc-950 text-zinc-200">
                       {agent.displayName || agent.name} ({formatModelName(agent.model)})
@@ -1173,8 +1179,31 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </select>
               </div>
 
+              {/* Quick Toggle for Simultaneous All Agents */}
+              <button
+                type="button"
+                onClick={() => onSelectAgent(selectedAgentId === 'all' ? 'principal' : 'all')}
+                title={selectedAgentId === 'all' ? 'Voltar ao Agente Principal' : 'Evocar todos os agentes simultaneamente em paralelo'}
+                className={`flex items-center gap-1 border rounded px-1.5 py-0.5 text-[10px] font-semibold transition cursor-pointer ${
+                  selectedAgentId === 'all'
+                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-2xs'
+                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-indigo-300 hover:border-indigo-800/60'
+                }`}
+              >
+                <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
+                <span>{selectedAgentId === 'all' ? 'Simultâneo Ativo' : 'Evocar Todos'}</span>
+              </button>
+
               {/* Active Model Indicator Chip */}
-              {currentAgent && (
+              {selectedAgentId === 'all' ? (
+                <div
+                  className="flex items-center gap-1 bg-indigo-950/60 border border-indigo-700/60 rounded px-1.5 py-0.5 text-indigo-300 text-[10px] font-mono font-semibold"
+                  title="Orquestrador Principal delegando simultaneamente para Investigator, Architect, Auditor, Tester e Worker em paralelo"
+                >
+                  <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
+                  <span>Todos os Agentes (6 Modelos em Paralelo)</span>
+                </div>
+              ) : currentAgent && (
                 <div
                   className="flex items-center gap-1 bg-blue-950/40 border border-blue-800/50 rounded px-1.5 py-0.5 text-blue-300 text-[10px] font-mono font-semibold"
                   title={`Modelo operacional do agente ${currentAgent.displayName || currentAgent.name}: ${currentAgent.model}`}

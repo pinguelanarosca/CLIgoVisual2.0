@@ -651,7 +651,7 @@ export function App() {
         body: JSON.stringify({
           executionId: execId,
           prompt: promptText,
-          model: currentAgent?.model,
+          model: selectedAgentId === 'all' ? 'gemini-3.1-flash-lite' : currentAgent?.model,
           approvalMode,
           authorizedDirs: authorizedDirs.map((d) => d.path),
           sessionId: resolvedCliSessionId,
@@ -660,8 +660,8 @@ export function App() {
           resetContext: contextCompressed || (!cliSessionId && messages.length > 0),
           contextMessages: toExecutorContext(activeBaseMessages),
           workDir,
-          agentId: currentAgent?.id || currentAgent?.name,
-          fallbackModel: currentAgent?.fallbackModel,
+          agentId: selectedAgentId === 'all' ? 'all' : (currentAgent?.id || currentAgent?.name),
+          fallbackModel: selectedAgentId === 'all' ? 'gemini-3.5-flash-lite' : currentAgent?.fallbackModel,
           temperature: currentAgent?.temperature,
           topP: currentAgent?.topP,
           topK: currentAgent?.topK,
@@ -709,8 +709,10 @@ export function App() {
           rawEvents: rawEventsList,
           toolCalls: currentToolCalls,
           isStreaming: true,
-          agentName: currentAgent?.displayName || currentAgent?.name,
-          model: currentAgent?.model || 'gemini-3.5-flash-lite',
+          agentName: selectedAgentId === 'all'
+            ? 'Todos os Agentes (Simultâneo)'
+            : (currentAgent?.displayName || currentAgent?.name),
+          model: selectedAgentId === 'all' ? 'gemini-3.1-flash-lite' : (currentAgent?.model || 'gemini-3.5-flash-lite'),
           error: hasError ? errorMessage : undefined,
         });
 

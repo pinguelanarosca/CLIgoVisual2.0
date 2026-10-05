@@ -669,3 +669,43 @@ test('ACP invalida sessões quando o HOME OAuth ou as configurações do perfil 
   const third = await manager.getOrCreateSession('same', params); assert.notEqual(second, third); assert.equal(second.isClosed, true);
   assert.equal(auth.poolCalls, 0); manager.removeSession('same');
 });
+
+test('Permite evocar todos os agentes simultaneamente em paralelo via invoke_agent', async t => {
+  const subagents = ['investigator', 'architect', 'auditor', 'tester', 'worker'];
+  const f = cliFixture(t, child => {
+    // Simula a evocação simultânea de todos os subagentes em paralelo pelo orquestrador
+    for (let i = 0; i < subagents.length; i++) {
+      child.stdout.write(JSON.stringify({
+        type: 'tool_use',
+        tool_name: 'invoke_agent',
+        tool_id: `invoke-${subagents[i]}`,
+        parameters: { agent_name: subagents[i], prompt: `Analise sob a ótica de ${subagents[i]}` }
+      }) + '\n');
+    }
+    for (let i = 0; i < subagents.length; i++) {
+      child.stdout.write(JSON.stringify({
+        type: 'tool_result',
+        tool_name: 'invoke_agent',
+        tool_id: `invoke-${subagents[i]}`,
+        status: 'success',
+        output: `Resultado de ${subagents[i]}`
+      }) + '\n');
+    }
+    child.stdout.write('{"type":"message","role":"assistant","content":"Relatório consolidado de todos os agentes."}\n');
+    child.stdout.write('{"type":"result","status":"success"}\n');
+    child.emit('close', 0, null);
+  }, {
+    selectedType: 'oauth-personal',
+    keys: {},
+    agents: [{ id: 'principal', name: 'principal' }, ...subagents.map(name => ({ id: name, name }))]
+  });
+
+  const outcome = await f.execute({ agentId: 'all', prompt: 'Evocar todos os agentes simultaneamente para análise completa' });
+  assert.equal(outcome.code, 0);
+  assert.ok(f.invocations[0].system.includes('invoke_agent'));
+  assert.ok(f.invocations[0].system.includes('EVOCAÇÃO SIMULTÂNEA'));
+  assert.equal(f.invocations[0].system.includes('ESTRITAMENTE PROIBIDO'), false);
+  const toolUses = f.events.filter(e => e.type === 'stream_event' && e.data?.type === 'tool_use' && e.data?.tool_name === 'invoke_agent');
+  assert.equal(toolUses.length, 5);
+});
+

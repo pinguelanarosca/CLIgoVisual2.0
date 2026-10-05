@@ -1,7 +1,7 @@
 import { resetAllAgentsToDefault, ensureAllAgentsSynchronizedAndAcknowledged, loadAgents } from '../server/agents-service.js';
 
 function run() {
-  console.log('=== APLICANDO ESTABILIZAÇÃO DE MODELOS DE AGENTES (GEMINI-3.6-FLASH & GEMINI-3.5-FLASH-LITE) ===\n');
+  console.log('=== APLICANDO ALOCAÇÃO DE MODELOS COM PRIORIDADE RPD (RPD 500: PRINCIPAL & WORKER) ===\n');
 
   // 1. Resetar para defaults estáveis
   const updated = resetAllAgentsToDefault();

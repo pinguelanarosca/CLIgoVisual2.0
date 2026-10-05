@@ -4,7 +4,7 @@ Interface gráfica e ambiente de trabalho profissional para o **Gemini CLI (v0.5
 
 **Versão 2.1.0:** respeita a autenticação Google/OAuth nativa do Gemini CLI, inclusive o diretório de credenciais do Snap. OAuth executa sem Key Pool e sem variáveis de API key no processo filho. Key Pool, ranking, failover de chaves, fallback de modelos e agentes/subagentes continuam disponíveis no modo aplicável. Status, validação e testes de agentes distinguem os métodos de autenticação, sem alterar credenciais pessoais.
 
-O catálogo efetivo foi conferido com o histórico anterior à auditoria. O default do Auditor no frontend continua sendo `gemini-3.8-flash` (fallback `gemini-3.6-flash`), divergência preexistente desde `397897f`; o backend e os arquivos persistidos usam `gemini-3.6-flash` (fallback `gemini-3.7-flash`). Nenhum desses modelos foi substituído pelas correções de autenticação.
+O catálogo efetivo de modelos dos agentes foi unificado e reorganizado segundo a política estrita de capacidade: **RPD restante > RPM disponível > adequação ao agente > potência**. Modelos de alto volume e uso contínuo (RPD 500) são priorizados no Principal e Worker. Frontend, backend, defaults e agentes persistidos exibem exatamente a mesma alocação sem divergências.
 
 ---
 
@@ -12,12 +12,12 @@ O catálogo efetivo foi conferido com o histórico anterior à auditoria. O defa
 
 - **Execução Real do Gemini CLI**: Interage diretamente com o processo CLI via terminal local e backend Node/Express (`server.ts`).
 - **Sistema Multi-Agente Integrado**:
-  - **Principal / Orchestrator** (`gemini-3.5-flash-lite`): Coordenação de fluxos e consolidação de respostas.
-  - **Investigator** (`gemini-3.7-flash`): Análise de bugs, rastreamento de causas e diagnóstico empírico.
-  - **Architect** (`gemini-3.6-flash`): Decisões arquiteturais, modularidade e padrões de projeto.
-  - **Auditor** (`gemini-3.6-flash` no backend e nos agentes salvos): Auditoria rigorosa de segurança, performance e regressões.
-  - **Tester** (`gemini-3-flash`): Criação de suítes de testes e validação empírica.
-  - **Worker** (`gemini-3.1-flash-lite`): Tarefas repetitivas, transformações em lote e boilerplate.
+  - **Principal / Orchestrator** (`gemini-3.1-flash-lite` → fallback `gemini-3.5-flash-lite`): Coordenação de fluxos e consolidação de respostas (RPD 500).
+  - **Investigator** (`gemini-3.7-flash` → fallback `gemini-3.5-flash`): Análise de bugs, rastreamento de causas e diagnóstico empírico.
+  - **Architect** (`gemini-3.6-flash` → fallback `gemini-3.7-flash`): Decisões arquiteturais, modularidade e padrões de projeto.
+  - **Auditor** (`gemini-3.8-flash` → fallback `gemini-3.6-flash`): Auditoria rigorosa de segurança, performance e regressões.
+  - **Tester** (`gemini-3.5-flash` → fallback `gemini-3-flash`): Criação de suítes de testes e validação empírica.
+  - **Worker** (`gemini-3.5-flash-lite` → fallback `gemini-3.1-flash-lite`): Tarefas repetitivas, transformações em lote e boilerplate (RPD 500).
 - **Git & Diff Viewer**: Visualizador unificado de alterações de código e histórico de arquivos modificados com destaque de sintaxe.
 - **Ditado por Voz com Reconhecimento Local**: Web Speech API com modo hands-free e feedback em tempo real.
 - **Gestão de Projetos e Diretórios Autorizados**: Alternância rápida de contexto e restrição de diretórios de execução.
