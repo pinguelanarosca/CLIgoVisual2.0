@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { getBestEligibleKey } from './key-pool-service.js';
+import { getBestEligibleKey, loadConfiguredKeys } from './key-pool-service.js';
+import { getGuiDataDir } from './paths-service.js';
 
 export type CliAuthMode = 'oauth' | 'api-key' | 'native' | 'none';
 export interface CliAuthentication {
@@ -65,9 +66,15 @@ export function resolveCliAuthentication(cwd = process.cwd(), env: NodeJS.Proces
   const systemPath = env.GEMINI_CLI_SYSTEM_SETTINGS_PATH || (process.platform === 'win32'
     ? 'C:\\ProgramData\\gemini-cli\\settings.json' : process.platform === 'darwin'
       ? '/Library/Application Support/GeminiCli/settings.json' : '/etc/gemini-cli/settings.json');
-  // Same precedence as the CLI. Executions already explicitly trust their workspace.
-  const files = [env.GEMINI_CLI_SYSTEM_DEFAULTS_PATH || path.join(path.dirname(systemPath), 'system-defaults.json'),
-    path.join(home, '.gemini', 'settings.json'), ...(path.resolve(cwd) !== path.resolve(home) ? [path.join(cwd, '.gemini', 'settings.json')] : []), systemPath];
+  const guiDataDir = typeof getGuiDataDir === 'function' ? getGuiDataDir() : path.join(home, '.local', 'share', 'gemini-gui');
+  const guiSettings = path.join(guiDataDir, '.gemini', 'settings.json');
+  const files = [
+    env.GEMINI_CLI_SYSTEM_DEFAULTS_PATH || path.join(path.dirname(systemPath), 'system-defaults.json'),
+    path.join(home, '.gemini', 'settings.json'),
+    ...(path.resolve(guiSettings) !== path.resolve(path.join(home, '.gemini', 'settings.json')) ? [guiSettings] : []),
+    ...(path.resolve(cwd) !== path.resolve(home) && path.resolve(cwd) !== path.resolve(guiDataDir) ? [path.join(cwd, '.gemini', 'settings.json')] : []),
+    systemPath
+  ];
   let selectedType: string | undefined, enforcedType: string | undefined;
   for (const file of files) {
     const auth = readSettings(file).security?.auth;
@@ -119,8 +126,11 @@ export function resolveCliAuthentication(cwd = process.cwd(), env: NodeJS.Proces
 export function resolveExecutionAuthentication(model: string, cwd?: string, excludedKeys: string[] = [], cliPath?: string) {
   const authentication = resolveCliAuthentication(cwd, process.env, cliPath);
   if (!authentication.configured) throw Object.assign(new Error(authentication.message), { code: 'AUTH_NOT_CONFIGURED' });
+  const hasPoolKeys = Object.keys(loadConfiguredKeys()).length > 0;
   const candidate = authentication.mode === 'api-key' ? getBestEligibleKey(model, excludedKeys) : null;
-  const apiKey = authentication.mode === 'api-key' ? candidate?.key || process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY : undefined;
+  const apiKey = authentication.mode === 'api-key'
+    ? (candidate?.key || (hasPoolKeys ? undefined : (process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY)))
+    : undefined;
   return { authentication, apiKey, keyId: candidate?.keyId };
 }
 

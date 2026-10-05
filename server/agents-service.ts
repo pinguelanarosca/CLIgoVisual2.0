@@ -245,7 +245,7 @@ Diretrizes operacionais:
 ];
 
 export function getAgentsDirectory(customDir?: string): string {
-  const base = customDir || getGuiDataDir();
+  const base = customDir || os.homedir();
   return path.join(base, '.gemini', 'agents');
 }
 
@@ -271,7 +271,7 @@ function saveMetadata(metadata: Record<string, any>, targetDir?: string) {
 }
 
 export function ensureAgentsSeeded(targetDir?: string): AgentConfig[] {
-  if (targetDir && path.resolve(targetDir) !== path.resolve(getGuiDataDir())) return loadAgents(targetDir);
+  if (targetDir && path.resolve(targetDir) !== path.resolve(os.homedir()) && path.resolve(targetDir) !== path.resolve(getGuiDataDir())) return loadAgents(targetDir);
   const agentsDir = getAgentsDirectory(targetDir);
   if (!fs.existsSync(agentsDir)) {
     fs.mkdirSync(agentsDir, { recursive: true });
@@ -471,7 +471,7 @@ export const ALIAS_TO_PRIMARY: Record<string, string> = {
 };
 
 export function loadAgents(targetDir?: string): AgentConfig[] {
-  if (targetDir && path.resolve(targetDir) !== path.resolve(getGuiDataDir())) {
+  if (targetDir && path.resolve(targetDir) !== path.resolve(os.homedir()) && path.resolve(targetDir) !== path.resolve(getGuiDataDir())) {
     const merged = new Map(loadAgents().map(agent => [agent.name, agent]));
     const directory = getAgentsDirectory(targetDir), metadata = loadMetadata(targetDir);
     if (fs.existsSync(directory)) for (const file of fs.readdirSync(directory).filter(name => name.endsWith('.md'))) {
@@ -721,8 +721,8 @@ function parseAgentMarkdown(content: string, fallbackName: string, metadata: any
     displayName: metadata.displayName || fields['display_name'] || name,
     role: `${metadata.displayName || fields['display_name'] || name}: ${fields['description'] || ''}`,
     model: resolvedModel,
-    fallbackModel: metadata.fallbackModel || fields['fallback_model'] || fields['fallbackModel'] || undefined,
-    backupAgentId: metadata.backupAgentId || fields['backup_agent'] || fields['backup_agent_id'] || undefined,
+    fallbackModel: metadata.fallbackModel || fields['fallback_model'] || fields['fallbackModel'] || DEFAULT_AGENTS.find(d => d.name === name || d.id === name)?.fallbackModel,
+    backupAgentId: metadata.backupAgentId || fields['backup_agent'] || fields['backup_agent_id'] || DEFAULT_AGENTS.find(d => d.name === name || d.id === name)?.backupAgentId,
     description: fields['description'] || '',
     baseInstructions,
     systemInstructions,
@@ -981,11 +981,23 @@ export function ensureAllAgentsSynchronizedAndAcknowledged(cwd?: string, nativeH
 } {
   const targetDirs = new Set<string>();
 
-  // 1. User home .gemini/agents - canonical global discovery for Gemini CLI
-  targetDirs.add(path.join(nativeHome, '.gemini', 'agents'));
+  // 1. User home .gemini/agents - canonical global discovery for Gemini CLI (ONLY ONE canonical source)
+  const canonicalDir = path.join(nativeHome, '.gemini', 'agents');
+  targetDirs.add(canonicalDir);
 
-  // 2. GUI data dir - persistent storage for Gemini GUI
-  targetDirs.add(path.join(getGuiDataDir(), '.gemini', 'agents'));
+  // Clean up duplicate agent markdown files in GUI data dir if distinct from canonical discovery
+  const guiAgentsDir = path.join(getGuiDataDir(), '.gemini', 'agents');
+  if (path.resolve(guiAgentsDir) !== path.resolve(canonicalDir)) {
+    try {
+      if (fs.existsSync(guiAgentsDir)) {
+        for (const file of fs.readdirSync(guiAgentsDir)) {
+          if (file.endsWith('.md')) {
+            try { fs.unlinkSync(path.join(guiAgentsDir, file)); } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
 
   // Note: We avoid duplicating the same agents into <cwd>/.gemini/agents because Gemini CLI
   // scans both ~/.gemini/agents and <cwd>/.gemini/agents, causing 'Duplicate agent name detected' warnings.

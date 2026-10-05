@@ -168,8 +168,27 @@ export function saveConfiguredKeys(newKeys: Record<string, string | null | undef
     } catch {}
 
     invalidateConfiguredKeysCache();
-    sysLog.info('KPOOL', `Chaves do Key Pool salvas com segurança em api-keys.env (${Object.keys(updated).length} chaves ativas).`);
-    return { success: true, count: Object.keys(updated).length };
+    const count = Object.keys(updated).length;
+    if (count > 0) {
+      for (const baseDir of [path.join(os.homedir(), '.local', 'share', 'gemini-gui', '.gemini'), path.join(os.homedir(), '.gemini')]) {
+        try {
+          const sPath = path.join(baseDir, 'settings.json');
+          let sObj: any = {};
+          if (fs.existsSync(sPath)) {
+            try { sObj = JSON.parse(fs.readFileSync(sPath, 'utf8')) || {}; } catch {}
+          }
+          if (!sObj.security?.auth?.selectedType || sObj.security.auth.selectedType === 'gemini-api-key') {
+            sObj.security ??= {};
+            sObj.security.auth ??= {};
+            sObj.security.auth.selectedType = 'gemini-api-key';
+            if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
+            fs.writeFileSync(sPath, JSON.stringify(sObj, null, 2), 'utf8');
+          }
+        } catch {}
+      }
+    }
+    sysLog.info('KPOOL', `Chaves do Key Pool salvas com segurança em api-keys.env (${count} chaves ativas).`);
+    return { success: true, count };
   } catch (err: any) {
     sysLog.error('KPOOL', `Falha ao salvar api-keys.env: ${err.message}`);
     throw err;

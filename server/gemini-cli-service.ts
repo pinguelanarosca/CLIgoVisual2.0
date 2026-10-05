@@ -1,5 +1,7 @@
 import { resolveCliAuthentication, resolveExecutionAuthentication, buildCliAuthEnvironment } from './cli-auth-service.js';
 import { spawn, execSync, ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import crypto from 'node:crypto';
 import { terminateProcessTree } from './process-service.js';
 import { buildExecutionPrompt, consumeSessionRecovery, executionFailed, validateExecutionContext, ContextMessage } from './execution-policy.js';
@@ -1156,6 +1158,7 @@ export function executeGeminiCli(
     fallbackChain?: string[];
     executionId?: string;
     triedKeyIds?: string[];
+    mockSubprocess?: (child: any) => void;
   }
 ): { cancel: () => void; executionId: string } {
   const t0 = performance.now();
@@ -1544,12 +1547,20 @@ ${subagentsList}
       const tSpawn = performance.now();
       console.log(`[PERF] [${executionId}] spawn_start=${(tSpawn - t0).toFixed(1)}ms (model: ${chosenModel}, thinking: ${params.thinkingLevel || 'medium'}, thinkingActive: ${params.thinking !== false})`);
 
-      const child = spawn(cliPath, args, {
+      let child = spawn(cliPath, args, {
         cwd,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
       });
+      if (state?.mockSubprocess) {
+        const mockChild = new EventEmitter() as any;
+        mockChild.stdin = new PassThrough();
+        mockChild.stdout = new PassThrough();
+        mockChild.stderr = new PassThrough();
+        mockChild.kill = () => { mockChild.emit('close', 0, 'SIGKILL'); };
+        child = mockChild;
+      }
       const executionTimer = setTimeout(() => terminateProcessTree(child), 300000);
       child.stdin?.on('error', (error) => { if (!execState.cancelled) { terminateProcessTree(child); params.onError(error); } });
 
@@ -1948,6 +1959,11 @@ ${subagentsList}
         });
         params.onError(err);
       });
+
+      if (state?.mockSubprocess) {
+        child.stdout?.resume();
+        state.mockSubprocess(child);
+      }
 
       child.once('close', async (code, signal) => {
         clearTimeout(executionTimer);
