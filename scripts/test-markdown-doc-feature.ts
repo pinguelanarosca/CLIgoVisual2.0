@@ -1,4 +1,4 @@
-import { isLongMarkdownText, extractDocumentTitle, getMarkdownStats, LONG_TEXT_THRESHOLD_CHARS, LONG_TEXT_THRESHOLD_LINES } from '../src/utils/markdownDocUtils.js';
+import { isLongMarkdownText, extractDocumentTitle, getMarkdownStats, LONG_TEXT_THRESHOLD_CHARS, LONG_TEXT_THRESHOLD_WORDS } from '../src/utils/markdownDocUtils.js';
 
 function runTests() {
   console.log('=== TESTE AUTOMATIZADO DE DOCUMENTOS MARKDOWN (.MD) NO CHAT ===\n');
@@ -19,15 +19,17 @@ function runTests() {
   // 1. Detecção de Textos Longos (Threshold)
   console.log('1. Detecção de Textos Curtos vs Textos Longos');
   const shortText = 'Esta é uma resposta curta e direta do assistente.';
-  assert(!isLongMarkdownText(shortText), 'Texto curto (< 900 chars, poucas linhas) não é classificado como longo');
+  assert(!isLongMarkdownText(shortText), 'Texto curto não é classificado como longo');
   assert(!isLongMarkdownText(null), 'Texto nulo retorna false');
   assert(!isLongMarkdownText(''), 'Texto vazio retorna false');
 
   const longTextByChars = 'A'.repeat(LONG_TEXT_THRESHOLD_CHARS + 50);
-  assert(isLongMarkdownText(longTextByChars), 'Texto com mais de 900 caracteres é classificado como longo');
+  assert(isLongMarkdownText(longTextByChars), 'Texto acima do limite de caracteres é classificado como longo');
 
-  const longTextByLines = Array.from({ length: LONG_TEXT_THRESHOLD_LINES + 5 }, (_, i) => `Linha ${i + 1}`).join('\n');
-  assert(isLongMarkdownText(longTextByLines), 'Texto com mais de 18 linhas é classificado como longo');
+  const mediumText = Array(450).fill('resposta comum').join(' ');
+  assert(!isLongMarkdownText(mediumText), 'Resposta média de 900 palavras permanece no chat');
+  assert(!isLongMarkdownText(Array(40).fill('Item').join('\n')), 'Linhas curtas não forçam compactação');
+  assert(isLongMarkdownText(Array(LONG_TEXT_THRESHOLD_WORDS).fill('x').join(' ')), 'Limiar de palavras compacta texto realmente longo');
 
   // 2. Extração de Título do Documento
   console.log('\n2. Extração Inteligente do Título do Documento .md');
@@ -88,7 +90,7 @@ A extensão opera no formato Manifest V3 e possui os seguintes módulos principa
 - Implementar debounce nos eventos de scroll e digitação no content.js.
 `;
 
-  assert(isLongMarkdownText(realReport), 'Relatório do subagente é classificado como documento .md longo');
+  assert(!isLongMarkdownText(realReport), 'Relatório de poucas centenas de palavras permanece no chat');
   const realTitle = extractDocumentTitle(realReport);
   assert(realTitle === 'analise_tecnica_da_extensao_do_chrome.md', 'Título do relatório extraído perfeitamente');
 

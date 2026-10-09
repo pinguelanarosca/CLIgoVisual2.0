@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { summarizeExecution } from './execution-policy.js';
 import { sysLog } from './logger-service.js';
 import { getGuiDataDir } from './paths-service.js';
 
@@ -47,7 +48,7 @@ export interface AgentTrackerEvent {
   toolCallId?: string;
   promptSnippet?: string;
   durationMs?: number;
-  status?: 'running' | 'success' | 'failed' | 'cancelled';
+  status?: 'running' | 'success' | 'partial' | 'failed' | 'cancelled';
   details?: Record<string, any>;
   resultSnippet?: string;
   error?: string;
@@ -182,15 +183,9 @@ export class AgentExecutionTracker {
     return isKnown;
   }
 
-  public trackNestedToolCall(toolName: string, callId: string, params: any) {
-    // Check if this tool is inside an active subagent call
-    let activeSubagent: SubagentInvocationRecord | undefined;
-    for (const inv of this.invocations.values()) {
-      if (inv.status === 'running') {
-        activeSubagent = inv;
-        break;
-      }
-    }
+  public trackNestedToolCall(toolName: string, callId: string, params: any, correlation: { agentId?: string; parentToolCallId?: string; invocationId?: string; requestId?: string; model?: string } = {}) {
+    // Parallel delegates cannot be inferred from their start order.
+    const activeSubagent = correlation.parentToolCallId ? this.invocations.get(correlation.parentToolCallId) : undefined;
 
     if (activeSubagent) {
       activeSubagent.nestedTools.push({ name: toolName, timestamp: Date.now() });
@@ -200,22 +195,26 @@ export class AgentExecutionTracker {
         targetAgent: activeSubagent.targetAgent,
         toolName,
         toolCallId: callId,
-        details: { paramsSummary: typeof params === 'object' ? Object.keys(params) : undefined },
+        model: correlation.model,
+        details: { ...correlation, paramsSummary: typeof params === 'object' ? Object.keys(params) : undefined },
       });
     } else {
       this.recordEvent({
         eventType: 'SUBAGENT_TOOL_CALL',
         callerAgent: this.orchestratorAgent,
+        targetAgent: correlation.agentId,
+        model: correlation.model,
         toolName,
         toolCallId: callId,
-        details: { paramsSummary: typeof params === 'object' ? Object.keys(params) : undefined },
+        details: { ...correlation, paramsSummary: typeof params === 'object' ? Object.keys(params) : undefined },
       });
     }
   }
 
   public trackSubagentResult(callId: string, result: any, status: 'success' | 'failed' | 'error', errorMsg?: string) {
     const inv = this.invocations.get(callId);
-    const durationMs = inv ? Date.now() - inv.startTime : undefined;
+    if (!inv || inv.status !== 'running') return; // Ordinary tools and duplicate results are not delegations.
+    const durationMs = Date.now() - inv.startTime;
 
     const resultStr = typeof result === 'string' ? result : JSON.stringify(result || '');
     const isSuccess = status === 'success' && !errorMsg;
@@ -296,7 +295,7 @@ export class AgentExecutionTracker {
     }
   }
 
-  public trackFlowSummary(exitCode: number, errorMsg?: string) {
+  public trackFlowSummary(exitCode: number, errorMsg?: string, answered = false) {
     const totalDuration = Date.now() - this.startTime;
     const invList = Array.from(this.invocations.values());
     const totalInv = invList.length;
@@ -308,7 +307,7 @@ export class AgentExecutionTracker {
       callerAgent: this.orchestratorAgent,
       model: this.orchestratorModel,
       durationMs: totalDuration,
-      status: exitCode === 0 && !errorMsg ? 'success' : 'failed',
+      status: summarizeExecution(exitCode !== 0 || Boolean(errorMsg), answered, invList.map(i => i.status)),
       error: errorMsg,
       details: {
         exitCode,
@@ -488,6 +487,8 @@ export class AgentExecutionTracker {
             det,
             source
           );
+        } else if (event.status === 'partial') {
+          sysLog.warn(category, `📊 [RESUMO PARCIAL] Agente [${event.callerAgent}] encerrou com delegações incompletas.`, det, source);
         } else {
           sysLog.error(
             category,

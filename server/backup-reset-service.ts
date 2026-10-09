@@ -91,7 +91,7 @@ export function exportFullSystemBackup(allowedSections?: string[]): BackupExport
   }
 
   const exportData: BackupExportData = {
-    version: '2.1.0',
+    version: '2.2.0',
     appName: 'Gemini CLI Visual GUI',
     createdAt: new Date().toISOString(),
     metadata: {

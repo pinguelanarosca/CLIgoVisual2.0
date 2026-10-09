@@ -1,3 +1,5 @@
+import { applyToolCallEvent } from './utils/toolCallEvents.js';
+import { assistantText, telemetryChannel, unwrapTelemetry } from './utils/telemetry.js';
 import { compactExecutionHistory, toExecutorContext } from './utils/executionContext.js';
 import { retainDiagnostics } from './utils/diagnosticRetention.js';
 import React, { useState, useEffect, useRef } from 'react';
@@ -48,6 +50,8 @@ import { buildEffectiveSystemPrompt } from './utils/systemPromptUtils.js';
 import { fetchJsonSafely } from './utils/apiUtils.js';
 import { normalizeActivities } from './utils/activityTraceUtils.js';
 import { getMostRecentValidSession } from './utils/sessionUtils.js';
+import { getSavedVoiceAgents } from './services/voice/voiceAgentsStore.js';
+import { resolveTtsSelection, resolveSttSelection, getAudioDiagnostics, ttsAudioUrl, updateTtsSettings } from './services/voice/ttsUtils.js';
 
 export function App() {
   // Theme
@@ -306,7 +310,7 @@ export function App() {
     sttEnabled: true,
     sttModel: 'gemini-3.1-flash-lite',
     ttsEnabled: true,
-    ttsModel: 'gemini-3.1-flash-tts',
+    ttsModel: 'gemini-3.1-flash-tts-preview',
     ttsVoice: 'Kore',
     ttsSpeed: 1.0,
     autoPlayTts: false,
@@ -328,6 +332,20 @@ export function App() {
 
   const [currentlyNarratingId, setCurrentlyNarratingId] = useState<string | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsControllerRef = useRef<AbortController | null>(null);
+  const sttControllerRef = useRef<AbortController | null>(null);
+  const [audioDiagnostics, setAudioDiagnostics] = useState<Record<string, any>>({});
+  const recordAudioResult = (modality: 'tts' | 'stt', data: any) => {
+    const diagnostic = getAudioDiagnostics({ ...data, modality });
+    setAudioDiagnostics(prev => ({ ...prev, [modality]: diagnostic }));
+    console.info('AUDIO_OPERATION', diagnostic);
+  };
+  useEffect(() => () => {
+    ttsControllerRef.current?.abort();
+    sttControllerRef.current?.abort();
+    currentAudioRef.current?.pause();
+    window.speechSynthesis?.cancel();
+  }, []);
 
   // Initial Data Fetching & Sync
   const refreshStatus = async (forceFresh = true) => {
@@ -795,19 +813,20 @@ export function App() {
               const evtType = innerPayload.type || eventPayload.type;
 
               if (eventPayload.type === 'done' || evtType === 'done') {
-                hasError = eventPayload.exitCode !== 0 || Boolean(eventPayload.signal);
+                hasError = hasError || eventPayload.exitCode !== 0 || Boolean(eventPayload.signal);
                 if (hasError && !errorMessage) errorMessage = `Processo encerrado (código ${eventPayload.exitCode}, sinal ${eventPayload.signal || 'nenhum'}).`;
                 // Finalize any dangling running tool calls
                 const now = Date.now();
                 Object.values(toolCalls).forEach((tc) => {
                   if (tc.status === 'running') {
-                    tc.status = 'completed';
+                    tc.status = 'failed';
+                    tc.error = 'Ferramenta encerrada sem resultado terminal.';
                     tc.completedAt = now;
                     if (tc.startedAt) tc.durationMs = now - tc.startedAt;
                   }
                 });
               }
-              retainDiagnostics(rawEventsList, eventPayload.type === 'final_api_request' ? { ...eventPayload, finalApiRequest: undefined, allRealRequests: undefined } : eventPayload);
+              rawEventsList.push(eventPayload);
 
               // Capture finalApiRequest from backend (Exclusivamente o request real capturado)
               if (eventPayload.type === 'final_api_request' || evtType === 'final_api_request') {
@@ -826,6 +845,10 @@ export function App() {
                 }
               }
 
+              if (evtType === 'execution_outcome' && innerPayload.status !== 'success') {
+                hasError = true;
+                errorMessage = innerPayload.status === 'partial' ? 'Execução parcial: há delegações que não foram concluídas. Consulte Logs/Payload.' : 'Execução falhou: tarefa não concluída. Consulte Logs/Payload.';
+              }
               // Inspect Gemini CLI JSON stream event
               if (
                 evtType === 'process_error' ||
@@ -837,92 +860,10 @@ export function App() {
               } else if (evtType === 'result' && (innerPayload.status === 'error' || innerPayload.error)) {
                 hasError = true;
                 errorMessage = innerPayload.error?.message || errorMessage || 'Erro retornado pela API do Gemini.';
-              } else if (evtType === 'message' || innerPayload.role === 'assistant' || innerPayload.candidates) {
-                const msgContent = innerPayload.content || innerPayload.text || (innerPayload.candidates?.[0]?.content?.parts?.[0]?.text);
-                if (msgContent) {
-                  assistantContent += msgContent;
-                }
-              } else if (evtType === 'tool_use' || evtType === 'tool_call') {
-                const callId = innerPayload.tool_call_id || innerPayload.tool_id || innerPayload.callId || innerPayload.id || `tool_${Date.now()}`;
-                const now = Date.now();
-                toolCalls[callId] = {
-                  id: callId,
-                  toolName: innerPayload.tool_name || innerPayload.name || innerPayload.id || innerPayload.tool || 'tool',
-                  parameters: innerPayload.parameters || innerPayload.args || {},
-                  status: 'running',
-                  timestamp: innerPayload.timestamp || new Date().toISOString(),
-                  startedAt: now,
-                  description: innerPayload.description,
-                  schema: innerPayload.schema || innerPayload.definition,
-                  componentRegister: innerPayload.componentRegister || innerPayload.registered_by,
-                  componentExecutor: innerPayload.componentExecutor || innerPayload.executed_by,
-                  origin: innerPayload.origin || innerPayload.source,
-                  wrapperRelation: innerPayload.wrapperRelation || innerPayload.wrapper,
-                };
-              } else if (evtType === 'tool_result') {
-                const callId = innerPayload.tool_call_id || innerPayload.tool_id || innerPayload.callId || innerPayload.id;
-                let targetCall = callId ? toolCalls[callId] : undefined;
-                if (!targetCall) {
-                  // If single running tool call, match it
-                  const runningCalls = Object.values(toolCalls).filter(c => c.status === 'running');
-                  if (runningCalls.length === 1) {
-                    targetCall = runningCalls[0];
-                  }
-                }
-                if (targetCall) {
-                  const now = Date.now();
-                  targetCall.completedAt = now;
-                  if (targetCall.startedAt) {
-                    targetCall.durationMs = now - targetCall.startedAt;
-                  }
-                  targetCall.result = typeof innerPayload.output === 'string' ? innerPayload.output : typeof innerPayload.result === 'string' ? innerPayload.result : JSON.stringify(innerPayload.output || innerPayload.result || '');
-                  targetCall.status = (innerPayload.error || innerPayload.status === 'failed') ? 'failed' : 'completed';
-                  if (innerPayload.error) {
-                    targetCall.error = typeof innerPayload.error === 'string' ? innerPayload.error : JSON.stringify(innerPayload.error);
-                  }
-                }
-              } else if (eventPayload.text || innerPayload.text) {
-                const text = eventPayload.text || innerPayload.text;
-                // Check if this is a genuine authentication error from stderr/stdout
-                const isAuthNotice = text.includes('Both GOOGLE_API_KEY and GEMINI_API_KEY are set');
-                const isAuthError = !isAuthNotice && (
-                  text.includes('Please set an Auth method') ||
-                  (text.includes('GEMINI_API_KEY') && (
-                    text.includes('não foi encontrada') ||
-                    text.includes('not set') ||
-                    text.includes('missing') ||
-                    text.includes('invalid') ||
-                    text.includes('unauthorized') ||
-                    text.includes('required')
-                  ))
-                );
-
-                const isSessionResumeErr =
-                  text.includes('Error resuming session') ||
-                  text.includes('Invalid session identifier') ||
-                  text.includes('Searched for sessions in') ||
-                  text.includes('Use --list-sessions') ||
-                  text.includes('no previous session');
-
-                if (isAuthError) {
-                  hasError = true;
-                  errorMessage = cliStatus?.authMode === 'oauth' ? 'A autenticação Google/OAuth do Gemini CLI falhou. Verifique o login nativo no CLI.' : 'A autenticação do Gemini CLI falhou. Verifique o método selecionado no CLI.';
-                } else if (isSessionResumeErr) {
-                  hasError = true;
-                  errorMessage = text;
-                } else if (evtType === 'message' || evtType === 'stream_event') {
-                  // Only append if it comes from an authentic message event
-                  const isBenign =
-                    isAuthNotice ||
-                    text.includes('256-color support not detected') ||
-                    text.includes('Ripgrep is not available') ||
-                    text.includes('Falling back to GrepTool') ||
-                    text.includes('[MCP]') ||
-                    text.includes('MCP Exa');
-                  if (!isBenign && !text.startsWith('{')) {
-                    assistantContent += (assistantContent ? '\n' : '') + text;
-                  }
-                }
+              } else if (telemetryChannel(eventPayload) === 'assistant_content') {
+                assistantContent += assistantText(eventPayload);
+              } else if (evtType === 'tool_use' || evtType === 'tool_call' || evtType === 'tool_result') {
+                applyToolCallEvent(toolCalls, evtType, innerPayload);
               }
 
               // Schedule batched UI message state update
@@ -953,37 +894,18 @@ export function App() {
       streamFinished = true;
       // Compute final message content & token stats
       let finalContent = assistantContent.trim();
-      const errLower = (errorMessage || '').toLowerCase();
-      const asstLower = (assistantContent || '').toLowerCase();
-      const isSessionResumeFailure = false;
+      const blocked = [...rawEventsList].reverse().map(unwrapTelemetry).find(event => event.type === 'runtime_event' && event.event === 'EXECUTION_BLOCKED');
       if (hasError && !finalContent) {
-        if (errLower.includes('503') || errLower.includes('high demand') || errLower.includes('unavailable') || errLower.includes('overloaded')) {
-          finalContent = `⚠️ **API Gemini Temporariamente Sobrecarregada (Erro 503 - High Demand)**\n\n${errorMessage || 'O modelo está enfrentando um pico de demanda temporário nos servidores do Google.'}\n\n💡 **Recomendações:**\n- Alterne para um modelo com maior taxa de disponibilidade como o **Gemini 3.5 Flash Lite** ou **Gemini 2.5 Flash**;\n- Aguarde alguns instantes e tente novamente.`;
-        } else if (errLower.includes('429') || errLower.includes('quota') || errLower.includes('resource_exhausted')) {
-          finalContent = `⚠️ **Limite de Cota Atingido na API (Erro 429 - Quota Exceeded)**\n\n${errorMessage || 'A cota de requisições por minuto ou limite diário foi atingida para este modelo.'}\n\n💡 **Recomendações:**\n- Aguarde a renovação da cota de requisições;\n- Alterne para outro modelo disponível com limites maiores (ex: Flash Lite).`;
-        } else if (
-          errLower.includes('oauth') ||
-          errLower.includes('google/oauth') ||
-          errLower.includes('autenticação google') ||
-          errLower.includes('sessão oauth') ||
-          errLower.includes('manual authorization') ||
-          (cliStatus?.authMode === 'oauth' && (errLower.includes('autenticação') || errLower.includes('unauthenticated')))
-        ) {
-          finalContent = `⚠️ **Falha de Autenticação Google/OAuth**\n\n${errorMessage || 'A autenticação Google/OAuth do Gemini CLI falhou.'}\n\n💡 **Verificação:**\n- Execute o comando no terminal para verificar/revalidar a sessão:\n  \`${cliStatus?.cliPath || 'gemini'}\`\n- Confirme se a conta Google autenticada possui acesso à API do Gemini.`;
-        } else if (
-          (errLower.includes('gemini_api_key') && (errLower.includes('missing') || errLower.includes('not set') || errLower.includes('não foi encontrada') || errLower.includes('invalid') || errLower.includes('required') || errLower.includes('cadastrada no key pool'))) ||
-          errLower.includes('unauthorized') ||
-          errLower.includes('invalid api key') ||
-          errLower.includes('api_key_invalid') ||
-          errLower.includes('authentication failed') ||
-          errLower.includes('401')
-        ) {
-          finalContent = `⚠️ **Falha de Autenticação da Chave API**\n\n${errorMessage || 'Nenhuma chave Gemini cadastrada no Key Pool ou a chave atual não possui permissão.'}\n\n💡 **Verificação:**\n- Acesse **Configurações ⚙️ > Key Pool (K1..K9)** para cadastrar ou gerenciar suas chaves Gemini;\n- Execute a bateria diária de testes de integridade para calibrar o ranking por modelo.`;
+        if (blocked) {
+          const retry = blocked.nextRetryAt ? ` Próxima tentativa a partir de ${new Date(blocked.nextRetryAt).toLocaleString('pt-BR')}.` : '';
+          finalContent = `⚠️ ${blocked.message || 'Execução indisponível no momento.'}${retry} Consulte Logs/Payload para detalhes.`;
         } else {
-          finalContent = `⚠️ **Falha na Execução do Gemini CLI**\n\n${errorMessage || 'O processo do Gemini CLI foi encerrado com falha.'}`;
+          finalContent = '⚠️ Execução interrompida. Consulte Logs/Payload para detalhes.';
         }
+      } else if (hasError && finalContent) {
+        finalContent += '\n\n⚠️ Execução incompleta. Consulte o andamento e Logs/Payload.';
       } else if (!finalContent) {
-        finalContent = '⚠️ Nenhuma resposta gerada pelo modelo. Verifique o status da API no painel de Configurações.';
+        finalContent = '⚠️ Nenhuma resposta gerada pelo modelo. Consulte Logs/Payload.';
       }
 
       const durationMs = Date.now() - startTime;
@@ -1020,14 +942,14 @@ export function App() {
       };
 
       const finalToolCalls = Object.values(toolCalls).map((tc) => {
-        if (tc.status === 'running') {
+        if (tc.status === 'running' || tc.status === 'pending' || tc.status === 'requires_approval') {
           const now = Date.now();
           return {
             ...tc,
-            status: hasError ? 'failed' : 'completed',
+            status: 'failed',
             completedAt: now,
             durationMs: tc.startedAt ? now - tc.startedAt : undefined,
-            result: tc.result || (hasError ? 'Execução interrompida com erro' : 'Execução concluída com sucesso'),
+            result: tc.result || 'Atividade encerrada sem retorno terminal. Consulte Logs/Payload.',
           };
         }
         return tc;
@@ -1052,6 +974,7 @@ export function App() {
                 toolCalls: finalToolCalls,
                 activities: finalActivities,
                 isStreaming: false,
+                error: hasError ? errorMessage : undefined,
                 finalApiRequest: capturedFinalApiRequest || m.finalApiRequest,
                 allFinalApiRequests: capturedAllRealRequests.length > 0 ? capturedAllRealRequests : m.allFinalApiRequests,
                 parameterOrigins: capturedParameterOrigins || m.parameterOrigins,
@@ -1061,56 +984,55 @@ export function App() {
         )
       );
 
-      // Save session if not an invalid session failure (which auto-switches to valid session)
-      if (!isSessionResumeFailure) {
-        const finalAssistantMsg: ChatMessage = {
-          ...assistantPlaceholder,
-          content: finalContent,
-          toolCalls: finalToolCalls,
-          activities: finalActivities,
-          isStreaming: false,
-          finalApiRequest: capturedFinalApiRequest || assistantPlaceholder.finalApiRequest,
-          allFinalApiRequests: capturedAllRealRequests.length > 0 ? capturedAllRealRequests : assistantPlaceholder.allFinalApiRequests,
-          parameterOrigins: capturedParameterOrigins || assistantPlaceholder.parameterOrigins,
-          rawPayloadReceived,
-        };
+      // Persist the completed execution, including errors and recovered sessions.
+      const finalAssistantMsg: ChatMessage = {
+        ...assistantPlaceholder,
+        content: finalContent,
+        toolCalls: finalToolCalls,
+        activities: finalActivities,
+        isStreaming: false,
+        error: hasError ? errorMessage : undefined,
+        finalApiRequest: capturedFinalApiRequest || assistantPlaceholder.finalApiRequest,
+        allFinalApiRequests: capturedAllRealRequests.length > 0 ? capturedAllRealRequests : assistantPlaceholder.allFinalApiRequests,
+        parameterOrigins: capturedParameterOrigins || assistantPlaceholder.parameterOrigins,
+        rawPayloadReceived,
+      };
 
-        const finalMsgList = messages.concat([userMsg, finalAssistantMsg]);
-        const nextExecutionContext = executionContext || contextCompressed ? compactExecutionHistory(activeBaseMessages.concat([userMsg, finalAssistantMsg])) : undefined;
-        if (currentSessionIdRef.current === currentSessionId) setExecutionContext(nextExecutionContext);
+      const finalMsgList = messages.concat([userMsg, finalAssistantMsg]);
+      const nextExecutionContext = executionContext || contextCompressed ? compactExecutionHistory(activeBaseMessages.concat([userMsg, finalAssistantMsg])) : undefined;
+      if (currentSessionIdRef.current === currentSessionId) setExecutionContext(nextExecutionContext);
 
-        const title =
-          promptText.length > 40 ? promptText.slice(0, 40) + '...' : promptText;
+      const title =
+        promptText.length > 40 ? promptText.slice(0, 40) + '...' : promptText;
 
-        const existingSess = sessions.find((s) => s.id === currentSessionId);
-        const effectiveProjectId = existingSess !== undefined ? existingSess.projectId : activeProject?.id;
+      const existingSess = sessions.find((s) => s.id === currentSessionId);
+      const effectiveProjectId = existingSess !== undefined ? existingSess.projectId : activeProject?.id;
 
-        const savedSession: SessionItem = {
-          id: currentSessionId,
-          cliSessionId: resolvedCliSessionId,
-          executionContext: nextExecutionContext,
-          title: existingSess?.title || title,
-          projectId: effectiveProjectId,
-          isArchived: existingSess?.isArchived || false,
-          createdAt: existingSess?.createdAt || new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          messageCount: finalMsgList.length,
-          messages: finalMsgList,
-          statusGrade: 'CONFIGURED',
-        };
+      const savedSession: SessionItem = {
+        id: currentSessionId,
+        cliSessionId: resolvedCliSessionId,
+        executionContext: nextExecutionContext,
+        title: existingSess?.title || title,
+        projectId: effectiveProjectId,
+        isArchived: existingSess?.isArchived || false,
+        createdAt: existingSess?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messageCount: finalMsgList.length,
+        messages: finalMsgList,
+        statusGrade: 'CONFIGURED',
+      };
 
-        const saveResponse = await fetch(existingSess ? `/api/sessions/${currentSessionId}/messages` : '/api/sessions', {
-          method: existingSess ? 'PUT' : 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(existingSess ? { messages: finalMsgList, cliSessionId: resolvedCliSessionId, executionContext: nextExecutionContext } : savedSession),
-        });
-        if (!saveResponse.ok) throw new Error('Não foi possível salvar o histórico; as mensagens permanecem na interface.');
+      const saveResponse = await fetch(existingSess ? `/api/sessions/${currentSessionId}/messages` : '/api/sessions', {
+        method: existingSess ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(existingSess ? { messages: finalMsgList, cliSessionId: resolvedCliSessionId, executionContext: nextExecutionContext } : savedSession),
+      });
+      if (!saveResponse.ok) throw new Error('Não foi possível salvar o histórico; as mensagens permanecem na interface.');
 
-        // Reload sessions list
-        const sessList = await fetchJsonSafely<SessionItem[]>('/api/sessions');
-        if (sessList) {
-          setSessions(sessList);
-        }
+      // Reload sessions list
+      const sessList = await fetchJsonSafely<SessionItem[]>('/api/sessions');
+      if (sessList) {
+        setSessions(sessList);
       }
 
       // Auto-play TTS if configured
@@ -1222,131 +1144,124 @@ export function App() {
   };
 
   // Audio STT Handler (converts voice recording to text)
-  const handleTranscribeAudio = async (audioBlob: Blob, signal?: AbortSignal): Promise<string> => {
-    // If user prefers browser-native SpeechRecognition or backend is unavailable
-    if (audioSettings.sttModel === 'browser-native') {
-      return '';
-    }
-
+  const handleTranscribeAudio = async (audioBlob: Blob, callerSignal?: AbortSignal): Promise<string> => {
+    if (audioSettings.sttModel === 'browser-native') return '';
+    sttControllerRef.current?.abort();
+    const controller = new AbortController();
+    sttControllerRef.current = controller;
+    const signal = callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal;
+    const active = () => !signal.aborted && sttControllerRef.current === controller;
+    const selection = resolveSttSelection(audioSettings, getSavedVoiceAgents()), requestId = crypto.randomUUID();
     try {
+      signal.throwIfAborted();
       const base64Audio = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
-        reader.onloadend = () => {
-          const res = (reader.result as string) || '';
-          const base64 = res.includes(',') ? res.split(',')[1] : res;
-          resolve(base64);
-        };
-        reader.onerror = () => reject(new Error('Falha ao processar arquivo de áudio.'));
-        reader.readAsDataURL(audioBlob);
+        const cleanup = () => signal.removeEventListener('abort', cancelled);
+        const cancelled = () => { reader.abort(); cleanup(); reject(signal.reason); };
+        reader.onload = () => { cleanup(); const result = String(reader.result || ''); resolve(result.includes(',') ? result.split(',')[1] : result); };
+        reader.onerror = () => { cleanup(); reject(new Error('Falha ao processar arquivo de áudio.')); };
+        signal.addEventListener('abort', cancelled, { once: true });
+        if (signal.aborted) cancelled(); else reader.readAsDataURL(audioBlob);
       });
-
+      signal.throwIfAborted();
       const res = await fetch('/api/audio/stt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal,
-        body: JSON.stringify({
-          audioBase64: base64Audio,
-          mimeType: audioBlob.type || 'audio/webm',
-          model: audioSettings.sttModel,
-          apiKey: audioSettings.audioApiKey,
-          apiUrl: audioSettings.audioApiUrl,
-          instructions: audioSettings.sttInstructions,
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
+        body: JSON.stringify({ audioBase64: base64Audio, mimeType: audioBlob.type || 'audio/webm', model: selection.model,
+          apiKey: audioSettings.audioApiKey, apiUrl: audioSettings.audioApiUrl, instructions: selection.instructions,
+          fallback: selection.fallback, fallbackModels: selection.fallbackModels, language: selection.language, generationConfig: selection.generationConfig, requestId }),
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        return data.text || '';
-      }
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        console.log('Transcrição de áudio cancelada pelo usuário.');
-        return '';
-      }
-      console.error('Transcription request failed:', err);
-    }
-    return '';
+      if (!active()) return '';
+      const data = await res.json();
+      if (!active()) return '';
+      recordAudioResult('stt', data);
+      return res.ok && data.status !== 'failed' ? data.text || '' : '';
+    } catch (error: any) {
+      if (sttControllerRef.current === controller) recordAudioResult('stt', { requestId, configuredModel: selection.model, model: selection.model, provider: 'gemini',
+        status: signal.aborted ? 'cancelled' : 'failed', code: signal.aborted ? 'STT_CANCELLED' : 'STT_FAILED', error: signal.aborted ? 'Transcrição cancelada.' : String(error?.message || error) });
+      return '';
+    } finally { if (sttControllerRef.current === controller) sttControllerRef.current = null; }
   };
 
   // Audio TTS Handler (synthesizes assistant text to audio)
   const handlePlayTts = async (text: string, messageId: string) => {
-    if (currentlyNarratingId === messageId) {
-      handleStopTts();
-      return;
-    }
-
+    if (currentlyNarratingId === messageId) { handleStopTts(); return; }
     handleStopTts();
+    const controller = new AbortController();
+    ttsControllerRef.current = controller;
+    const active = () => !controller.signal.aborted && ttsControllerRef.current === controller;
+    const selection = resolveTtsSelection(audioSettings, getSavedVoiceAgents());
+    const requestId = crypto.randomUUID();
+    (controller as any).audioMetadata = { requestId, configuredModel: selection.model, model: selection.model, provider: 'gemini' };
+    recordAudioResult('tts', { ...(controller as any).audioMetadata, status: 'running' });
     setCurrentlyNarratingId(messageId);
-
-    // If browser native fallback
-    if (audioSettings.ttsModel === 'browser-native' && 'speechSynthesis' in window) {
+    const finish = () => {
+      if (!active()) return;
+      currentAudioRef.current = null;
+      ttsControllerRef.current = null;
+      setCurrentlyNarratingId(null);
+    };
+    let localStarted = false;
+    const local = (reason?: string) => {
+      if (!active() || localStarted) return;
+      localStarted = true;
+      recordAudioResult('tts', { requestId, configuredModel: selection.model, model: 'browser-native', effectiveModel: 'browser-native', provider: 'speech-synthesis', fallbackUsed: selection.model !== 'browser-native', fallbackReason: reason, status: 'success' });
+      if (!('speechSynthesis' in window)) { finish(); return; }
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = audioSettings.ttsSpeed || 1.0;
-      utterance.onend = () => setCurrentlyNarratingId(null);
-      utterance.onerror = () => setCurrentlyNarratingId(null);
+      utterance.rate = selection.speed;
+      utterance.onend = finish;
+      utterance.onerror = finish;
       window.speechSynthesis.speak(utterance);
-      return;
-    }
-
-    // Call server Gemini 3.1 Flash TTS Preview
+    };
+    if (selection.model === 'browser-native') { local(); return; }
+    let fallbackReason = 'TTS_FAILED';
+    let failureData: any;
     try {
       const res = await fetch('/api/audio/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          voice: audioSettings.ttsVoice || 'Kore',
-          apiKey: audioSettings.audioApiKey,
-          apiUrl: audioSettings.audioApiUrl,
-          model: audioSettings.ttsModel,
-          instructions: audioSettings.ttsInstructions,
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+        body: JSON.stringify({ text, voice: selection.voice, apiKey: audioSettings.audioApiKey,
+          apiUrl: audioSettings.audioApiUrl, model: selection.model, instructions: selection.instructions,
+          fallback: selection.fallback, fallbackModels: selection.fallbackModels, language: selection.language, generationConfig: selection.generationConfig, requestId }),
       });
-
+      if (!active()) return;
       const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
+      if (contentType.includes('application/json')) {
         const data = await res.json();
-        if (data.audioBase64) {
-          const audio = new Audio(`data:audio/mp3;base64,${data.audioBase64}`);
+        if (!active()) return;
+        recordAudioResult('tts', data);
+        failureData = data;
+        fallbackReason = data.error || data.code || fallbackReason;
+        if (res.ok && data.audioBase64) {
+          console.info('TTS_PROVIDER', { requestId, model: data.model, provider: data.provider, fallbackReason: data.fallbackReason });
+          const audio = new Audio(ttsAudioUrl(data.audioBase64, data.mimeType));
           currentAudioRef.current = audio;
-          audio.playbackRate = audioSettings.ttsSpeed || 1.0;
-          audio.onended = () => setCurrentlyNarratingId(null);
-          audio.onerror = () => {
-            // Fallback to Web Speech API
-            if ('speechSynthesis' in window) {
-              const utterance = new SpeechSynthesisUtterance(text);
-              window.speechSynthesis.speak(utterance);
-            }
-            setCurrentlyNarratingId(null);
-          };
-          audio.play();
+          audio.playbackRate = selection.speed;
+          audio.onended = finish;
+          audio.onerror = () => { if (active()) { currentAudioRef.current = null; if (selection.fallbackModels?.includes('browser-native') || selection.fallback?.model === 'browser-native') local('AUDIO_PLAYBACK_ERROR'); else { recordAudioResult('tts', { requestId, model: data.model, provider: data.provider, status: 'failed', code: 'AUDIO_PLAYBACK_ERROR' }); finish(); } } };
+          await audio.play();
           return;
         }
-      }
-    } catch (err) {
-      console.error('TTS request failed, attempting local Web Speech API:', err);
+      } else fallbackReason = 'TTS_HTTP_' + res.status;
+    } catch (error: any) {
+      if (!active() || error.name === 'AbortError') return;
+      fallbackReason = error.message || 'TTS_NETWORK_ERROR';
+      if (failureData?.audioBase64) failureData = { ...failureData, status: 'failed', code: 'AUDIO_PLAYBACK_ERROR', error: fallbackReason };
     }
-
-    // Fallback if network or model failed
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = audioSettings.ttsSpeed || 1.0;
-      utterance.onend = () => setCurrentlyNarratingId(null);
-      utterance.onerror = () => setCurrentlyNarratingId(null);
-      window.speechSynthesis.speak(utterance);
-    } else {
-      setCurrentlyNarratingId(null);
-    }
+    if (selection.fallbackModels?.includes('browser-native') || selection.fallback?.model === 'browser-native') local(fallbackReason);
+    else { recordAudioResult('tts', failureData || { requestId, configuredModel: selection.model, model: selection.model, provider: 'gemini', status: 'failed', code: 'TTS_FAILED', error: fallbackReason }); finish(); }
   };
 
   const handleStopTts = () => {
-    if (currentAudioRef.current) {
-      currentAudioRef.current.pause();
-      currentAudioRef.current = null;
+    if (ttsControllerRef.current) recordAudioResult('tts', { ...(ttsControllerRef.current as any).audioMetadata, status: 'cancelled', code: 'TTS_CANCELLED' });
+    ttsControllerRef.current?.abort();
+    ttsControllerRef.current = null;
+    const audio = currentAudioRef.current;
+    currentAudioRef.current = null;
+    if (audio) {
+      audio.onended = null; audio.onerror = null;
+      audio.pause(); audio.currentTime = 0;
+      audio.removeAttribute('src'); audio.load();
     }
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
+    window.speechSynthesis?.cancel();
     setCurrentlyNarratingId(null);
   };
 
@@ -1834,6 +1749,12 @@ export function App() {
         )}
 
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          {Object.entries<any>(audioDiagnostics).filter(([, data]) => data.status === 'failed' || (data.status === 'success' && data.fallbackUsed)).map(([modality, data]) => (
+            <div key={modality} role="status" className="px-4 py-2 text-xs text-zinc-400 border-b border-zinc-800">
+              {modality.toUpperCase()}: {data.status === 'failed' ? 'falha definitiva' : `recuperado por fallback (${data.model})`}.
+              {data.code ? ` ${data.code}.` : ''} <button className="underline" onClick={() => setRightPanelMode('payload')}>Detalhes no Payload</button>
+            </div>
+          ))}
           {activeView === 'chat' ? (
             <ChatView
               messages={messages}
@@ -1903,6 +1824,7 @@ export function App() {
             {rightPanelMode === 'payload' && (
               <RightSidebar
                 isOpen={true}
+                audioDiagnostics={audioDiagnostics}
                 onClose={() => setRightPanelMode(null)}
                 message={inspectionMessage || (messages.length > 0 ? messages[messages.length - 1] : null)}
                 agent={
@@ -2132,9 +2054,7 @@ export function App() {
         onSaveMcpServers={handleSaveMcpServers}
         onTestMcp={handleTestMcp}
         audioSettings={audioSettings}
-        onUpdateAudioSettings={(updates) =>
-          setAudioSettings((prev) => ({ ...prev, ...updates }))
-        }
+        onUpdateAudioSettings={(updates) => setAudioSettings((prev) => updateTtsSettings(prev, updates, getSavedVoiceAgents()))}
         approvalMode={approvalMode}
         onChangeApprovalMode={setApprovalMode}
         onRefreshStatus={refreshStatus}

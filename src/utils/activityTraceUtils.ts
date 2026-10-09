@@ -1,3 +1,4 @@
+import { unwrapTelemetry } from './telemetry.js';
 import { NormalizedActivity, ActivityType, ActivityStatus, ToolCallStep } from '../types';
 
 /**
@@ -63,6 +64,7 @@ export function extractWebQuery(params: Record<string, any> | undefined): string
 export function extractTargetAgent(params: Record<string, any> | undefined): string {
   if (!params || typeof params !== 'object') return '';
   const raw =
+    params.agent_name ||
     params.agent ||
     params.subagent ||
     params.targetAgent ||
@@ -208,11 +210,12 @@ export function generateActivityTitle(
     }
 
     case 'web_search': {
+      const provider = toolName.toLowerCase().includes('exa') ? ' via Exa' : '';
       const qDisplay = query ? `"${query.length > 40 ? query.substring(0, 37) + '...' : query}"` : '';
       if (isRunning) {
-        return qDisplay ? `Buscando na Web via Exa: ${qDisplay}...` : 'Buscando dados na Web via Exa...';
+        return qDisplay ? `Buscando na Web${provider}: ${qDisplay}...` : `Buscando dados na Web${provider}...`;
       }
-      return qDisplay ? `Busca Web via Exa: ${qDisplay}` : 'Busca Web via Exa concluída';
+      return qDisplay ? `Busca Web${provider}: ${qDisplay}` : `Busca Web${provider} concluída`;
     }
 
     case 'command': {
@@ -320,7 +323,6 @@ export function normalizeActivities(options: {
     if (tc.status === 'completed') status = 'completed';
     else if (tc.status === 'failed' || Boolean(tc.error)) status = 'failed';
     else if (tc.status === 'running') status = 'running';
-    else if (!isStreaming) status = 'completed'; // Se stream terminou e não houve falha, foi concluído
 
     const title = generateActivityTitle(type, status, tc.toolName, tc.parameters, duration);
 
@@ -341,7 +343,11 @@ export function normalizeActivities(options: {
       searchQuery: extractWebQuery(tc.parameters),
       targetAgent: extractTargetAgent(tc.parameters),
       agentName: tc.componentExecutor || agentName,
-      model,
+      model: tc.agentModel || model,
+      requestId: tc.requestId,
+      executionId: tc.executionId,
+      invocationId: tc.invocationId,
+      parentToolCallId: tc.parentToolCallId,
       arguments: tc.parameters,
       result: tc.result,
       error: tc.error,
@@ -356,12 +362,46 @@ export function normalizeActivities(options: {
 
   // 2. Processar rawEvents (fluxo completo do Gemini CLI SSE stream)
   let activeThinkingActivity: NormalizedActivity | null = null;
+  const terminalTools = new Set<string>();
+  const correlate = (activity: NormalizedActivity, event: any) => {
+    activity.agentName = event.agentName || event.agentId || activity.agentName;
+    activity.model = event.model || event.subagentModel || activity.model;
+    activity.requestId = event.requestId || event.lastRequestId || event.request_id || activity.requestId;
+    activity.executionId = event.executionId || activity.executionId;
+    activity.invocationId = event.invocationId || activity.invocationId;
+    activity.parentToolCallId = event.parentToolCallId || activity.parentToolCallId;
+  };
 
-  for (const evt of rawEvents) {
+  for (const rawEvent of rawEvents) {
+    const evt = unwrapTelemetry(rawEvent);
     if (!evt || typeof evt !== 'object') continue;
 
     const evtType = evt.type || evt.sessionUpdate || '';
     const evtTimestamp = evt.timestamp || new Date().toISOString();
+
+    if (evtType === 'runtime_event') {
+      // Raw telemetry stays in Payload/Logs. Only actionable availability notices
+      // belong in the progress area, updated in place for each affected agent.
+      if (evt.event !== 'EXECUTION_BLOCKED') continue;
+      const id = evt.id || `unavailable:${evt.agentId || agentName || 'principal'}`;
+      activitiesMap.set(id, {
+        id, sequence: activitiesMap.get(id)?.sequence ?? sequenceCounter++, type: 'runtime_event', status: 'failed',
+        title: evt.message || 'Execução indisponível no momento.', timestamp: evtTimestamp,
+        agentName: evt.agentId, metadata: { event: evt.event, nextRetryAt: evt.nextRetryAt, detailsInPayload: true },
+        result: evt.nextRetryAt ? `Próxima tentativa a partir de ${new Date(evt.nextRetryAt).toLocaleString('pt-BR')}. Consulte Logs/Payload.` : 'Consulte Logs/Payload para detalhes.',
+      });
+      continue;
+    }
+    if (evtType === 'analysis_summary') {
+      const id = evt.activityId || `analysis:${evt.agentId || agentName || 'principal'}`;
+      activitiesMap.set(id, {
+        id, sequence: activitiesMap.get(id)?.sequence ?? sequenceCounter++, type: 'thinking',
+        status: evt.status === 'completed' || !isStreaming ? 'completed' : 'running',
+        title: `${evt.agentId || agentName || 'Agente'} · Análise`, timestamp: evtTimestamp,
+        agentName: evt.agentId, result: typeof evt.summary === 'string' ? evt.summary : undefined,
+      });
+      continue;
+    }
 
     // A. Eventos de Raciocínio (Thinking)
     // REQUISITO: "Thinking: mostrar somente duração/evento de thinking realmente fornecido pelo runtime; nunca exibir cadeia de pensamento privada."
@@ -414,6 +454,7 @@ export function normalizeActivities(options: {
 
       const existing = activitiesMap.get(toolCallId);
       if (existing) {
+        if (!terminalTools.has(toolCallId)) correlate(existing, evt);
         // Atualizar sem duplicar
         existing.arguments = { ...existing.arguments, ...params };
         existing.toolName = toolName;
@@ -424,7 +465,10 @@ export function normalizeActivities(options: {
           id: toolCallId,
           toolCallId,
           eventId: evt.id,
-          requestId: evt.request_id || evt.prompt_id,
+          requestId: evt.requestId || evt.request_id || evt.prompt_id,
+          executionId: evt.executionId,
+          invocationId: evt.invocationId,
+          parentToolCallId: evt.parentToolCallId,
           sequence: sequenceCounter++,
           type,
           status: 'running',
@@ -436,8 +480,8 @@ export function normalizeActivities(options: {
           filePath: extractFilePath(params),
           searchQuery: extractWebQuery(params),
           targetAgent: extractTargetAgent(params),
-          agentName,
-          model,
+          agentName: evt.agentId || evt.agentName || agentName,
+          model: evt.model || evt.subagentModel || model,
           arguments: params,
           metadata: {
             origin: evt.origin,
@@ -453,14 +497,17 @@ export function normalizeActivities(options: {
     if (evtType === 'tool_result' || evtType === 'tool_call_update') {
       const toolCallId = evt.tool_call_id || evt.tool_id || evt.id;
       if (toolCallId && activitiesMap.has(toolCallId)) {
+        if (terminalTools.has(toolCallId)) continue;
+        terminalTools.add(toolCallId);
         const act = activitiesMap.get(toolCallId)!;
+        correlate(act, evt);
         const now = Date.now();
         act.completedAt = now;
         if (act.startedAt) {
           act.durationMs = now - act.startedAt;
         }
         const isError = evt.status === 'error' || evt.status === 'failed' || Boolean(evt.error);
-        act.status = isError ? 'failed' : 'completed';
+        act.status = evt.status === 'cancelled' ? 'cancelled' : isError ? 'failed' : 'completed';
         act.result = typeof evt.output === 'string' ? evt.output : JSON.stringify(evt.output || evt.result || '');
         if (evt.error) {
           act.error = typeof evt.error === 'string' ? evt.error : JSON.stringify(evt.error);
@@ -490,7 +537,7 @@ export function normalizeActivities(options: {
     // E. Evento de erro de processo/runtime
     if (evtType === 'process_error' || (evtType === 'error' && evt.severity === 'error')) {
       const errId = `error_${sequenceCounter}`;
-      const errMsg = evt.message || evt.error || 'Erro reportado pelo runtime';
+      const errMsg = 'Execução interrompida. Consulte Logs/Payload para detalhes.';
       activitiesMap.set(errId, {
         id: errId,
         sequence: sequenceCounter++,
@@ -540,12 +587,13 @@ export function normalizeActivities(options: {
     }
   }
 
-  // Se o stream já finalizou e restou alguma atividade como 'running', marcar como concluída
+  // An ended stream does not prove an unfinished tool succeeded.
   if (!isStreaming) {
     for (const act of activitiesMap.values()) {
       if (act.status === 'running') {
-        act.status = 'completed';
-        act.title = generateActivityTitle(act.type, 'completed', act.toolName || '', act.arguments || {}, act.durationMs);
+        act.status = act.type === 'thinking' ? 'completed' : 'failed';
+        if (act.status === 'failed') act.error = 'Atividade encerrada sem retorno terminal. Consulte Logs/Payload.';
+        act.title = generateActivityTitle(act.type, act.status, act.toolName || '', act.arguments || {}, act.durationMs);
       }
     }
   }
@@ -558,14 +606,14 @@ export function normalizeActivities(options: {
       sequence: sequenceCounter++,
       type: 'error',
       status: 'failed',
-      title: `Erro: ${error.length > 50 ? error.substring(0, 47) + '...' : error}`,
+      title: 'Execução interrompida. Consulte Logs/Payload.',
       timestamp: new Date().toISOString(),
-      error,
+      error: 'Consulte Logs/Payload para detalhes.',
       agentName,
       model,
     });
   }
 
   // Ordenação estrita pela sequência real de chegada
-  return Array.from(activitiesMap.values()).sort((a, b) => a.sequence - b.sequence);
+  return Array.from(activitiesMap.values()).sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.sequence - b.sequence);
 }

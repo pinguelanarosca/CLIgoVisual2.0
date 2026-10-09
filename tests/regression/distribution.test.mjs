@@ -22,13 +22,9 @@ function repo(t) {
   for (const file of ['package.json', 'server.ts', 'install.sh', 'uninstall.sh', 'scripts/distribution-source.cjs', 'scripts/patch-gemini-cli.cjs']) {
     const output = path.join(dir, file); fs.mkdirSync(path.dirname(output), { recursive: true });
     fs.copyFileSync(path.join(root, file), output);
-    if (file.endsWith('.sh')) fs.chmodSync(output, 0o755);
   }
   fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\ndist/\ndist-ubuntu/\n.gemini/\ndistribution-manifest.json\n');
   execFileSync('git', ['-C', dir, 'add', '.']);
-  try {
-    execFileSync('git', ['-C', dir, 'update-index', '--chmod=+x', 'install.sh']);
-  } catch {}
   execFileSync('git', ['-C', dir, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'fixture'], { stdio: 'pipe' });
   return dir;
 }
@@ -135,4 +131,20 @@ test('Empacotador gera .deb e arquivo completos, com versão/hash e dependência
   const listing = execFileSync('tar', ['-tzf', path.join(dir, 'dist-ubuntu/gemini-gui-ubuntu-standalone.tar.gz')], { encoding: 'utf8' });
   assert.ok(listing.includes('gemini-gui/server.ts')); assert.ok(listing.includes('gemini-gui/dist/server.cjs'));
   assert.ok(!listing.includes('oauth_creds'));
+});
+
+test('Fonte local sem Git: exporta correções e instalador, preserva ausência de Git e exclui dados pessoais', t => {
+  const box = fixture(t), source = path.join(box, 'source'), output = path.join(box, 'exported');
+  fs.mkdirSync(source);
+  for (const file of ['package.json','server.ts','install.sh','scripts/patch-gemini-cli.cjs','server/cli-runtime.ts','server/runtime-bridge.ts']) {
+    fs.mkdirSync(path.dirname(path.join(source,file)),{recursive:true});fs.copyFileSync(path.join(root,file),path.join(source,file));
+  }
+  for (const file of ['.env','personal.json','.gemini/settings.json','node_modules/private.js','logs/private.log','server/key.pem']) {
+    fs.mkdirSync(path.dirname(path.join(source,file)),{recursive:true});fs.writeFileSync(path.join(source,file),'PRIVATE');
+  }
+  const manifest = exportSource(source,output);
+  assert.equal(manifest.commit,null);assert(!fs.existsSync(path.join(output,'.git')));
+  for (const file of ['server/cli-runtime.ts','server/runtime-bridge.ts','scripts/patch-gemini-cli.cjs','install.sh']) assert.equal(fs.readFileSync(path.join(source,file),'utf8'),fs.readFileSync(path.join(output,file),'utf8'));
+  for (const file of ['.env','personal.json','.gemini','node_modules','logs','server/key.pem']) assert(!fs.existsSync(path.join(output,file)));
+  assert.throws(()=>exportSource(source,output),/vazio/);
 });

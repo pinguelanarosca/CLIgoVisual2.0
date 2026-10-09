@@ -34,6 +34,7 @@ interface RightSidebarProps {
   mcpServers?: McpConfig[];
   approvalMode?: string;
   onOpenSettings?: (tab?: string) => void;
+  audioDiagnostics?: Record<string, any>;
 }
 
 const formatSseText = (
@@ -114,12 +115,18 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   mcpServers = [],
   approvalMode = 'default',
   onOpenSettings,
+  audioDiagnostics = {},
 }) => {
   // Accordion state: all sections start collapsed as requested
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
 
-  if (!isOpen || !message) return null;
+  if (!isOpen) return null;
+  const audioPanel = Object.keys(audioDiagnostics).length > 0 ? <details className="m-3 p-3 border border-zinc-800 rounded-lg text-xs">
+    <summary className="cursor-pointer">Áudio — Payload TTS / STT</summary>
+    <pre className="mt-2 text-[10px] whitespace-pre-wrap break-all">{JSON.stringify(audioDiagnostics, null, 2)}</pre>
+  </details> : null;
+  if (!message) return <div className="overflow-auto">{audioPanel}<button className="m-3 text-xs" onClick={onClose}>Fechar Payload</button></div>;
 
   const toggleSection = (sec: string) => {
     setExpandedSections((prev) => {
@@ -260,6 +267,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
 
       {/* Main Content Area: Vertical Collapsible Accordions (All start closed) */}
       <div className="flex-1 overflow-y-auto p-2 space-y-2 font-sans text-xs leading-snug">
+        {audioPanel}
         {/* ========================================================
             ACCORDION 1: Payload API Google (finalApiRequest)
            ======================================================== */}

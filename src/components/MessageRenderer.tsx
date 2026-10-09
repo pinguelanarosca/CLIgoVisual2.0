@@ -3,18 +3,18 @@ import {
   Copy,
   Check,
   FileCode,
-  Paperclip,
   ExternalLink,
-  Code2,
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
 import { ContentViewerItem } from './ContentViewerSidebar';
-import { isLongMarkdownText, extractDocumentTitle } from '../utils/markdownDocUtils.js';
+import { isLongMarkdownText } from '../utils/markdownDocUtils.js';
+import { DocumentFileCard } from './DocumentFileCard.js';
 import { MarkdownDocCard } from './MarkdownDocCard.js';
 
 interface MessageRendererProps {
   content: string;
+  role?: 'user' | 'assistant';
   isStreaming?: boolean;
   onOpenViewer?: (item: ContentViewerItem) => void;
   onOpenMarkdownDoc?: (title: string, content: string) => void;
@@ -327,6 +327,7 @@ const CodeBlockItem: React.FC<{
 
 export const MessageRenderer: React.FC<MessageRendererProps> = ({
   content,
+  role = 'assistant',
   isStreaming = false,
   onOpenViewer,
   onOpenMarkdownDoc,
@@ -358,13 +359,13 @@ export const MessageRenderer: React.FC<MessageRendererProps> = ({
     if (attachedFilesContent) {
       const fileMatches = Array.from(
         attachedFilesContent.matchAll(
-          /--- INÍCIO DO ARQUIVO ANEXADO:\s*(.*?)\s*---\n([\s\S]*?)(?=--- FIM DO ARQUIVO ANEXADO ---|$)/g
+          /--- INÍCIO DO ARQUIVO ANEXADO:\s*(.*?)\s*---\r?\n([\s\S]*?)(?=\r?\n--- FIM DO ARQUIVO ANEXADO(?::[^\r\n]*?)? ---|$)/g
         )
       );
 
       fileMatches.forEach((m) => {
         const fileName = m[1]?.trim() || 'arquivo.txt';
-        const fileContent = m[2]?.trim() || '';
+        const fileContent = m[2] || '';
         const extension = fileName.includes('.')
           ? fileName.slice(fileName.lastIndexOf('.')).toLowerCase()
           : '.txt';
@@ -381,7 +382,7 @@ export const MessageRenderer: React.FC<MessageRendererProps> = ({
 
   // 2. Parse code blocks vs regular markdown text parts
   const parts = useMemo(() => {
-    const codeBlockRegex = /```([a-zA-Z0-9_\-\.]*)\n([\s\S]*?)```/g;
+    const codeBlockRegex = /(`{3,})([a-zA-Z0-9_\-\.]*)\n([\s\S]*?)\1(?!`)/g;
     const result: Array<{ type: 'text' | 'code'; content: string; language?: string }> = [];
 
     let lastIndex = 0;
@@ -396,8 +397,8 @@ export const MessageRenderer: React.FC<MessageRendererProps> = ({
       }
       result.push({
         type: 'code',
-        language: match[1] || 'code',
-        content: match[2],
+        language: match[2] || 'code',
+        content: match[3],
       });
       lastIndex = match.index + match[0].length;
     }
@@ -426,9 +427,20 @@ export const MessageRenderer: React.FC<MessageRendererProps> = ({
     }
   };
 
+  const fileBlocks = parts.filter(part => part.type === 'code' && /^[\w.-]+\.(?:md|markdown|txt|json|yaml|yml|ts|tsx|js|jsx|py|html|css|rs|go|cpp|sh)$/i.test(part.language || ''));
+  const bodyParts = parts.filter(part => !fileBlocks.includes(part));
+  const hasFiles = attachedFileItems.length > 0 || fileBlocks.length > 0;
+  const description = bodyParts.filter(part => part.type === 'text').map(part => part.content).join(' ').replace(/\s+/g, ' ').trim();
+  const shortDescription = description.length > 180 ? description.slice(0, 177).trimEnd() + '…' : description;
+
+  const openFile = (title: string, fileContent: string, extension: string, type: 'attached_file' | 'code_block') => {
+    if (['.md', '.markdown'].includes(extension) && onOpenMarkdownDoc) onOpenMarkdownDoc(title, fileContent);
+    else onOpenViewer?.({ id: `file_${title}_${Date.now()}`, title, content: fileContent, fileExtension: extension, type });
+  };
+
   const renderContentParts = () => (
     <>
-      {parts.map((part, idx) => {
+      {bodyParts.map((part, idx) => {
         if (part.type === 'text') {
           return <MarkdownTextBlock key={idx} text={part.content} />;
         }
@@ -448,89 +460,30 @@ export const MessageRenderer: React.FC<MessageRendererProps> = ({
     </>
   );
 
-  const isLong = !isStreaming && isLongMarkdownText(mainCleanText);
+  const isLong = isLongMarkdownText(mainCleanText) && fileBlocks.length === 0;
 
   return (
     <div className="space-y-2 text-xs sm:text-[13px] leading-relaxed select-text font-sans text-zinc-200">
-      {/* Se o texto for longo e não estiver em streaming, renderiza como Card .md com abertura na aba lateral direita */}
-      {isLong ? (
-        <MarkdownDocCard
-          content={mainCleanText}
-          isStreaming={isStreaming}
-          onOpenRightPanel={handleOpenDoc}
-          renderInlineContent={renderContentParts}
-        />
-      ) : (
-        renderContentParts()
-      )}
-
-      {/* Attached Files Section - Compact Square Grid */}
-      {attachedFileItems.length > 0 && (
-        <div className="my-2 pt-1.5 border-t border-zinc-800/80 space-y-1.5">
-          <div className="text-[10.5px] font-semibold text-zinc-400 flex items-center gap-1.5">
-            <Paperclip className="w-3 h-3 text-blue-400" />
-            <span>Arquivos Anexados ({attachedFileItems.length}):</span>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            {attachedFileItems.map((file, fileIdx) => {
-              const isJson = file.extension === '.json' || file.extension === '.yaml' || file.extension === '.yml';
-              const isMd = file.extension === '.md' || file.extension === '.markdown' || file.extension === '.txt';
-              const isCode = ['.ts', '.tsx', '.js', '.jsx', '.py', '.html', '.css', '.rs', '.go', '.cpp'].includes(
-                file.extension
-              );
-              const lineCount = file.fileContent.split('\n').length;
-
-              return (
-                <button
-                  key={fileIdx}
-                  type="button"
-                  onClick={() =>
-                    onOpenViewer &&
-                    onOpenViewer({
-                      id: `att_${fileIdx}_${Date.now()}`,
-                      title: file.fileName,
-                      content: file.fileContent,
-                      fileExtension: file.extension,
-                      type: 'attached_file',
-                    })
-                  }
-                  title={`${file.fileName} (${lineCount} linhas) • Clique para ver no painel`}
-                  className="w-24 h-24 sm:w-28 sm:h-28 p-2 rounded-xl bg-zinc-900/90 border border-zinc-800 hover:border-blue-500/80 hover:bg-zinc-850 transition cursor-pointer flex flex-col items-center justify-between text-center group shadow-xs select-none shrink-0"
-                >
-                  <div
-                    className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform ${
-                      isJson
-                        ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
-                        : isMd
-                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                        : isCode
-                        ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
-                        : 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
-                    }`}
-                  >
-                    {isCode ? (
-                      <Code2 className="w-3.5 h-3.5" />
-                    ) : isMd ? (
-                      <FileCode className="w-3.5 h-3.5" />
-                    ) : (
-                      <Paperclip className="w-3.5 h-3.5" />
-                    )}
-                  </div>
-
-                  <span className="text-[10px] font-semibold text-zinc-200 group-hover:text-blue-400 transition-colors line-clamp-2 w-full break-all px-0.5" title={file.fileName}>
-                    {file.fileName}
-                  </span>
-
-                  <span className="text-[9px] text-zinc-500 font-mono">
-                    {lineCount}L • {Math.round(file.fileContent.length / 1024 * 10) / 10}KB
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+      {hasFiles && (
+        <div className="flex flex-wrap gap-2">
+          {attachedFileItems.map((file, index) => (
+            <DocumentFileCard key={`attachment_${index}`} name={file.fileName} content={file.fileContent} extension={file.extension}
+              onOpen={() => openFile(file.fileName, file.fileContent, file.extension, 'attached_file')} />
+          ))}
+          {fileBlocks.map((part, index) => (
+            <DocumentFileCard key={`generated_${index}`} name={part.language!} content={part.content} extension={part.language!.slice(part.language!.lastIndexOf('.')).toLowerCase()}
+              onOpen={() => openFile(part.language!, part.content, part.language!.slice(part.language!.lastIndexOf('.')).toLowerCase(), 'code_block')} />
+          ))}
         </div>
       )}
+      {hasFiles && role === 'assistant' ? (
+        shortDescription && <p className="line-clamp-2 text-zinc-400 leading-snug max-w-prose">{renderInlineMarkdown(shortDescription)}</p>
+      ) : isLong ? (
+        <>
+          <MarkdownDocCard content={mainCleanText} onOpenRightPanel={handleOpenDoc} />
+          {role === 'assistant' && <p className="text-zinc-400 leading-snug">Resposta completa disponível no painel lateral.</p>}
+        </>
+      ) : renderContentParts()}
     </div>
   );
 };

@@ -18,3 +18,10 @@ export function consumeSessionRecovery(state: { sessionRecoveries?: number }, ma
   state.sessionRecoveries = (state.sessionRecoveries || 0) + 1;
   return true;
 }
+
+export type ExecutionOutcome = 'success' | 'partial' | 'failed';
+export function summarizeExecution(processFailed: boolean, answered: boolean, statuses: string[]): ExecutionOutcome {
+  const incomplete = statuses.some(status => status !== 'completed');
+  if (!processFailed && !incomplete) return 'success';
+  return answered || statuses.includes('completed') ? 'partial' : 'failed';
+}

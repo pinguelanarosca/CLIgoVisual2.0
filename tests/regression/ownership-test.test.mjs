@@ -6,8 +6,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { load } from './audit-fixes.test.mjs';
 
-test('Alias nativo codebase_investigator: comportamento de ownership e remoção', t => {
-  const { saveAgentToFile, ensureAllAgentsSynchronizedAndAcknowledged } = load('server/agents-service.ts');
+test('Alias nativo codebase_investigator: preservação, sincronização e ownership', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-ownership-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const agentsDir = path.join(dir, '.gemini/agents');
@@ -15,24 +14,28 @@ test('Alias nativo codebase_investigator: comportamento de ownership e remoção
   const test_ownershipPath = path.join(agentsDir, '.gui-owned-agents.json');
 
   const agent = { name: 'investigator', id: 'investigator' };
+  const context = load('server/agents-service.ts', { os: { ...os, homedir: () => dir }, getGuiDataDir: () => dir,
+    buildEffectiveSystemPrompt: load('src/utils/systemPromptUtils.ts').buildEffectiveSystemPrompt });
+  context.loadAgents = () => [agent];
+  const { saveAgentToFile, ensureAllAgentsSynchronizedAndAcknowledged } = context;
   const aliasFile = path.join(agentsDir, 'codebase_investigator.md');
 
-  // 1. GUI-owned native alias (same hash) -> removed
+  // 1. Existing native alias -> preserved without rewriting
   fs.writeFileSync(aliasFile, 'GUI-CONTENT');
   const hash = crypto.createHash('sha256').update('GUI-CONTENT').digest('hex');
   fs.writeFileSync(test_ownershipPath, JSON.stringify({ 'codebase_investigator.md': hash }));
   saveAgentToFile(agent, dir, true);
-  assert.equal(fs.existsSync(aliasFile), false, '1. GUI-owned alias (same hash) should be removed');
+  assert.equal(fs.readFileSync(aliasFile, 'utf8'), 'GUI-CONTENT', '1. Existing native alias should remain unchanged');
 
   // 2. User-owned native alias (different hash, no ownership) -> preserved
   fs.writeFileSync(aliasFile, 'USER-CONTENT');
   saveAgentToFile(agent, dir, true);
-  assert.equal(fs.existsSync(aliasFile), true, '2. User-owned alias should be preserved');
+  assert.equal(fs.readFileSync(aliasFile, 'utf8'), 'USER-CONTENT', '2. User-owned alias content should be preserved');
 
-  // 3. Native alias inexistente -> not created
+  // 3. Missing built-in native alias -> not created as a GUI file
   fs.unlinkSync(aliasFile);
   saveAgentToFile(agent, dir, true);
-  assert.equal(fs.existsSync(aliasFile), false, '3. Native alias should not be recreated');
+  assert.equal(fs.existsSync(aliasFile), false, '3. Built-in native alias should not be recreated');
 
   // 4 & 5. Canonical agent (not alias) -> should not be removed
   const canonicalFile = path.join(agentsDir, 'investigator.md');

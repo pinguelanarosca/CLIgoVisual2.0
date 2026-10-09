@@ -36,6 +36,11 @@ if ! command -v git &> /dev/null; then
     apt-get update -qq && apt-get install -y -qq git || true
 fi
 
+if ! command -v rg &> /dev/null; then
+    echo "Instalando ripgrep para as buscas locais do CLI..."
+    apt-get update -qq && apt-get install -y -qq ripgrep || exit 1
+fi
+
 if ! command -v node &> /dev/null; then
     echo "ERRO: Node.js (>= 22.13.0) não está instalado no sistema."
     echo "Por favor instale o Node.js antes de continuar."

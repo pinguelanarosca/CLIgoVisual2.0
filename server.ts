@@ -81,7 +81,7 @@ import {
   readFileContent,
   readFileContentAsync,
 } from './server/projects-and-dirs-service.js';
-import { checkAudioModelsAvailability, transcribeAudio, synthesizeSpeech } from './server/audio-service.js';
+import { checkAudioModelsAvailability, transcribeAudio, synthesizeSpeech, audioHttpStatus } from './server/audio-service.js';
 import { getSystemValidationMatrix, buildPackagingArtifacts } from './server/packaging-service.js';
 import {
   getGitStatus,
@@ -984,57 +984,28 @@ priority = 90
     res.json(status);
   });
 
-  app.post('/api/audio/stt', async (req, res) => {
-    try {
-      const { audioBase64, mimeType, model, apiKey, apiUrl, instructions } = req.body;
-      if (!audioBase64) {
-        return res.status(400).json({ error: 'Dados de áudio não fornecidos.' });
-      }
-
+  for (const modality of ['stt', 'tts'] as const) {
+    app.post('/api/audio/' + modality, async (req, res) => {
       const controller = new AbortController();
-      res.on('close', () => {
-        if (!res.writableEnded) {
-          controller.abort();
-        }
-      });
-
-      const result = await transcribeAudio(audioBase64, mimeType, model, apiKey, apiUrl, instructions, controller.signal);
-      if (!res.writableEnded) {
-        res.json(result);
+      const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+      res.once('close', disconnected);
+      req.once('aborted', disconnected);
+      try {
+        const { audioBase64, mimeType, text, voice, apiKey, apiUrl, model, instructions, requestId, fallback, fallbackModels, language, generationConfig } = req.body;
+        if (!(modality === 'tts' ? text : audioBase64)) return res.status(400).json({ error: modality === 'tts' ? 'Texto para narração é obrigatório.' : 'Dados de áudio não fornecidos.' });
+        const options = { requestId, fallback, fallbackModels, language, generationConfig };
+        const result = modality === 'tts'
+          ? await synthesizeSpeech(text, voice, model, apiKey, apiUrl, instructions, controller.signal, options)
+          : await transcribeAudio(audioBase64, mimeType, model, apiKey, apiUrl, instructions, controller.signal, options);
+        if (!controller.signal.aborted && !res.destroyed && !res.writableEnded) res.status(audioHttpStatus(result)).json(result);
+      } catch {
+        if (!controller.signal.aborted && !res.destroyed && !res.writableEnded) res.status(500).json({ error: 'Erro interno no serviço de áudio.', modality, status: 'failed', code: modality.toUpperCase() + '_FAILED' });
+      } finally {
+        res.removeListener('close', disconnected);
+        req.removeListener('aborted', disconnected);
       }
-    } catch (err: any) {
-      console.error('Error in STT API:', err);
-      if (!res.writableEnded) {
-        res.status(500).json({ error: err.message || 'Erro interno no serviço de transcrição.' });
-      }
-    }
-  });
-
-  app.post('/api/audio/tts', async (req, res) => {
-    try {
-      const { text, voice, apiKey, apiUrl, model, instructions } = req.body;
-      if (!text) {
-        return res.status(400).json({ error: 'Texto para narração é obrigatório.' });
-      }
-
-      const controller = new AbortController();
-      res.on('close', () => {
-        if (!res.writableEnded) {
-          controller.abort();
-        }
-      });
-
-      const result = await synthesizeSpeech(text, voice, model, apiKey, apiUrl, instructions, controller.signal);
-      if (!res.writableEnded) {
-        res.json(result);
-      }
-    } catch (err: any) {
-      console.error('Error in TTS API:', err);
-      if (!res.writableEnded) {
-        res.status(500).json({ error: err.message || 'Erro interno no serviço de síntese de voz.' });
-      }
-    }
-  });
+    });
+  }
 
   // 12. Packaging & Status Distinction Matrix
   app.get('/api/packaging/matrix', (req, res) => {

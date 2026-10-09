@@ -1,10 +1,13 @@
-import { resolveCliAuthentication, resolveExecutionAuthentication, buildCliAuthEnvironment } from './cli-auth-service.js';
+import { createRuntimeBridge } from './runtime-bridge.js';
+import { beginForegroundExecution, classifyKeyResult, getModelAvailability } from './key-pool-service.js';
+import { pathToFileURL } from 'node:url';
+import { resolveCliAuthentication, resolveExecutionAuthentication, buildCliAuthEnvironment, nativeCliHome } from './cli-auth-service.js';
 import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import crypto from 'node:crypto';
 import { terminateProcessTree } from './process-service.js';
-import { buildExecutionPrompt, consumeSessionRecovery, executionFailed, validateExecutionContext, ContextMessage } from './execution-policy.js';
+import { buildExecutionPrompt, consumeSessionRecovery, executionFailed, summarizeExecution, validateExecutionContext, ContextMessage } from './execution-policy.js';
 import { retainDiagnostics } from '../src/utils/diagnosticRetention.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -14,7 +17,7 @@ import { CliStatus } from '../src/types.js';
 import { sysLog } from './logger-service.js';
 import { logSubagentEvent, getSubagentLogs } from './subagent-logger.js';
 import { AgentExecutionTracker } from './agent-execution-tracker.js';
-import { syncAgentsToSettings, loadAgents, buildEffectiveSystemPrompt, ensureAllAgentsSynchronizedAndAcknowledged } from './agents-service.js';
+import { syncAgentsToSettings, loadAgents, getEquivalentAgentAliases, buildEffectiveSystemPrompt, ensureAllAgentsSynchronizedAndAcknowledged } from './agents-service.js';
 import { syncPoliciesToSettings } from './policies-service.js';
 import { getGuiDataDir } from './paths-service.js';
 import { loadMcpSettings } from './mcp-service.js';
@@ -25,7 +28,6 @@ import {
   maskApiKey,
   recordRuntimeExecutionResult,
   runDailyTestBattery,
-  registerActiveExecutionCheck,
 } from './key-pool-service.js';
 
 const persistentProcesses = new Map<string, ChildProcess>();
@@ -34,18 +36,19 @@ export interface ExecutionState {
   executionId: string;
   childProcess: ChildProcess | null;
   retryTimeout: NodeJS.Timeout | null;
-  oauthWatchdogTimer?: NodeJS.Timeout | null;
   cancelled: boolean;
   sessionId?: string;
   workDir?: string;
   sessionRecoveries?: number;
   attempts?: number;
   finished?: boolean;
+  watchdog?: NodeJS.Timeout | null;
+  closeRuntime?: () => void;
+  releaseForeground?: () => void;
   finish?: (code: number | null, signal: string | null) => void;
 }
 
 const executions = new Map<string, ExecutionState>();
-registerActiveExecutionCheck(() => executions.size > 0);
 let currentCustomCliPath: string = '';
 
 export function getExecutionState(executionId: string): ExecutionState | undefined {
@@ -68,7 +71,7 @@ export function getGlobalCliPath(): string {
     }
   } catch {}
 
-  const commonPaths = ['/snap/bin/gemini', '/usr/local/bin/gemini', '/usr/bin/gemini', '/bin/gemini'];
+  const commonPaths = ['/usr/local/bin/gemini', '/usr/bin/gemini', '/bin/gemini'];
   for (const p of commonPaths) {
     if (fs.existsSync(p)) {
       return p;
@@ -146,186 +149,45 @@ export async function validateGeminiApiKey(
   forceFresh = false,
   targetModel = 'gemini-3.1-flash-lite'
 ): Promise<{
-  configured: boolean;
-  valid: boolean;
-  message: string;
-  modelTested?: string;
-  latencyMs?: number;
+  configured: boolean; valid: boolean; message: string;
+  checked?: boolean; modelTested?: string; latencyMs?: number;
 }> {
   const candidate = getBestEligibleKey(targetModel);
-  const apiKey = candidate?.key || process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
+  const hasPool = Object.keys(loadConfiguredKeys()).length > 0;
+  const apiKey = candidate?.key || (hasPool ? undefined : process.env.GEMINI_API_KEY || process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY);
   if (!apiKey) {
-    return {
-      configured: false,
-      valid: false,
-      message: 'Nenhuma chave Gemini cadastrada no Key Pool. Configure as chaves K1..K9 na aba Key Pool.',
-    };
+    const availability = getModelAvailability(targetModel);
+    return { configured: hasPool, valid: false, checked: false,
+      message: hasPool ? 'Nenhuma opção elegível para validação agora.' + (availability.nextRetryAt ? ' Próxima tentativa a partir de ' + availability.nextRetryAt + '.' : '') : 'Nenhuma API key disponível para validação.' };
   }
-
-  // Se já foi validado uma vez ao entrar, reutilizar o cache permanentemente a menos que forceFresh=true ou a chave/modelo tenha mudado
-  const now = Date.now();
-  if (
-    !forceFresh &&
-    lastValidationCache &&
-    lastValidationCache.apiKey === apiKey &&
-    lastValidationCache.model === targetModel
-  ) {
-    return lastValidationCache.result;
-  }
-
-  // Fast-path: Validação instantânea via REST endpoint do Google Generative Language API
+  if (!forceFresh && lastValidationCache?.apiKey === apiKey && lastValidationCache.model === targetModel) return lastValidationCache.result;
+  const start = Date.now();
   try {
-    const startTimeFast = Date.now();
-    const fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
-    const fetchHeaders: Record<string, string> = {
-      'User-Agent': 'GeminiGUI-Validator/1.0',
-      'x-goog-api-key': apiKey,
-    };
-
-    const resFast = await fetch(fetchUrl, {
-      method: 'GET',
-      headers: fetchHeaders,
-      signal: AbortSignal.timeout(4000),
+    // An explicit credential check is one catalog request, never a generation battery.
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+      headers: { 'User-Agent': 'GeminiGUI-Validator/1.0', 'x-goog-api-key': apiKey }, signal: AbortSignal.timeout(4000),
     });
-
-    if (resFast.ok) {
-      const latencyMs = Date.now() - startTimeFast;
-      const res = {
-        configured: true,
-        valid: true,
-        message: `Chave GEMINI_API_KEY ativa e autenticada com sucesso no Google Gemini API (${latencyMs}ms).`,
-        modelTested: targetModel || 'gemini-3.5-flash-lite',
-        latencyMs,
-      };
-      lastValidationCache = { timestamp: now, model: targetModel, apiKey, result: res };
-      sysLog.success('API', `Validação REST da GEMINI_API_KEY bem-sucedida (${latencyMs}ms)`);
-      return res;
-    } else if (resFast.status === 400 || resFast.status === 401 || resFast.status === 403) {
-      const errJson: any = await resFast.json().catch(() => ({}));
-      const errDetail = errJson.error?.message || `HTTP ${resFast.status}`;
-      const res = {
-        configured: true,
-        valid: false,
-        message: `Chave presente no ambiente, mas rejeitada pelo Google Gemini API (${resFast.status}). Erro: ${errDetail}`,
-      };
-      // Não salvar em cache validações com falha para permitir novas tentativas limpas
-      sysLog.warn('API', `Chave GEMINI_API_KEY rejeitada (${resFast.status}): ${errDetail}`);
-      return res;
+    if (response.ok) {
+      const result = { configured: true, valid: true, checked: true, message: 'Credencial aceita pelo catálogo da API; geração não testada.', latencyMs: Date.now() - start };
+      lastValidationCache = { timestamp: Date.now(), model: targetModel, apiKey, result };
+      return result;
     }
-  } catch (fastErr: any) {
-    sysLog.warn('API', `Validação REST direta falhou ou sofreu timeout, tentando SDK: ${fastErr.message || fastErr}`);
-  }
-
-  const startTime = Date.now();
-  const validationModels = Array.from(new Set([
-    targetModel || 'gemini-3.5-flash-lite',
-    'gemini-3.5-flash-lite',
-    'gemini-3.1-flash-lite',
-    'gemini-2.5-flash',
-    'gemini-1.5-flash',
-  ]));
-
-  let lastError: any = null;
-  let validatedModel = '';
-
-  for (const model of validationModels) {
-    let timer: NodeJS.Timeout | null = null;
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-
-      const requestPromise = (async () => {
-        if (model.includes('antigravity') || model.includes('deep-research')) {
-          await ai.interactions.create({
-            agent: model,
-            input: 'ping',
-            environment: 'remote',
-          });
-        } else {
-          // Tentar primeiro generateContent tradicional com maxOutputTokens minimalista (rápido e direto)
-          try {
-            await ai.models.generateContent({
-              model,
-              contents: 'ping',
-              config: {
-                maxOutputTokens: 2,
-                temperature: 0,
-              },
-            });
-          } catch (genErr: any) {
-            // Se falhar no generateContent, tentar com Interactions API
-            try {
-              await ai.interactions.create({
-                model,
-                input: 'ping',
-              });
-            } catch (intErr: any) {
-              throw genErr; // Lançar o erro original do generateContent para análise detalhada
-            }
-          }
-        }
-      })();
-
-      const timeoutPromise = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('Timeout de validação (10s)')), 10000);
-      });
-
-      await Promise.race([requestPromise, timeoutPromise]);
-
-      validatedModel = model;
-      break; // Success!
-    } catch (err: any) {
-      lastError = err;
-      const status = err.status || err.response?.status;
-      const msg = (err.message || '').toLowerCase();
-      
-      if (status === 429 || status === 503 || msg.includes('429') || msg.includes('503') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('resource_exhausted') || msg.includes('unavailable')) {
-        sysLog.warn('API', `Validação do modelo ${model} retornou indisponibilidade temporária (${status || 'n/a'}): ${err.message || err}`);
-        validatedModel = `${model} (temporariamente indisponível)`;
-        break; // Connectivity successful!
-      }
-      
-      sysLog.warn('API', `Falha ao validar modelo ${model}: ${err.message || err}`);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-
-  if (validatedModel) {
-    const latencyMs = Date.now() - startTime;
-    const isUnavailable = validatedModel.includes('(temporariamente indisponível)');
-    const message = isUnavailable
-      ? `API conectada — recurso temporariamente indisponível (${validatedModel.replace(' (temporariamente indisponível)', '')}).`
-      : `Chave GEMINI_API_KEY ativa e validada com sucesso no Google Gemini API (${validatedModel}).`;
-    
-    const res = {
-      configured: true,
-      valid: true,
-      message,
-      modelTested: validatedModel,
-      latencyMs,
-    };
-    lastValidationCache = { timestamp: now, model: targetModel, apiKey, result: res };
-    sysLog.success('API', `Validação da GEMINI_API_KEY bem-sucedida (${latencyMs}ms)`, { model: res.modelTested });
-    return res;
-  } else {
-    const errMsg = lastError?.message || String(lastError);
-    const res = {
-      configured: true,
-      valid: false,
-      message: `Chave GEMINI_API_KEY presente no ambiente, mas a validação falhou: ${errMsg}`,
-    };
-    // Não salvar falhas no cache para permitir retentativas imediatas
-    sysLog.warn('API', `Validação da GEMINI_API_KEY falhou: ${errMsg}`);
-    return res;
+    const detail: any = await response.json().catch(() => ({}));
+    const message = String(detail.error?.message || 'HTTP ' + response.status).split(apiKey).join('[REDACTED]');
+    sysLog.warn('API', `Validação explícita retornou HTTP ${response.status}: ${message}`);
+    return { configured: true, valid: false, checked: true, message: `Validação indisponível (HTTP ${response.status}). Consulte Logs/Payload.`, latencyMs: Date.now() - start };
+  } catch (error: any) {
+    sysLog.warn('API', 'Falha na validação explícita: ' + String(error.message || error).split(apiKey).join('[REDACTED]'));
+    return { configured: true, valid: false, checked: true, message: 'Não foi possível concluir a validação. Consulte Logs/Payload.', latencyMs: Date.now() - start };
   }
 }
 
 /** Checks the selected CLI authentication without turning OAuth into an API-key probe. */
 export async function validateCliAuthentication(forceFresh = false, targetModel = 'gemini-3.1-flash-lite', cwd = process.cwd()) {
   const authentication = resolveCliAuthentication(cwd, process.env, getResolvedCliPath());
-  if (authentication.mode === 'api-key') {
-    const result = await validateGeminiApiKey(forceFresh, targetModel);
-    if (result.configured) return { ...result, checked: true, authMode: authentication.mode, authState: result.valid ? 'authenticated' as const : 'configured' as const };
+  if (authentication.mode === 'api-key' && forceFresh) {
+    const result = await validateGeminiApiKey(true, targetModel);
+    if (result.configured) return { ...result, checked: result.checked ?? true, authMode: authentication.mode, authState: result.valid ? 'authenticated' as const : 'configured' as const };
     // CLI versions with secure native API-key storage resolve that credential themselves.
   }
   return { configured: authentication.configured, valid: authentication.configured,
@@ -378,79 +240,33 @@ export function ensureValidUUID(id?: string): string | undefined {
 }
 
 export function isExistingSession(sessionId?: string, workspaceDir?: string): boolean {
-  if (!sessionId) return false;
+  if (!sessionId || !workspaceDir) return false;
   const normalizedId = ensureValidUUID(sessionId) || sessionId;
-
+  const home = nativeCliHome(process.env, getResolvedCliPath());
+  const globalDir = path.join(home, '.gemini');
+  const workspace = path.resolve(workspaceDir);
   try {
-    const candidateDirs: string[] = [
-      path.join(getGuiDataDir(), 'tmp'),
-      path.join(getGuiDataDir(), '.gemini', 'tmp'),
-      path.join(os.homedir(), '.gemini', 'tmp'),
-    ];
-
-    try {
-      const username = os.userInfo()?.username;
-      if (username) {
-        candidateDirs.push(path.join(os.homedir(), '.gemini', 'tmp', username));
-        candidateDirs.push(path.join(os.homedir(), '.gemini', 'tmp', username, 'chats'));
-      }
-    } catch {}
-
-    if (workspaceDir) {
-      candidateDirs.push(path.join(workspaceDir, '.gemini', 'tmp'));
-      const wsName = path.basename(workspaceDir);
-      const sanitizedWsName = wsName.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-      candidateDirs.push(path.join(os.homedir(), '.gemini', 'tmp', wsName, 'chats'));
-      candidateDirs.push(path.join(os.homedir(), '.gemini', 'tmp', sanitizedWsName, 'chats'));
-      candidateDirs.push(path.join(getGuiDataDir(), '.gemini', 'tmp', wsName, 'chats'));
-      candidateDirs.push(path.join(getGuiDataDir(), '.gemini', 'tmp', sanitizedWsName, 'chats'));
-    }
-
-    const shortId = normalizedId.slice(0, 8).toLowerCase();
-    const origShortId = sessionId.slice(0, 8).toLowerCase();
-
-    const checkDirShallow = (dir: string, depth = 0): boolean => {
-      if (depth > 3) return false;
-      if (!fs.existsSync(dir)) return false;
-      try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            if (checkDirShallow(fullPath, depth + 1)) return true;
-          } else if (entry.isFile()) {
-            const n = entry.name.toLowerCase();
-            if (
-              n.includes(shortId) ||
-              n.includes(origShortId) ||
-              n.includes(normalizedId.toLowerCase()) ||
-              n.includes(sessionId.toLowerCase())
-            ) {
-              return true;
-            }
-          }
-        }
-      } catch {}
-      return false;
-    };
-
-    for (const cDir of candidateDirs) {
-      if (fs.existsSync(cDir)) {
-        if (checkDirShallow(cDir)) return true;
+    const registryPath = path.join(globalDir, 'projects.json');
+    const registry = fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, 'utf8')).projects || {} : {};
+    const identifiers = [registry[workspace], crypto.createHash('sha256').update(workspace).digest('hex')].filter(Boolean);
+    for (const identifier of identifiers) {
+      const chats = path.join(globalDir, 'tmp', identifier, 'chats');
+      if (!fs.existsSync(chats)) continue;
+      for (const name of fs.readdirSync(chats)) {
+        if (!name.endsWith('.json') || !name.includes(normalizedId.slice(0, 8))) continue;
+        try {
+          const session = JSON.parse(fs.readFileSync(path.join(chats, name), 'utf8'));
+          if (session.sessionId === normalizedId) return true;
+        } catch { /* Ignore incomplete session files. */ }
       }
     }
-  } catch {
-    // Ignore error
-  }
+  } catch { /* Native CLI can report and recover a concurrently changed session. */ }
   return false;
 }
 
-export function getResolvedCliPath(preferredAuth?: { cliPath?: string }): string {
+export function getResolvedCliPath(): string {
   if (currentCustomCliPath && fs.existsSync(currentCustomCliPath)) {
     return currentCustomCliPath;
-  }
-  if (preferredAuth?.cliPath && fs.existsSync(preferredAuth.cliPath)) {
-    return preferredAuth.cliPath;
   }
   // Try local node_modules/.bin/gemini
   const localBin = path.resolve(process.cwd(), 'node_modules', '.bin', 'gemini');
@@ -458,7 +274,7 @@ export function getResolvedCliPath(preferredAuth?: { cliPath?: string }): string
     return localBin;
   }
   // Fallback to system 'gemini'
-  return getGlobalCliPath();
+  return 'gemini';
 }
 
 export function setCustomCliPath(newPath: string) {
@@ -788,6 +604,12 @@ function parseQuotaDetails(stderr: string, reported: string): { origin: string, 
   return { origin, retryAfter };
 }
 
+function clearExecutionResources(state: ExecutionState) {
+  if (state.watchdog) clearTimeout(state.watchdog);
+  state.watchdog = null;
+  state.closeRuntime?.(); state.closeRuntime = undefined;
+}
+
 export function cancelExecutionById(executionId?: string): boolean {
   if (!executionId) {
     if (executions.size === 0) return false;
@@ -811,11 +633,8 @@ export function cancelExecutionById(executionId?: string): boolean {
   }
 
   execState.cancelled = true;
-
-  if (execState.oauthWatchdogTimer) {
-    clearTimeout(execState.oauthWatchdogTimer);
-    execState.oauthWatchdogTimer = null;
-  }
+  clearExecutionResources(execState);
+  execState.releaseForeground?.();
 
   if (execState.retryTimeout) {
     clearTimeout(execState.retryTimeout);
@@ -1165,6 +984,7 @@ export function executeGeminiCli(
   state?: {
     currentModel?: string;
     retryCount?: number;
+    sessionMode?: 'resume' | 'new';
     fallbackIndex?: number;
     fallbackChain?: string[];
     executionId?: string;
@@ -1190,6 +1010,7 @@ export function executeGeminiCli(
       executionId,
       childProcess: null,
       retryTimeout: null,
+      releaseForeground: beginForegroundExecution(),
       cancelled: false,
       sessionId: params.sessionId,
       workDir: params.workDir,
@@ -1199,12 +1020,12 @@ export function executeGeminiCli(
 
   if (!execState.finish) {
     const onDone = params.onDone, onError = params.onError;
-    execState.finish = (code, signal) => { if (execState.finished) return; execState.finished = true; onDone(code, signal); };
-    const finishError = (error: Error) => { if (execState.finished) return; execState.finished = true; executions.delete(executionId); onError(error); };
+    execState.finish = (code, signal) => { if (execState.finished) return; execState.finished = true; clearExecutionResources(execState); execState.releaseForeground?.(); onDone(code, signal); };
+    const finishError = (error: Error) => { if (execState.finished) return; execState.finished = true; clearExecutionResources(execState); execState.releaseForeground?.(); executions.delete(executionId); onError(error); };
     params = { ...params, onDone: execState.finish, onError: finishError };
   }
   execState.attempts = (execState.attempts || 0) + 1;
-  if (execState.attempts > 30) { params.onError(new Error('Limite global de tentativas da execução atingido.')); return { executionId, cancel: () => cancelExecutionById(executionId) }; }
+  if (execState.attempts > 6) { params.onError(new Error('Limite global de tentativas da execução atingido.')); return { executionId, cancel: () => cancelExecutionById(executionId) }; }
   try { validateExecutionContext(params.sharedMemory, params.contextMessages); }
   catch (error: any) { params.onError(error); return { executionId, cancel: () => cancelExecutionById(executionId) }; }
   if (params.resetContext && !state) params = { ...params, sessionId: crypto.randomUUID(), resume: false, resetContext: false };
@@ -1245,13 +1066,13 @@ export function executeGeminiCli(
 
       // 4. Decisão de sessão sem varredura pesada síncrona no disco
       const effectiveSessionId = ensureValidUUID(params.sessionId);
-      const shouldResume = Boolean(effectiveSessionId && params.resume !== false);
+      const shouldResume = Boolean(effectiveSessionId && (params.resume === true || isExistingSession(effectiveSessionId, cwd)));
       const tResume = performance.now();
       console.log(`[PERF] [${executionId}] resume_decision_done=${(tResume - t0).toFixed(1)}ms (resume: ${shouldResume})`);
-      const finalPrompt = buildExecutionPrompt({ ...params, resume: params.resume !== false && isExistingSession(effectiveSessionId || '', cwd) });
+      const finalPrompt = buildExecutionPrompt({ ...params, resume: shouldResume });
 
       // Workspace context header
-      const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : cwd}.\nSempre inspecione e responda com base nos arquivos localizados neste diretório.\n---\n`;
+      const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : cwd}.\nUse os arquivos deste diretório quando a tarefa exigir inspeção local. Uma busca web não exige varrer arquivos locais.\n---\n`;
 
       // Resolve agent and factual configured model from disk
       let rawAgentId = (params.agentId || '').toLowerCase().trim();
@@ -1267,9 +1088,20 @@ export function executeGeminiCli(
       // Otherwise, the agent strictly uses its factual configured model from settings/disk, or params.model as fallback.
       let requestedModel = state?.currentModel || params.model || configuredAgent?.model || 'gemini-3.1-flash-lite';
       const chosenModel = normalizeCliModelName(requestedModel);
-      const { authentication, apiKey: activeApiKey, keyId: activeKeyId } = resolveExecutionAuthentication(chosenModel, cwd, state?.triedKeyIds || [], cliPath, process.env);
-      if (authentication.cliPath && fs.existsSync(authentication.cliPath)) {
-        cliPath = authentication.cliPath;
+      let { authentication, apiKey: activeApiKey, keyId: activeKeyId } = resolveExecutionAuthentication(chosenModel, cwd, state?.triedKeyIds || [], cliPath);
+
+      if (authentication.mode === 'api-key' && !activeApiKey && Object.keys(loadConfiguredKeys()).length) {
+        const fallback = configuredAgent?.fallbackModel || params.fallbackModel;
+        const fallbackKey = fallback ? getBestEligibleKey(fallback) : null;
+        if (fallbackKey) { activeApiKey = fallbackKey.key; activeKeyId = fallbackKey.keyId; }
+        else {
+          const availability = [chosenModel, fallback].filter(Boolean).map(model => getModelAvailability(model!));
+          const nextRetryAt = availability.map(item => item.nextRetryAt).filter(Boolean).sort()[0];
+          const message = availability.some(item => item.quota) ? 'Nenhuma opção elegível; há restrições de cota.' : 'Nenhuma opção elegível está disponível agora.';
+          params.onEvent({ type: 'runtime_event', data: { event: 'EXECUTION_BLOCKED', id: 'unavailable:' + agentId, agentId, message, nextRetryAt } });
+          params.onError(new Error(message + (nextRetryAt ? ' Próxima tentativa a partir de ' + nextRetryAt + '.' : '') + ' Consulte Logs/Payload.'));
+          return;
+        }
       }
 
       // Infer agentId if not explicitly provided
@@ -1291,7 +1123,7 @@ export function executeGeminiCli(
       }
 
       const availableSubagents = allDiscoveredAgents.filter(
-        (a) => a.name.toLowerCase() !== (agentId || 'principal').toLowerCase()
+        (a) => a.enabled !== false && a.name.toLowerCase() !== (agentId || 'principal').toLowerCase()
       );
       tracker.setAvailableSubagents(availableSubagents.map((a) => a.name));
       tracker.trackPreflight(cwd, availableSubagents.map((a) => a.name), syncResult.acknowledgedCount);
@@ -1382,7 +1214,7 @@ export function executeGeminiCli(
         const sessionExists = isExistingSession(effectiveSessionId, cwd);
         // Só passa flag -r (--resume) se a sessão REALMENTE existir no disco em chats/
         // Se o arquivo da sessão não existir no disco, passa --session-id para criá-la
-        const shouldPassResumeFlag = Boolean(params.resume !== false && sessionExists);
+        const shouldPassResumeFlag = Boolean(params.resume === true || sessionExists);
 
         if (shouldPassResumeFlag) {
           args.push('-r', effectiveSessionId);
@@ -1469,7 +1301,7 @@ ${subagentsList}
         }
       }
 
-      sysLog.info('CLI', `Autenticação da execução: ${authentication.selectedType} (${activeKeyId ? `Key Pool ${activeKeyId}` : 'credenciais nativas'}) [executável: ${cliPath}, nativeHome: ${authentication.nativeHome || 'padrão'}].`);
+      sysLog.info('CLI', `Autenticação da execução: ${authentication.selectedType} (${activeKeyId ? `Key Pool ${activeKeyId}` : 'credenciais nativas'}).`);
 
       const env: NodeJS.ProcessEnv = {
         ...buildCliAuthEnvironment(authentication, activeApiKey),
@@ -1480,6 +1312,9 @@ ${subagentsList}
         GEMINI_MAX_RETRIES: '0',
         MAX_RETRIES: '0',
         GEMINI_CLI_NO_RELAUNCH: '1',
+        GEMINI_GUI_AGENT_ALIASES: JSON.stringify(getEquivalentAgentAliases(cwd)),
+        GEMINI_GUI_ALLOWED_AGENTS: JSON.stringify(availableSubagents.map(agent => agent.name)),
+        GEMINI_GUI_INVOKE_ALL: isInvokeAll || promptRequestsAllAgents ? '1' : '0',
       };
 
       // CLI 0.59 supports an explicit runtime settings path without modifying user/workspace settings.
@@ -1509,7 +1344,6 @@ ${subagentsList}
         executable: cliPath,
         args,
         cwd,
-        nativeHome: authentication.nativeHome,
         envSummary: {
           NODE_ENV: env.NODE_ENV,
           GEMINI_CLI_TRUST_WORKSPACE: env.GEMINI_CLI_TRUST_WORKSPACE,
@@ -1562,34 +1396,25 @@ ${subagentsList}
       const tSpawn = performance.now();
       console.log(`[PERF] [${executionId}] spawn_start=${(tSpawn - t0).toFixed(1)}ms (model: ${chosenModel}, thinking: ${params.thinkingLevel || 'medium'}, thinkingActive: ${params.thinking !== false})`);
 
+      const runtimeModule = path.resolve(process.cwd(), 'dist', 'cli-runtime.mjs');
+      let managedRuntime = false;
+      if (fs.existsSync(runtimeModule)) {
+        const runtime = await createRuntimeBridge({ executionId, agents: allDiscoveredAgents, agentId, apiKey: activeApiKey, mode: authentication.mode, onEvent: params.onEvent });
+        execState.closeRuntime = runtime.close;
+        env.GEMINI_GUI_RUNTIME_MODULE = pathToFileURL(runtimeModule).href;
+        env.GEMINI_GUI_RUNTIME_URL = runtime.url;
+        env.GEMINI_GUI_RUNTIME_TOKEN = runtime.token;
+        env.GEMINI_GUI_AGENT_ID = agentId || 'principal';
+      }
+      if (execState.cancelled) { clearExecutionResources(execState); params.onDone(null, 'SIGINT'); return; }
+      let watchdogExpired = false;
       let child = spawn(cliPath, args, {
         cwd,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
       });
-      if (state?.mockSubprocess) {
-        const mockChild = new EventEmitter() as any;
-        mockChild.stdin = new PassThrough();
-        mockChild.stdout = new PassThrough();
-        mockChild.stderr = new PassThrough();
-        mockChild.kill = () => { mockChild.emit('close', 0, 'SIGKILL'); };
-        child = mockChild;
-      }
-      const executionTimer = setTimeout(() => terminateProcessTree(child), 300000);
-      let oauthWatchdogTimer: NodeJS.Timeout | null = null;
-      let isOauthTimeout = false;
-      if (authentication.mode === 'oauth') {
-        oauthWatchdogTimer = setTimeout(() => {
-          if (!hasEmittedContent && !hasReceivedFirstAssistantEvent && !execState.cancelled) {
-            isOauthTimeout = true;
-            sysLog.warn('CLI', `Timeout de inicialização OAuth detectado (35s) sem eventos para execução [${executionId}].`);
-            reportedErrorText = `Timeout na inicialização da autenticação Google/OAuth (35s). O Gemini CLI não respondeu; verifique se a sessão OAuth nativa em ${authentication.nativeHome || 'HOME'} está válida executando "${cliPath}" no terminal.`;
-            terminateProcessTree(child);
-          }
-        }, 35000);
-        execState.oauthWatchdogTimer = oauthWatchdogTimer;
-      }
+      execState.watchdog = setTimeout(() => { watchdogExpired = true; reportedErrorText = 'Tempo limite local da execução atingido (300 segundos).'; execState.watchdog = null; terminateProcessTree(child); }, 300000);
       child.stdin?.on('error', (error) => { if (!execState.cancelled) { terminateProcessTree(child); params.onError(error); } });
 
       if (isPromptLarge && child.stdin) {
@@ -1599,10 +1424,6 @@ ${subagentsList}
         } catch (stdinErr) {
           sysLog.error('CLI', `Erro ao escrever prompt grande no stdin: ${stdinErr}`, { executionId });
         }
-      } else if (child.stdin) {
-        try {
-          child.stdin.end();
-        } catch {}
       }
 
       execState.childProcess = child;
@@ -1620,10 +1441,11 @@ ${subagentsList}
       const MAX_STDERR_MEMORY = 64 * 1024; // Limite de 64 KB na memória para evitar memory bloat
       let stderrText = '';
       let reportedErrorText = '';
+      let structuredSuccess = false;
+      let hasAssistantOutput = false;
+      const agentFailures = new Map<string, any>();
       let hasReceivedFirstStdout = false;
       let hasReceivedFirstAssistantEvent = false;
-      let hasEmittedContent = false;
-      let totalAssistantChars = 0;
       let tFirstStdout = 0;
 
       // Rastreamento estruturado de tool_calls / subagentes em voo com isolamento estrito por invocação
@@ -1636,6 +1458,10 @@ ${subagentsList}
         model?: string;
         sessionId?: string;
         requestId?: string;
+        invocationId?: string;
+        parentToolCallId?: string;
+        nativeToolCallId?: string;
+        failure?: any;
         prompt?: string;
         resultReceived: boolean;
         resultData?: any;
@@ -1663,49 +1489,38 @@ ${subagentsList}
           if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
             try {
               const parsed = JSON.parse(trimmed);
+              if (!diagnosticStream.destroyed) diagnosticStream.write(JSON.stringify({ ...parsed, executionId }) + '\n');
+              if (parsed.type === 'runtime_event') {
+                managedRuntime = true;
+                const invocation = parsed.tool_call_id ? activeToolCalls.get(parsed.tool_call_id) : undefined;
+                if (invocation) {
+                  if (parsed.requestId) invocation.requestId = parsed.requestId;
+                  if (parsed.model) invocation.model = parsed.model;
+                  if (parsed.invocationId) invocation.invocationId = parsed.invocationId;
+                  if (parsed.event === 'API_FAILURE' || parsed.event === 'RUNTIME_BRIDGE_FAILURE' || parsed.event === 'DELEGATION_FAILED') invocation.failure = parsed;
+                  if (parsed.event === 'SUCCESS') invocation.failure = undefined;
+                }
+                if (parsed.event === 'API_FAILURE' || parsed.event === 'RUNTIME_BRIDGE_FAILURE' || parsed.event === 'DELEGATION_FAILED') agentFailures.set(parsed.agentId || agentId, parsed);
+                if (parsed.event === 'SUCCESS') agentFailures.delete(parsed.agentId || agentId);
+                if (parsed.event === 'API_FAILURE' || parsed.event === 'RUNTIME_BRIDGE_FAILURE') sysLog.warn('CLI', `${parsed.agentId || agentId}: ${parsed.message || parsed.code || parsed.event}`, { ...parsed, executionId });
+                if (parsed.event === 'MODEL_FALLBACK') sysLog.warn('CLI', `${parsed.agentId || agentId}: ${parsed.fromModel} → ${parsed.toModel} (${parsed.reason})`, { ...parsed, executionId });
+                params.onEvent({ type: 'runtime_event', data: { ...parsed, executionId } });
+                continue;
+              }
 
+              if (parsed.type === 'message' && parsed.role === 'assistant' && String(parsed.content || '').trim()) hasAssistantOutput = true;
               if (!hasReceivedFirstAssistantEvent) {
                 if (
                   parsed.type === 'message' ||
                   parsed.type === 'stream_event' ||
                   parsed.type === 'tool_use' ||
                   parsed.type === 'content' ||
-                  parsed.type === 'result' ||
                   parsed.candidates ||
                   parsed.role === 'assistant'
                 ) {
                   hasReceivedFirstAssistantEvent = true;
-                  if (oauthWatchdogTimer) {
-                    clearTimeout(oauthWatchdogTimer);
-                    oauthWatchdogTimer = null;
-                  }
                   const tFirstAssistant = performance.now();
                   console.log(`[PERF] [${executionId}] first_assistant_event=${(tFirstAssistant - t0).toFixed(1)}ms (+${(tFirstAssistant - tSpawn).toFixed(1)}ms from spawn, +${(tFirstAssistant - tFirstStdout).toFixed(1)}ms from stdout)`);
-                }
-              }
-
-              if (parsed.type === 'result' && parsed.status !== 'error') {
-                hasEmittedContent = true;
-                if (oauthWatchdogTimer) {
-                  clearTimeout(oauthWatchdogTimer);
-                  oauthWatchdogTimer = null;
-                }
-              }
-
-              const candidateText = parsed.text || parsed.content || parsed.data?.text || parsed.data?.content || parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-              if (typeof candidateText === 'string' && candidateText.trim()) {
-                hasEmittedContent = true;
-                totalAssistantChars += candidateText.length;
-                if (oauthWatchdogTimer) {
-                  clearTimeout(oauthWatchdogTimer);
-                  oauthWatchdogTimer = null;
-                }
-              }
-              if (parsed.type === 'tool_use' || parsed.type === 'tool_call' || parsed.data?.type === 'tool_use' || parsed.data?.type === 'tool_call') {
-                hasEmittedContent = true;
-                if (oauthWatchdogTimer) {
-                  clearTimeout(oauthWatchdogTimer);
-                  oauthWatchdogTimer = null;
                 }
               }
 
@@ -1716,6 +1531,7 @@ ${subagentsList}
                 (parsed.type === 'stream_event' && (parsed.data?.type === 'tool_use' || parsed.data?.type === 'tool_call'));
 
               if (isToolCall) {
+                const toolEvent = parsed.type === 'stream_event' ? parsed.data : parsed;
                 const callId =
                   parsed.tool_call_id ||
                   parsed.tool_id ||
@@ -1735,15 +1551,18 @@ ${subagentsList}
                 const tParams = parsed.parameters || parsed.args || parsed.data?.parameters || parsed.data?.args || {};
 
                 const isInvokeAgent = tName === 'invoke_agent';
+                const matchingParents = toolEvent.invocationId ? [...activeToolCalls.values()].filter(call => call.toolName === 'invoke_agent' && call.invocationId === toolEvent.invocationId) : [];
+                const parentCall = toolEvent.parentToolCallId ? activeToolCalls.get(toolEvent.parentToolCallId) : matchingParents.length === 1 ? matchingParents[0] : undefined;
                 const targetAgent = isInvokeAgent
                   ? (tParams.agent_name || tParams.agent || tParams.name || 'subagent')
-                  : (agentId || 'principal');
+                  : (toolEvent.agentId || toolEvent.agentName || parentCall?.agentName || agentId || 'principal');
                 const targetAgentObj = allDiscoveredAgents.find(
                   (a) => a.name.toLowerCase() === targetAgent.toLowerCase() || a.id.toLowerCase() === targetAgent.toLowerCase()
                 );
-                const targetModel = targetAgentObj?.model || (isInvokeAgent ? (AGENT_FALLBACK_CHAINS[targetAgent]?.[0] || 'gemini-3.5-flash') : chosenModel);
+                const targetModel = toolEvent.model || toolEvent.subagentModel || parentCall?.model || targetAgentObj?.model || (isInvokeAgent ? (AGENT_FALLBACK_CHAINS[targetAgent]?.[0] || 'gemini-3.5-flash') : chosenModel);
 
-                const toolCtx: ActiveToolCallContext = {
+                const previousCall = activeToolCalls.get(callId);
+                const toolCtx: ActiveToolCallContext = previousCall || {
                   toolId: callId,
                   toolName: tName,
                   parameters: tParams,
@@ -1754,9 +1573,13 @@ ${subagentsList}
                   resultReceived: false,
                   status: 'pending',
                 };
+                toolCtx.invocationId ||= toolEvent.invocationId;
+                toolCtx.requestId ||= toolEvent.requestId || parentCall?.requestId;
+                toolCtx.parentToolCallId ||= toolEvent.parentToolCallId || parentCall?.toolId;
+                toolCtx.nativeToolCallId ||= toolEvent.nativeToolCallId;
                 activeToolCalls.set(callId, toolCtx);
 
-                if (isInvokeAgent) {
+                if (isInvokeAgent && !previousCall) {
                   tracker.trackSubagentInvocation(callId, targetAgent, tParams.prompt || '');
                   logSubagentEvent({
                     timestamp: new Date().toISOString(),
@@ -1767,16 +1590,20 @@ ${subagentsList}
                     toolName: tName,
                     prompt: tParams.prompt,
                     args: tParams,
+                    details: { toolCallId: callId, invocationId: toolCtx.invocationId, requestId: toolCtx.requestId },
                   });
-                } else {
-                  tracker.trackNestedToolCall(tName, callId, tParams);
+                } else if (!isInvokeAgent && !previousCall) {
+                  const correlation = { agentId: targetAgent, parentToolCallId: toolCtx.parentToolCallId, invocationId: toolCtx.invocationId, requestId: toolCtx.requestId, model: targetModel };
+                  tracker.trackNestedToolCall(tName, callId, tParams, correlation);
                   logSubagentEvent({
                     timestamp: new Date().toISOString(),
                     executionId,
                     eventType: 'SUBAGENT_TOOL_CALL',
-                    agentName: agentId || 'principal',
+                    agentName: targetAgent,
+                    model: targetModel,
                     toolName: tName,
                     args: tParams,
+                    details: { ...correlation, toolCallId: callId, nativeToolCallId: toolCtx.nativeToolCallId },
                   });
                 }
 
@@ -1788,7 +1615,14 @@ ${subagentsList}
                     name: tName,
                     parameters: tParams,
                     agentName: targetAgent,
+                    agentId: targetAgent,
                     subagentModel: targetModel,
+                    model: targetModel,
+                    executionId,
+                    invocationId: toolCtx.invocationId,
+                    requestId: toolCtx.requestId,
+                    parentToolCallId: toolCtx.parentToolCallId,
+                    nativeToolCallId: toolCtx.nativeToolCallId,
                     timestamp: new Date().toISOString(),
                   },
                 });
@@ -1799,6 +1633,7 @@ ${subagentsList}
                 (parsed.type === 'stream_event' && parsed.data?.type === 'tool_result');
 
               if (isToolResult) {
+                const toolEvent = parsed.type === 'stream_event' ? parsed.data : parsed;
                 const callId =
                   parsed.tool_call_id ||
                   parsed.tool_id ||
@@ -1816,18 +1651,31 @@ ${subagentsList}
                   }
                 }
 
-                const resultData = parsed.result || parsed.data?.result || parsed.content;
-                const isFail = parsed.status === 'failed' || Boolean(parsed.error);
+                let resultData = parsed.output ?? parsed.result ?? parsed.data?.output ?? parsed.data?.result ?? parsed.content;
+                if (prevCall && !prevCall.resultReceived) {
+                  if (toolEvent.requestId) prevCall.requestId = toolEvent.requestId;
+                  if (toolEvent.model) prevCall.model = toolEvent.model;
+                  if (toolEvent.invocationId) prevCall.invocationId = toolEvent.invocationId;
+                  if (toolEvent.cause) prevCall.failure = toolEvent.cause;
+                }
+                const duplicateTerminal = Boolean(prevCall?.resultReceived);
+                if (duplicateTerminal && prevCall) {
+                  const originalEvent = { ...parsed };
+                  parsed.status = prevCall.status; parsed.error = prevCall.error; parsed.output = prevCall.resultData; parsed.originalEvent = originalEvent; resultData = prevCall.resultData;
+                }
+                const resultStatus = duplicateTerminal ? prevCall?.status : toolEvent.status;
+                const resultError = duplicateTerminal ? prevCall?.error : toolEvent.error;
+                const isFail = resultStatus === 'failed' || resultStatus === 'error' || resultStatus === 'cancelled' || Boolean(resultError);
 
                 if (prevCall) {
                   prevCall.resultReceived = true;
                   prevCall.resultData = resultData;
                   prevCall.status = isFail ? 'failed' : 'completed';
-                  prevCall.error = parsed.error;
+                  prevCall.error = resultError;
                 }
 
-                if (prevCall?.toolName === 'invoke_agent') {
-                  tracker.trackSubagentResult(callId || prevCall?.toolId || 'unknown', resultData, isFail ? 'failed' : 'success', parsed.error);
+                if (prevCall?.toolName === 'invoke_agent' && !duplicateTerminal) {
+                  tracker.trackSubagentResult(callId || prevCall?.toolId || 'unknown', resultData, isFail ? 'failed' : 'success', resultError);
                   logSubagentEvent({
                     timestamp: new Date().toISOString(),
                     executionId,
@@ -1835,17 +1683,20 @@ ${subagentsList}
                     agentName: prevCall.agentName || prevCall.parameters?.agent_name || 'subagent',
                     model: prevCall.model,
                     result: resultData,
-                    error: parsed.error,
+                    error: resultError,
+                    details: { toolCallId: prevCall.toolId, requestId: prevCall.requestId, invocationId: prevCall.invocationId, cause: prevCall.failure },
                   });
-                } else {
-                  tracker.trackSubagentResult(callId || prevCall?.toolId || 'unknown', resultData, isFail ? 'failed' : 'success', parsed.error);
+                } else if (prevCall?.toolName !== 'invoke_agent' && !duplicateTerminal) {
                   logSubagentEvent({
                     timestamp: new Date().toISOString(),
                     executionId,
                     eventType: 'SUBAGENT_TOOL_RESULT',
-                    agentName: agentId || 'principal',
+                    agentName: prevCall?.agentName || toolEvent.agentId || toolEvent.agentName,
+                    model: prevCall?.model || toolEvent.model,
                     toolName: prevCall?.toolName,
                     result: resultData,
+                    error: resultError,
+                    details: { toolCallId: callId, parentToolCallId: prevCall?.parentToolCallId, invocationId: prevCall?.invocationId, requestId: prevCall?.requestId, nativeToolCallId: prevCall?.nativeToolCallId },
                   });
                 }
 
@@ -1856,11 +1707,19 @@ ${subagentsList}
                     tool_name: prevCall?.toolName || 'tool',
                     output: resultData,
                     status: isFail ? 'failed' : 'completed',
-                    error: parsed.error,
+                    error: resultError,
                     agentName: prevCall?.agentName,
+                    agentId: prevCall?.agentName,
                     subagentModel: prevCall?.model,
+                    model: prevCall?.model,
+                    executionId,
                     subagentSessionId: prevCall?.sessionId,
                     lastRequestId: prevCall?.requestId,
+                    invocationId: prevCall?.invocationId,
+                    requestId: prevCall?.requestId,
+                    parentToolCallId: prevCall?.parentToolCallId,
+                    nativeToolCallId: prevCall?.nativeToolCallId,
+                    cause: prevCall?.failure,
                   },
                 });
               }
@@ -1882,20 +1741,16 @@ ${subagentsList}
 
                   // Correlacionar requisição isoladamente com a chamada ativa do subagente sem sobrescrever dados globais
                   let correlatedCall: ActiveToolCallContext | undefined;
-                  if (parsed.callId && activeToolCalls.has(parsed.callId)) {
-                    correlatedCall = activeToolCalls.get(parsed.callId);
+                  const parentCallId = parsed.parentToolCallId || parsed.tool_call_id || parsed.callId;
+                  if (parentCallId && activeToolCalls.has(parentCallId)) {
+                    correlatedCall = activeToolCalls.get(parentCallId);
                   } else if (parsed.promptId && toolCallsByPromptId.has(parsed.promptId)) {
                     const cId = toolCallsByPromptId.get(parsed.promptId);
                     if (cId) correlatedCall = activeToolCalls.get(cId);
                   } else if (reqItem.role === 'subagent' || parsed.role === 'subagent') {
-                    for (const ctx of activeToolCalls.values()) {
-                      if (ctx.toolName === 'invoke_agent' && !ctx.resultReceived) {
-                        if (!ctx.requestId || ctx.model === reqItem.model || ctx.agentName === parsed.agentName) {
-                          correlatedCall = ctx;
-                          break;
-                        }
-                      }
-                    }
+                    const candidates = [...activeToolCalls.values()].filter(ctx => ctx.toolName === 'invoke_agent' && !ctx.resultReceived &&
+                      (parsed.invocationId ? ctx.invocationId === parsed.invocationId : (parsed.agentId || parsed.agentName) && ctx.agentName === (parsed.agentId || parsed.agentName)));
+                    if (candidates.length === 1) correlatedCall = candidates[0];
                   }
 
                   if (correlatedCall) {
@@ -1932,15 +1787,11 @@ ${subagentsList}
                 }
                 continue;
               }
-              if (parsed.type === 'result' && parsed.status === 'error') {
+              if (parsed.type === 'result' && parsed.status === 'success') structuredSuccess = true;
+            if (parsed.type === 'result' && parsed.status === 'error') {
                 reportedErrorText = parsed.error?.message || 'Erro de execução reportado pelo Gemini CLI.';
-                params.onEvent({
-                  type: 'process_error',
-                  data: {
-                    message: reportedErrorText,
-                    error: parsed.error,
-                  },
-                });
+                params.onEvent({ type: 'runtime_event', data: { event: 'ATTEMPT_FAILED', agentId, message: reportedErrorText } });
+                continue;
               }
               params.onEvent({ type: 'stream_event', data: parsed });
               continue;
@@ -2030,15 +1881,7 @@ ${subagentsList}
       }
 
       child.once('close', async (code, signal) => {
-        clearTimeout(executionTimer);
-        if (oauthWatchdogTimer) {
-          clearTimeout(oauthWatchdogTimer);
-          oauthWatchdogTimer = null;
-        }
-        if (execState.oauthWatchdogTimer) {
-          clearTimeout(execState.oauthWatchdogTimer);
-          execState.oauthWatchdogTimer = null;
-        }
+        clearExecutionResources(execState);
         terminateProcessTree(child, true);
         const tDone = performance.now();
         console.log(`[PERF] [${executionId}] process_done=${(tDone - t0).toFixed(1)}ms (code: ${code ?? 0})`);
@@ -2148,20 +1991,20 @@ ${subagentsList}
           params.onError(new Error('Recuperação de sessão esgotada após duas tentativas. O histórico da GUI foi preservado.'));
           return;
         }
-        // 1. Se falhou ao retomar OU se a sessão está inacessível/corrompida
-        if (isSessionResumeError || (isSessionAlreadyExistsError && params.resume)) {
+        // Recovery follows the flags actually sent, not the caller's resume preference.
+        if (isSessionResumeError || (isSessionAlreadyExistsError && args.includes('-r'))) {
           const freshSessionId = crypto.randomUUID();
           sysLog.warn('CLI', `Sessão anterior inacessível ou corrompida (${params.sessionId || effectiveSessionId}). Criando nova sessão com --session-id: ${freshSessionId}...`);
           if (params.sessionId) knownSessions.delete(params.sessionId);
           if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-          executeGeminiCli({ ...params, executionId, sessionId: freshSessionId, resume: false }, false, { ...state, executionId });
+          executeGeminiCli({ ...params, executionId, sessionId: freshSessionId, resume: false }, false, { ...state, executionId, sessionMode: 'new' });
           return;
         }
 
         // 2. Se a sessão existe legitimamente e ainda não usamos -r (--resume)
-        if (isSessionAlreadyExistsError && !params.resume) {
+        if (isSessionAlreadyExistsError && !args.includes('-r')) {
           sysLog.warn('CLI', `Sessão já existe no disco (${params.sessionId || effectiveSessionId}). Retomando com -r (--resume)...`);
-          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: true }, true, { ...state, executionId });
+          executeGeminiCli({ ...params, executionId, sessionId: effectiveSessionId || params.sessionId, resume: true }, true, { ...state, executionId, sessionMode: 'resume' });
           return;
         }
 
@@ -2170,13 +2013,14 @@ ${subagentsList}
           sysLog.warn('CLI', `Código 42 detectado (${params.sessionId || effectiveSessionId}). Reiniciando em nova sessão limpa: ${freshSessionId}...`);
           if (params.sessionId) knownSessions.delete(params.sessionId);
           if (effectiveSessionId) knownSessions.delete(effectiveSessionId);
-          executeGeminiCli({ ...params, executionId, sessionId: freshSessionId, resume: false }, false, { ...state, executionId });
+          executeGeminiCli({ ...params, executionId, sessionId: freshSessionId, resume: false }, false, { ...state, executionId, sessionMode: 'new' });
           return;
         }
 
         if (buffer.trim()) {
           try {
             const parsed = JSON.parse(buffer.trim());
+            if (parsed.type === 'result' && parsed.status === 'success') structuredSuccess = true;
             if (parsed.type === 'result' && parsed.status === 'error') {
               reportedErrorText = parsed.error?.message || reportedErrorText;
             }
@@ -2193,19 +2037,13 @@ ${subagentsList}
         // error follows it on the same line. Keep the original stderr in logs.
         const authStderrText = stderrText.replace(/Both GOOGLE_API_KEY and GEMINI_API_KEY are set(?:\. Using GOOGLE_API_KEY\.)?/g, '');
         const authErrorText = (authStderrText + ' ' + reportedErrorText).toLowerCase();
-        const isClosedWithoutContent = !hasEmittedContent && totalAssistantChars === 0 && !hasReceivedFirstAssistantEvent && !execState.cancelled;
-        const isAuthError = isOauthTimeout || code === 41 || (
-          (isClosedWithoutContent && authentication.mode === 'oauth' && (code !== 0 || Boolean(signal))) ||
+        const isAuthError = (
           authStderrText.includes('Please set an Auth method') ||
-          authStderrText.includes('Manual authorization is required') ||
-          authErrorText.includes('manual authorization is required') ||
-          authErrorText.includes('fatalauthenticationerror') ||
           authErrorText.includes('api_key_invalid') ||
           authErrorText.includes('api key not valid') ||
           authErrorText.includes('invalid api key') ||
           authErrorText.includes('key not valid') ||
           authErrorText.includes('unauthenticated') ||
-          (authErrorText.includes('oauth') && (authErrorText.includes('failed') || authErrorText.includes('timeout') || authErrorText.includes('error') || authErrorText.includes('invalid') || authErrorText.includes('falhou'))) ||
           authErrorText.includes('401') ||
           authErrorText.includes('403') ||
           (authStderrText.includes('GEMINI_API_KEY') && (
@@ -2260,15 +2098,18 @@ ${subagentsList}
           reportedErrorText.toLowerCase().includes('service unavailable')
         );
 
+        const isOomError = /heap out of memory|allocation failed|reached heap limit|ERR_WORKER_OUT_OF_MEMORY/i.test(stderrText + ' ' + reportedErrorText);
         const unresolvedCalls = Array.from(activeToolCalls.values()).filter(c => !c.resultReceived);
         const hasUnresolvedToolCalls = unresolvedCalls.length > 0;
         const isProcessExitFailure = code !== 0 || Boolean(signal);
-        const hasFailed = executionFailed(code, signal, reportedErrorText, isQuotaError || isFetchFailed || isOverloadedError || isAuthError || isBadRequestError) || (hasUnresolvedToolCalls && isProcessExitFailure);
+        const failedDelegations = Array.from(activeToolCalls.values()).filter(c => c.toolName === 'invoke_agent' && (c.status === 'failed' || !c.resultReceived));
+        const hasFailed = isOomError || watchdogExpired || failedDelegations.length > 0 || executionFailed(code, signal, reportedErrorText, !structuredSuccess && (isQuotaError || isFetchFailed || isOverloadedError || isAuthError || isBadRequestError)) || (hasUnresolvedToolCalls && isProcessExitFailure);
 
         // Se houver chamadas de ferramentas/subagentes pendentes sem fechamento formal, emitir tool_result terminal FAILED (nunca completed / nunca sucesso fantasma!)
         if (hasUnresolvedToolCalls) {
           for (const unres of unresolvedCalls) {
-            let toolFailureReason = reportedErrorText;
+            const actualFailure = unres.failure || agentFailures.get(unres.agentName || agentId);
+            let toolFailureReason = actualFailure?.message || reportedErrorText;
             if (!toolFailureReason && authStderrText.trim()) {
               toolFailureReason = authStderrText.trim();
             }
@@ -2301,7 +2142,8 @@ ${subagentsList}
                 executionId,
                 agentName: unres.agentName,
                 subagentSessionId: unres.sessionId || effectiveSessionId || params.sessionId,
-                lastRequestId: unres.requestId,
+                lastRequestId: actualFailure?.requestId || unres.requestId,
+                cause: actualFailure,
                 subagentModel: unres.model,
               },
             });
@@ -2314,44 +2156,32 @@ ${subagentsList}
               model: unres.model,
               error: toolFailureReason,
             });
-            tracker.trackSubagentResult(unres.toolId, toolFailureReason, 'failed', toolFailureReason);
+            if (unres.toolName === 'invoke_agent') tracker.trackSubagentResult(unres.toolId, toolFailureReason, 'failed', toolFailureReason);
+            unres.resultReceived = true; unres.status = 'failed'; unres.error = toolFailureReason;
           }
-          activeToolCalls.clear();
+          // Keep terminal contexts for outcome/cause correlation.
         }
 
         if (hasFailed) {
-          const isModelNotFound = !isBadRequestError && (
-            apiErrCode === 404 ||
-            combinedErrText.includes('404') ||
-            combinedErrText.includes('model not found') ||
-            combinedErrText.includes('not found') ||
-            combinedErrText.includes('unsupported') ||
-            combinedErrText.includes('not supported')
-          );
+          const failureClass = classifyKeyResult(apiErrCode, null, reportedErrorText || stderrText);
+          if (!managedRuntime && failureClass.affectsKey !== false && !failedDelegations.length && !watchdogExpired) {
+          // Registrar resultado no Key Pool para o modelo e chave atuais
+          if (activeKeyId) recordRuntimeExecutionResult(chosenModel, activeKeyId, {
+            success: false,
+            httpStatus: apiErrCode,
+            errorText: stderrText || reportedErrorText,
+          });
 
-          // Registrar resultado no Key Pool para o modelo e chave atuais (sem penalizar chave em caso de 404 de modelo)
-          if (activeKeyId) {
-            recordRuntimeExecutionResult(chosenModel, activeKeyId, {
-              success: false,
-              httpStatus: isModelNotFound ? 404 : apiErrCode,
-              errorText: isModelNotFound ? '404_MODEL_NOT_FOUND' : (stderrText || reportedErrorText),
-            });
-          }
-
-          // 1. Tentar próxima chave elegível no Key Pool para o MESMO modelo (APENAS se NÃO for erro 404 de modelo)
+          // 1. Tentar próxima chave elegível no Key Pool para o MESMO modelo
           const triedKeys = activeKeyId ? [...(state?.triedKeyIds || []), activeKeyId] : [];
-          const nextKey = !isModelNotFound && authentication.mode === 'api-key' && activeKeyId ? getBestEligibleKey(chosenModel, triedKeys) : null;
+          const nextKey = authentication.mode === 'api-key' && activeKeyId ? getBestEligibleKey(chosenModel, triedKeys) : null;
 
-          if (nextKey && !execState.cancelled && !isBadRequestError) {
+          if (nextKey && !execState.cancelled && ['G2', 'G3', 'G4', 'G5'].includes(failureClass.group)) {
             params.onEvent({
               type: 'runtime_event',
               data: {
-                eventType: 'KEY_FAILOVER',
-                message: `Chave ${activeKeyId} encontrou restrição no modelo ${chosenModel} (${apiErrCode || 'Erro'}). Alternando para a próxima chave do ranking: ${nextKey.keyId} (${nextKey.latencyRank})...`,
-                fromKey: activeKeyId,
-                toKey: nextKey.keyId,
-                model: chosenModel,
-                statusCode: apiErrCode,
+                event: 'KEY_FAILOVER', agentId, model: chosenModel,
+                message: `\n🔑 **[Key Pool Failover]** Chave **${activeKeyId}** encontrou restrição no modelo \`${chosenModel}\` (${apiErrCode || 'Erro'}). Alternando para a próxima chave do ranking: **${nextKey.keyId}** (${nextKey.latencyRank})...\n\n`,
               },
             });
 
@@ -2380,8 +2210,8 @@ ${subagentsList}
             return;
           }
 
-          // 2. Fallback de Modelo do Agente (acionado imediatamente em 404 de modelo ou após esgotar chaves em G2/G3/G4)
-          if (!isBadRequestError && (isModelNotFound || isQuotaError || isOverloadedError || apiErrCode === 429 || apiErrCode === 503 || apiErrCode === 500) && !params.isFallbackExecution && !params.isBackupExecution && !execState.cancelled) {
+          // 2. Se todas as chaves do Key Pool para este modelo falharam: Verificação do Modelo de Fallback do Agente
+          if ((['G2', 'G3', 'G4'].includes(failureClass.group) || failureClass.errorCode === 'MODEL_NOT_FOUND') && !params.isFallbackExecution && !params.isBackupExecution && !execState.cancelled) {
             try {
               const allAgents = loadAgents(cwd);
               const currentAgentObj = allAgents.find(
@@ -2392,22 +2222,16 @@ ${subagentsList}
               const fallbackModelToUse = configuredFallbackModel ? normalizeCliModelName(configuredFallbackModel) : null;
 
               if (fallbackModelToUse && fallbackModelToUse !== chosenModel) {
-                const reasonText = isModelNotFound
-                  ? 'Modelo indisponível no endpoint (Erro 404 / Model Not Found)'
-                  : isQuotaError || apiErrCode === 429
+                const reasonText = isQuotaError || apiErrCode === 429
                   ? 'Cotas de requisição esgotadas (Erro 429 / Quota Exceeded)'
                   : 'Servidor sobrecarregado / Alta demanda (Erro 503/500 / High Demand)';
                 const agentDisplayName = currentAgentObj?.displayName || currentAgentObj?.name || agentId || 'Agente';
 
                 params.onEvent({
                   type: 'runtime_event',
-                  data: {
-                    eventType: 'MODEL_FALLBACK',
-                    message: `Agente titular ${agentDisplayName} alternando para Modelo de Fallback: ${fallbackModelToUse} (${reasonText}). Contexto e identidade preservados.`,
-                    fromModel: chosenModel,
-                    toModel: fallbackModelToUse,
-                    reason: reasonText,
-                    agentName: agentDisplayName,
+              data: {
+                event: 'MODEL_FALLBACK', agentId, model: chosenModel,
+                message: `\n🛡️ **[Modelo de Fallback Acionado]**\nO agente titular **${agentDisplayName}** encontrou uma restrição no modelo \`${chosenModel}\`: *${reasonText}*.\n\n🔄 **Alternando automaticamente para o Modelo de Fallback: \`${fallbackModelToUse}\`** mantendo todas as instruções, contexto e identidade do agente intactos...\n\n`,
                   },
                 });
 
@@ -2443,7 +2267,7 @@ ${subagentsList}
                   } else {
                     executions.delete(executionId);
                   }
-                }, isModelNotFound ? 300 : 1200);
+                }, 1200);
                 return;
               }
             } catch (err: any) {
@@ -2451,7 +2275,7 @@ ${subagentsList}
             }
           }
 
-          if (apiErrCode !== null && !isBadRequestError) {
+          if (apiErrCode !== null && !isBadRequestError && !activeKeyId) {
             // Only retry if not a "Hard Quota" or if explicitly allowed
             const { origin, retryAfter } = parseQuotaDetails(stderrText, reportedErrorText);
             const isTransient = apiErrCode === 500 || apiErrCode === 503 || (apiErrCode === 429 && !stderrText.includes('Hard Limit'));
@@ -2462,12 +2286,9 @@ ${subagentsList}
               
               params.onEvent({
                 type: 'runtime_event',
-                data: {
-                  eventType: 'RETRY',
-                  message: `Falha temporária (${apiErrCode}) em ${origin}. Retentando no modelo ${chosenModel} em ${Math.round(backoffDelay / 100) / 10}s... (Tentativa ${retryCount}/3)`,
-                  retryCount,
-                  model: chosenModel,
-                  statusCode: apiErrCode,
+              data: {
+                event: 'RETRY', agentId, model: chosenModel,
+                message: `\n⚠️ *[Tentativa ${retryCount}/3] Falha temporária (${apiErrCode}) em ${origin}. Retentando no modelo ${chosenModel} em ${Math.round(backoffDelay / 100) / 10}s...*\n\n`,
                 },
               });
               
@@ -2500,11 +2321,9 @@ ${subagentsList}
                   const nextModel = fallbackChain[nextIdx];
                   params.onEvent({
                     type: 'runtime_event',
-                    data: {
-                      eventType: 'MODEL_FALLBACK',
-                      message: `3 tentativas falharam no modelo ${chosenModel} (Erro ${apiErrCode}). Alternando para o modelo de fallback do agente: ${nextModel}...`,
-                      fromModel: chosenModel,
-                      toModel: nextModel,
+              data: {
+                event: 'MODEL_FALLBACK', agentId, model: chosenModel,
+                message: `\n⚠️ *[Fallback de Modelo] 3 tentativas falharam no modelo ${chosenModel} (Erro ${apiErrCode}). Alternando para o modelo de fallback do agente: ${nextModel}...*\n\n`,
                     },
                   });
                   sysLog.warn('CLI', `3 tentativas falharam no modelo ${chosenModel}. Alternando para o fallback ${nextModel} do agente ${agentId}.`);
@@ -2530,24 +2349,21 @@ ${subagentsList}
               sysLog.error('CLI', `Todos os modelos de fallback falharam para o agente ${agentId}. Interrompendo tarefa (Erro: ${apiErrCode}, Origem: ${origin}).`);
               params.onEvent({
                 type: 'runtime_event',
-                data: {
-                  eventType: 'RETRY_EXHAUSTED',
-                  message: `Todos os modelos de fallback falharam para o agente ${agentId} (${origin}, Status ${apiErrCode}).`,
-                  agentName: agentId,
-                  statusCode: apiErrCode,
+              data: {
+                event: 'RETRY_EXHAUSTED', agentId, model: chosenModel,
+                message: `\n❌ *[Erro Crítico] Todos os modelos de fallback falharam para o agente ${agentId}.*\n\n**Causa:** ${origin} (Status ${apiErrCode})\n**Detalhes:** ${reportedErrorText || 'Indisponibilidade persistente do serviço.'}\n\n`,
                 },
               });
             }
           }
 
-          let finalMessage = reportedErrorText || stderrText.trim();
-          if (isOauthTimeout) {
-            finalMessage = reportedErrorText || `Timeout na inicialização da autenticação Google/OAuth (35s). O Gemini CLI não respondeu; verifique se a sessão OAuth nativa em ${authentication.nativeHome || 'HOME'} está válida executando "${cliPath}" no terminal.`;
-          } else if (code === -2 || stderrText.includes('ENOENT')) {
+          }
+          let finalMessage = reportedErrorText || (failedDelegations.length ? failedDelegations.map(c => `${c.agentName}: ${c.error || 'Sem resultado terminal válido.'}`).join('\n') : '') || stderrText.trim();
+          if (code === -2 || stderrText.includes('ENOENT')) {
             finalMessage = `O executável do Gemini CLI (${cliPath}) ou o diretório de trabalho (${cwd}) não foi localizado no sistema (Erro -2 / ENOENT).`;
           } else if (isAuthError) {
             finalMessage = authentication.mode === 'oauth'
-              ? (reportedErrorText || (stderrText.includes('Manual authorization is required') ? 'Autorização manual do Gemini CLI necessária. Execute o Gemini CLI interativamente no terminal para autenticar via OAuth.' : `A autenticação Google/OAuth do Gemini CLI falhou. Verifique o login nativo no Gemini CLI executando "${cliPath}" no terminal.`))
+              ? 'A autenticação Google/OAuth do Gemini CLI falhou. Verifique o login nativo no Gemini CLI.'
               : authentication.mode === 'api-key' ? 'A autenticação por API key falhou. Verifique a credencial utilizada pelo Gemini CLI ou pelo Key Pool.'
               : 'A autenticação nativa do Gemini CLI falhou. Verifique o método selecionado no CLI.';
           } else if (isBadRequestError) {
@@ -2562,8 +2378,6 @@ Você atingiu o limite de requisições.
 • Verifique se há processos em segundo plano consumindo sua cota.`;
           } else if (isFetchFailed) {
             finalMessage = `⚠️ Falha na Comunicação de Rede com a API Gemini (Fetch failed sending request): ${reportedErrorText || stderrText.trim()}`;
-          } else if (isClosedWithoutContent) {
-            finalMessage = `O processo do Gemini CLI encerrou sem produzir resposta do modelo (exitCode: ${code ?? 0}).`;
           } else if (!finalMessage) {
             finalMessage = `O Gemini CLI encerrou com código de erro ${code ?? 0}.`;
           }
@@ -2591,10 +2405,10 @@ Você atingiu o limite de requisições.
             error: finalMessage,
             stderr: stderrText,
           });
-          tracker.trackFlowSummary(code || 1, finalMessage);
+          tracker.trackFlowSummary(code || 1, finalMessage, hasAssistantOutput);
         } else {
           // Gravar sucesso no Key Pool para o modelo e chave atuais
-          if (activeKeyId) recordRuntimeExecutionResult(chosenModel, activeKeyId, {
+          if (!managedRuntime && activeKeyId) recordRuntimeExecutionResult(chosenModel, activeKeyId, {
             success: true,
             latencyMs: Math.round(performance.now() - tSpawn),
           });
@@ -2624,6 +2438,8 @@ Você atingiu o limite de requisições.
           }
         }
 
+        const outcome = summarizeExecution(hasFailed, hasAssistantOutput, Array.from(activeToolCalls.values()).filter(call => call.toolName === 'invoke_agent').map(call => call.status === 'completed' ? 'completed' : 'failed'));
+        params.onEvent({ type: 'execution_outcome', data: { executionId, status: outcome, completedDelegations: Array.from(activeToolCalls.values()).filter(call => call.toolName === 'invoke_agent' && call.status === 'completed').length, failedDelegations: failedDelegations.length } });
         executions.delete(executionId);
         params.onDone(hasFailed ? code || 1 : 0, signal);
       });

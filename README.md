@@ -2,7 +2,9 @@
 
 Interface gráfica e ambiente de trabalho profissional para o **Gemini CLI (v0.58.0+)**, projetada para desenvolvedores e equipes que utilizam inteligência artificial diretamente em projetos locais.
 
-**Versão 2.1.0:** respeita a autenticação Google/OAuth nativa do Gemini CLI, inclusive o diretório de credenciais do Snap. OAuth executa sem Key Pool e sem variáveis de API key no processo filho. Key Pool, ranking, failover de chaves, fallback de modelos e agentes/subagentes continuam disponíveis no modo aplicável. Status, validação e testes de agentes distinguem os métodos de autenticação, sem alterar credenciais pessoais.
+Veja as melhorias e limitações em [CHANGELOG.md](CHANGELOG.md).
+
+**Versão 2.2.0:** respeita a autenticação Google/OAuth nativa do Gemini CLI, inclusive o diretório de credenciais do Snap. OAuth executa sem Key Pool e sem variáveis de API key no processo filho. Key Pool, ranking, failover de chaves, fallback de modelos e agentes/subagentes continuam disponíveis no modo aplicável. Status, validação e testes de agentes distinguem os métodos de autenticação, sem alterar credenciais pessoais.
 
 O catálogo efetivo de modelos dos agentes foi unificado e reorganizado segundo a política estrita de capacidade: **RPD restante > RPM disponível > adequação ao agente > potência**. Modelos de alto volume e uso contínuo (RPD 500) são priorizados no Principal e Worker. Frontend, backend, defaults e agentes persistidos exibem exatamente a mesma alocação sem divergências.
 
@@ -105,7 +107,7 @@ npm start
 npm run build:ubuntu
 ```
 Os arquivos gerados serão salvos em `dist-ubuntu/`:
-- `gemini-gui_2.1.0_all.deb`
+- `gemini-gui_2.2.0+git.<sha>.<fonte>_all.deb`
 - `gemini-gui-ubuntu-standalone.tar.gz`
 
 ---

@@ -1,3 +1,5 @@
+import { createRuntimeBridge } from './runtime-bridge.js';
+import { pathToFileURL } from 'node:url';
 import { spawn, ChildProcess } from 'node:child_process';
 import readline from 'node:readline';
 import crypto from 'node:crypto';
@@ -9,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { sysLog } from './logger-service.js';
 import { getGuiDataDir } from './paths-service.js';
-import { syncAgentsToSettings, ensureAllAgentsSynchronizedAndAcknowledged, loadAgents } from './agents-service.js';
+import { syncAgentsToSettings, ensureAllAgentsSynchronizedAndAcknowledged, loadAgents, getEquivalentAgentAliases } from './agents-service.js';
 import { syncPoliciesToSettings } from './policies-service.js';
 import {
   CliExecutionParams,
@@ -18,6 +20,7 @@ import {
   getExaAuditTools
 } from './gemini-cli-service.js';
 import { resolveExecutionAuthentication, buildCliAuthEnvironment } from './cli-auth-service.js';
+import { getBestEligibleKey, loadConfiguredKeys } from './key-pool-service.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -63,6 +66,7 @@ export class AcpSession {
   private tempSettingsFile: string | null = null;
   public fingerprint = '';
   private firstPrompt = true;
+  private closeRuntime?: () => void;
 
   constructor(sessionId: string, cwd: string, model: string) {
     this.sessionId = sessionId;
@@ -82,7 +86,8 @@ export class AcpSession {
     // Configurar o settings e MCPs uma única vez para este processo persistente
 
     
-    let agentId = params.agentId?.toLowerCase() || '';
+    const isInvokeAll = params.agentId?.toLowerCase() === 'all';
+    let agentId = isInvokeAll ? 'principal' : params.agentId?.toLowerCase() || '';
     const allAgents = typeof loadAgents === 'function' ? loadAgents(cwd) : [];
     const configuredAgent = allAgents.find(
       (a) => a.id.toLowerCase() === agentId || a.name.toLowerCase() === agentId
@@ -91,6 +96,14 @@ export class AcpSession {
     let requestedModel = params.model || configuredAgent?.model || 'gemini-3.1-flash-lite';
     if (requestedModel === 'auto') requestedModel = configuredAgent?.model || 'gemini-3.1-flash-lite';
     this.model = requestedModel;
+
+    const cliPath = getResolvedCliPath();
+    let { authentication, apiKey: activeApiKey } = resolveExecutionAuthentication(this.model, cwd, [], cliPath);
+    if (authentication.mode === 'api-key' && !activeApiKey && Object.keys(loadConfiguredKeys()).length) {
+      const fallback = configuredAgent?.fallbackModel || params.fallbackModel;
+      activeApiKey = fallback ? getBestEligibleKey(fallback)?.key : undefined;
+      if (!activeApiKey) throw new Error('Nenhuma opção elegível está disponível agora. Consulte Logs/Payload.');
+    }
 
     if (!agentId && requestedModel) {
       if (requestedModel.includes('3.8')) agentId = 'auditor';
@@ -163,19 +176,29 @@ export class AcpSession {
     }
     args.push('--skip-trust');
 
-    const cliPath = getResolvedCliPath();
-    const { authentication, apiKey: activeApiKey } = resolveExecutionAuthentication(this.model || 'gemini-3.5-flash-lite', cwd, [], cliPath);
     ensureAllAgentsSynchronizedAndAcknowledged(cwd, authentication.nativeHome);
 
     const env: NodeJS.ProcessEnv = {
-      ...buildCliAuthEnvironment(authentication, activeApiKey, process.env),
+      ...buildCliAuthEnvironment(authentication, activeApiKey),
       NO_COLOR: '1',
       FORCE_COLOR: '0',
       GEMINI_CLI_TRUST_WORKSPACE: 'true',
       GEMINI_CLI_NO_RELAUNCH: '1',
+      GEMINI_GUI_INVOKE_ALL: isInvokeAll ? '1' : '0',
+      GEMINI_GUI_AGENT_ALIASES: JSON.stringify(getEquivalentAgentAliases(cwd)),
+      GEMINI_GUI_ALLOWED_AGENTS: JSON.stringify(allAgents.filter(agent => agent.enabled !== false && agent.name !== (agentId || 'principal')).map(agent => agent.name)),
       GEMINI_CLI_SYSTEM_SETTINGS_PATH: this.tempSettingsFile,
     };
 
+    const runtimeModule = path.resolve(process.cwd(), 'dist', 'cli-runtime.mjs');
+    if (fs.existsSync(runtimeModule)) {
+      const runtime = await createRuntimeBridge({ getExecutionId: () => this.activeExecution?.params.executionId, executionId: params.executionId, agents: allAgents, agentId, apiKey: activeApiKey, mode: authentication.mode, onEvent: event => this.activeExecution?.params.onEvent(event) });
+      this.closeRuntime = runtime.close;
+      env.GEMINI_GUI_RUNTIME_MODULE = pathToFileURL(runtimeModule).href;
+      env.GEMINI_GUI_RUNTIME_URL = runtime.url;
+      env.GEMINI_GUI_RUNTIME_TOKEN = runtime.token;
+      env.GEMINI_GUI_AGENT_ID = agentId || 'principal';
+    }
     this.child = spawn(cliPath, args, {
       cwd,
       env,
@@ -214,7 +237,7 @@ export class AcpSession {
     // 1. Enviar handshake de inicialização
     await this.callMethod('initialize', {
       protocolVersion: 1,
-      clientInfo: { name: 'gemini-gui-acp', version: '2.1.0' },
+      clientInfo: { name: 'gemini-gui-acp', version: '2.2.0' },
       clientCapabilities: {
         auth: { terminal: false },
         fs: { readTextFile: false, writeTextFile: false },
@@ -279,6 +302,10 @@ export class AcpSession {
     } catch {}
 
     let promptText = buildExecutionPrompt({ ...params, resume: this.firstPrompt ? false : params.resume });
+    if (params.agentId?.toLowerCase() === 'all') {
+      const agents = loadAgents(this.cwd).filter(agent => agent.enabled !== false && agent.name !== 'principal');
+      promptText = `[MODO ATIVO: EVOCAÇÃO SIMULTÂNEA DE TODOS OS AGENTES]\nEmita chamadas invoke_agent em paralelo para cada subagente selecionado: ${agents.map(agent => agent.name).join(', ')}. Consolide seus retornos para responder à solicitação.\n\n` + promptText;
+    }
     const systemPrompt = buildEffectiveSystemPrompt(params.baseInstructions, params.systemInstructions, params.overrideBasePrompt);
     if (systemPrompt) promptText = `[INSTRUÇÕES DO AGENTE]
 ${systemPrompt}
@@ -291,7 +318,7 @@ ${params.sharedMemory}
     this.firstPrompt = false;
     // Se for o primeiro prompt da sessão e houver cabeçalho de workspace, aplicar contexto
     if (params.resume === false) {
-      const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${this.cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : this.cwd}.\nSempre inspecione e responda com base nos arquivos localizados neste diretório.\n---\n\n`;
+      const workspaceHeader = `[CONTEXTO DO PROJETO E WORKSPACE]\nVocê está executando dentro do diretório do projeto: "${this.cwd}".\nDiretórios autorizados do projeto: ${params.authorizedDirs && params.authorizedDirs.length > 0 ? params.authorizedDirs.join(', ') : this.cwd}.\nUse os arquivos deste diretório quando a tarefa exigir inspeção local. Uma busca web não exige varrer arquivos locais.\n---\n\n`;
       promptText = workspaceHeader + promptText;
     }
 
@@ -381,6 +408,8 @@ ${params.sharedMemory}
       }
       return;
     }
+
+    if (data.type === 'runtime_event') { this.activeExecution?.params.onEvent({ type: 'runtime_event', data }); return; }
 
     // 2. Pedido de permissão do agente para o cliente
     if (data.method === 'session/request_permission') {
@@ -503,6 +532,7 @@ ${params.sharedMemory}
   }
 
   public cleanup(): void {
+    this.closeRuntime?.(); this.closeRuntime = undefined;
     if (this.isClosed) return;
     this.isClosed = true;
     this.isReady = false;

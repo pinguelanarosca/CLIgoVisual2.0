@@ -2,8 +2,8 @@
  * Utilitários para detecção e formatação de textos extensos como documentos Markdown (.md)
  */
 
-export const LONG_TEXT_THRESHOLD_CHARS = 900;
-export const LONG_TEXT_THRESHOLD_LINES = 18;
+export const LONG_TEXT_THRESHOLD_CHARS = 10000;
+export const LONG_TEXT_THRESHOLD_WORDS = 1200;
 
 /**
  * Verifica se um texto é considerado extenso para ser colapsado em um card de documento .md
@@ -11,11 +11,8 @@ export const LONG_TEXT_THRESHOLD_LINES = 18;
 export function isLongMarkdownText(text: string | undefined | null): boolean {
   if (!text || typeof text !== 'string') return false;
   const trimmed = text.trim();
-  if (trimmed.length < LONG_TEXT_THRESHOLD_CHARS) {
-    const lines = trimmed.split('\n').length;
-    return lines >= LONG_TEXT_THRESHOLD_LINES;
-  }
-  return true;
+  const words = trimmed.split(/\s+/).filter(Boolean).length;
+  return trimmed.length >= LONG_TEXT_THRESHOLD_CHARS || words >= LONG_TEXT_THRESHOLD_WORDS;
 }
 
 /**

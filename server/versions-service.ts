@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { getGuiGeminiDir } from './paths-service.js';
 
 export interface SnapshotEntry { exists: boolean; mode?: number; sha256?: string; }
@@ -137,13 +138,19 @@ async function fileHash(file: string): Promise<string> {
   return hash.digest('hex');
 }
 async function scanWorkspace(workspace: string): Promise<Map<string, { hash: string; size: number }>> {
-  const files = new Map<string, { hash: string; size: number }>(); let bytes = 0;
-  const scan = async (directory: string) => {
-    for (const entry of await fs.promises.readdir(directory, { withFileTypes: true })) {
-      if (IGNORED_DIRS.has(entry.name)) continue;
+  workspace = path.resolve(workspace);
+  if (workspace === os.homedir() || workspace === path.parse(workspace).root) throw new Error('Snapshot automático requer um diretório de projeto; a raiz do usuário/sistema é ampla demais.');
+  const files = new Map<string, { hash: string; size: number }>();
+  let bytes = 0, visited = 0, directories = 0;
+  const started = Date.now();
+  const scan = async (directory: string, depth = 0) => {
+    if (++directories > 4096 || depth > 32) throw new Error('Workspace excedeu limite de diretórios/profundidade de snapshots automáticos.');
+    const iterator = await fs.promises.opendir(directory);
+    for await (const entry of iterator) {
+      if (++visited > 20000 || Date.now() - started > 5000) throw new Error('Workspace excedeu limite de varredura de snapshots automáticos (20 mil entradas/5 segundos).');
+      if (IGNORED_DIRS.has(entry.name) || entry.isSymbolicLink()) continue;
       const file = path.join(directory, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) await scan(file);
+      if (entry.isDirectory()) await scan(file, depth + 1);
       else if (entry.isFile()) {
         const stat = await fs.promises.stat(file); bytes += stat.size;
         if (files.size >= 10000 || bytes > 256 * 1024 * 1024) throw new Error('Workspace excedeu limite de snapshots automáticos (10 mil arquivos/256 MiB).');

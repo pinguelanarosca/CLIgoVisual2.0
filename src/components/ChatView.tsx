@@ -721,6 +721,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         agentName={msg.agentName}
                         model={msg.model}
                         error={msg.error}
+                        durationMs={msg.durationMs ?? msg.rawPayloadReceived?.durationMs}
                       />
                     </div>
                   )}
@@ -729,6 +730,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   <div className={`w-full ${isUser ? 'text-zinc-100 font-medium text-right [text-align-last:left]' : 'text-zinc-200 font-normal text-left'} leading-snug`}>
                     <MessageRenderer
                       content={msg.content}
+                      role={isUser ? 'user' : 'assistant'}
                       isStreaming={msg.isStreaming}
                       onOpenViewer={(item) => {
                         setViewerItem(item);

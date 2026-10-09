@@ -166,6 +166,12 @@ export interface ToolCallStep {
   schema?: any;
   componentRegister?: string;
   componentExecutor?: string;
+  agentModel?: string;
+  executionId?: string;
+  invocationId?: string;
+  requestId?: string;
+  parentToolCallId?: string;
+  nativeToolCallId?: string;
   origin?: string;
   wrapperRelation?: string;
   startedAt?: number;
@@ -181,6 +187,7 @@ export type ActivityType =
   | 'file_create'
   | 'web_search'
   | 'mcp_tool'
+  | 'runtime_event'
   | 'invoke_agent'
   | 'tool'
   | 'validation'
@@ -205,6 +212,10 @@ export interface NormalizedActivity {
   toolCallId?: string;
   eventId?: string;
   requestId?: string;
+
+  executionId?: string;
+  invocationId?: string;
+  parentToolCallId?: string;
 
   // Real data for detail layer (Layer 3)
   toolName?: string;
@@ -353,9 +364,15 @@ export interface VoicePreset {
 
 export interface AudioSettings {
   sttEnabled: boolean;
-  sttModel: string; // 'gemini-3.5-transcribe' or 'browser-native'
+  sttModel: string; // Provider ID; no implicit alias resolution.
+  sttFallbackModels?: string[];
+  sttLanguage?: string;
+  sttGenerationConfig?: Record<string, any>;
   ttsEnabled: boolean;
-  ttsModel: string; // 'gemini-3.1-flash-tts-preview' or 'browser-native'
+  ttsModel: string; // Provider ID; no implicit alias resolution.
+  ttsFallbackModels?: string[];
+  ttsLanguage?: string;
+  ttsGenerationConfig?: Record<string, any>;
   ttsVoice: string; // 'Kore', 'Puck', 'Charon', 'Fenrir', 'Zephyr'
   ttsSpeed: number; // 0.75 - 1.5
   autoPlayTts: boolean;
@@ -621,4 +638,3 @@ export interface SharedMemoryItem {
   agentConfig?: MemoryAgentConfig;
   versions: MemoryVersionEntry[];
 }
-

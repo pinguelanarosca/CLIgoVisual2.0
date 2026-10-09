@@ -20,6 +20,7 @@ interface AgentProcessAccordionProps {
   agentName?: string;
   model?: string;
   error?: string;
+  durationMs?: number;
 }
 
 export const AgentProcessAccordion: React.FC<AgentProcessAccordionProps> = ({
@@ -30,6 +31,7 @@ export const AgentProcessAccordion: React.FC<AgentProcessAccordionProps> = ({
   agentName,
   model,
   error,
+  durationMs,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [expandedActivityIds, setExpandedActivityIds] = useState<Record<string, boolean>>({});
@@ -38,7 +40,7 @@ export const AgentProcessAccordion: React.FC<AgentProcessAccordionProps> = ({
   // Normalização estrita de atividades reais
   const activities: NormalizedActivity[] = useMemo(() => {
     if (directActivities && directActivities.length > 0) {
-      return directActivities;
+      return directActivities.filter(activity => activity.type !== 'runtime_event' || activity.metadata?.event === 'EXECUTION_BLOCKED');
     }
     return normalizeActivities({
       rawEvents,
@@ -98,11 +100,11 @@ export const AgentProcessAccordion: React.FC<AgentProcessAccordionProps> = ({
 
   // Texto da barra principal (Camada 1)
   const mainBarStatus = activeRunningActivity ? 'running' : hasErrors ? 'failed' : 'completed';
-  const mainBarText = activeRunningActivity
-    ? activeRunningActivity.title
-    : lastActivity
-    ? lastActivity.title
-    : 'Ações executadas';
+  const toolCount = activities.filter(activity => activity.toolCallId && activity.type !== 'invoke_agent').length;
+  const agentCount = activities.filter(activity => activity.type === 'invoke_agent').length;
+  const elapsed = durationMs === undefined ? '' : ` em ${(durationMs / 1000).toFixed(1).replace('.', ',')}s`;
+  const mainBarText = `${isStreaming ? 'Executando' : error?.startsWith('Execução parcial:') ? 'Execução parcial' : error || hasErrors ? 'Encerrado com erro' : 'Concluído'}${elapsed} · ${toolCount} ferramentas · ${agentCount} subagentes`;
+
 
   return (
     <div className="my-1 select-text font-sans w-full">
@@ -286,7 +288,7 @@ export const AgentProcessAccordion: React.FC<AgentProcessAccordionProps> = ({
                           </button>
                         </div>
                         <pre className="p-2 rounded bg-zinc-900/90 border border-zinc-800 text-zinc-200 text-[10px] overflow-x-auto max-h-52 whitespace-pre-wrap break-all leading-relaxed">
-                          {act.result}
+                          {act.status === 'failed' && act.type !== 'runtime_event' ? 'Atividade encerrada. Consulte Logs/Payload.' : act.result}
                         </pre>
                       </div>
                     )}
@@ -299,7 +301,7 @@ export const AgentProcessAccordion: React.FC<AgentProcessAccordionProps> = ({
                           <span>Erro Reportado pelo Runtime</span>
                         </span>
                         <pre className="p-2 rounded bg-rose-950/30 border border-rose-500/40 text-rose-200 text-[10px] overflow-x-auto max-h-36 whitespace-pre-wrap break-all">
-                          {act.error}
+                          Falha na atividade. Consulte Logs/Payload.
                         </pre>
                       </div>
                     )}

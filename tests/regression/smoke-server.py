@@ -21,7 +21,8 @@ if mode=='oauth-personal':
  pathlib.Path('native-home.txt').write_text(str(native_home))
 else:
  assert mode=='gemini-api-key'
- assert all(os.environ.get(key)=='fixture-key-not-real-00000000000' for key in keys), 'Key Pool não encaminhado'
+ assert os.environ.get('GEMINI_API_KEY')=='fixture-key-not-real-00000000000', 'Key Pool não encaminhado'
+ assert 'GOOGLE_API_KEY' not in os.environ and 'GOOGLE_GENAI_API_KEY' not in os.environ, 'Aliases obsoletos de autenticação injetados'
 prompt=args[args.index('-p')+1] if '-p' in args else sys.stdin.read()
 if prompt.endswith('HANG'):
  child=subprocess.Popen(['/bin/sleep','30'])
@@ -30,7 +31,11 @@ if prompt.endswith('HANG'):
  time.sleep(30)
 else:
  if prompt.endswith('RUN'): pathlib.Path('created.txt').write_text('created by protocol fixture')
- print(json.dumps({'type':'message','role':'assistant','content':'fixture response'}),flush=True)
+ if prompt.endswith('DELEGATION_FAILURE') or prompt.endswith('DELEGATION_PARTIAL'):
+  print(json.dumps({'type':'tool_use','tool_id':'required','tool_name':'invoke_agent','parameters':{'agent_name':'investigator','prompt':'busca'}}),flush=True)
+  print(json.dumps({'type':'runtime_event','event':'API_FAILURE','agentId':'investigator','requestId':'fixture-503','httpStatus':503,'message':'Service unavailable: high demand'}),flush=True)
+  if prompt.endswith('DELEGATION_PARTIAL'): print(json.dumps({'type':'message','role':'assistant','content':'Resultado parcial controlado.'}),flush=True)
+ else: print(json.dumps({'type':'message','role':'assistant','content':'fixture response'}),flush=True)
  print(json.dumps({'type':'result','status':'success'}),flush=True)
 ''')
     executable.chmod(0o700)
@@ -87,7 +92,7 @@ else:
             except urllib.error.HTTPError as error: assert error.code == 400
             assert request('/api/sessions/' + session['id'])['title'] == 'Renomeado'
             backup = request('/api/system/backup/export?sections=sessions'); assert backup['sessions'][0]['messages'][0]['content'] == 'Preservar'
-            assert backup['version'] == '2.1.0'
+            assert backup['version'] == '2.2.0'
             request('/api/sessions/' + session['id'], method='DELETE')
             assert request('/api/system/backup/restore', {'backupData': backup, 'selectedSections': {'sessions': True}})['success']
             assert request('/api/sessions/' + session['id'])['messages'][0]['activities'][0]['title'] == 'full diagnostic'
@@ -110,6 +115,19 @@ else:
             before = next(version for version in versions if version['isBackup']); assert before['manifest']['created.txt']['exists'] is False
             result = request('/api/versions/' + before['id'] + '/restore', {'workspaceDir': str(workspace)})
             assert result['success'] and not (workspace / 'created.txt').exists()
+            # Actual Express/SSE closure for required delegation failures and partial outputs.
+            for name, outcome in [('DELEGATION_FAILURE', 'failed'), ('DELEGATION_PARTIAL', 'partial')]:
+                failure_payload = {**payload, 'executionId': 'sse-' + outcome, 'prompt': name, 'contextMessages': [], 'resetContext': False}
+                failure_req = urllib.request.Request(url + '/api/cli/execute', json.dumps(failure_payload).encode(), {'Content-Type': 'application/json'})
+                with urllib.request.urlopen(failure_req, timeout=10) as response: failure_stream = response.read().decode()
+                failure_events = [json.loads(line[6:]) for line in failure_stream.splitlines() if line.startswith('data: ')]
+                assert next(e for e in failure_events if e['type'] == 'done')['exitCode'] == 1
+                assert next(e for e in failure_events if e['type'] == 'execution_outcome')['status'] == outcome
+                terminal = next(e for e in failure_events if e.get('tool_id') == 'required' and e.get('status') == 'failed')
+                assert terminal['lastRequestId'] == 'fixture-503' and terminal['cause']['httpStatus'] == 503
+                assert 'high demand' in terminal['error']
+                pathlib.Path('/tmp/execution-audit-' + outcome + '.sse').write_text(failure_stream)
+            print('PASSOU: Express/SSE real propaga falha 503, ID de invocação, requestId e encerramento failed/partial com exitCode=1.')
             # Adding a pool must not change the user's selected OAuth method.
             request('/api/config/api-key', {'apiKey': 'fixture-key-not-real-00000000000', 'exaApiKey': ''})
             assert request('/api/status')['authMode'] == 'oauth'
@@ -124,7 +142,7 @@ else:
             # credentials below are fixtures in an isolated HOME.
             if pathlib.Path('/snap/bin/gemini').exists() and pathlib.Path('/snap/gemini-cli/current/meta/snap.yaml').exists():
                 snap_home = home / 'snap/gemini-cli/common'
-                snap_native = snap_home / '.gemini'; snap_native.mkdir(parents=True)
+                snap_native = snap_home / '.gemini'; snap_native.mkdir(parents=True, exist_ok=True)
                 snap_settings = snap_native / 'settings.json'
                 snap_creds = snap_native / 'oauth_creds.json'
                 snap_settings.write_text(json.dumps({'security': {'auth': {'selectedType': 'oauth-personal'}}}))

@@ -1,11 +1,11 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "2.1.0",
+  "version": "2.2.0",
   "type": "module",
   "scripts": {
     "dev": "NODE_OPTIONS=--max-old-space-size=4096 tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs && esbuild server/cli-runtime.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/cli-runtime.mjs",
     "start": "NODE_OPTIONS=--max-old-space-size=4096 node dist/server.cjs",
     "package:linux": "node scripts/package-ubuntu.cjs",
     "build:ubuntu": "node scripts/package-ubuntu.cjs",
@@ -14,7 +14,7 @@
     "reset": "./reset.sh",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test:regression": "node tests/regression/audit-fixes.test.mjs",
+    "test:regression": "node scripts/patch-gemini-cli.cjs && node --test tests/regression/audit-fixes.test.mjs tests/regression/runtime-invoke.test.mjs tests/regression/runtime-lifecycle.test.mjs tests/regression/delegation-concurrency.test.mjs tests/regression/exa-timeout.test.mjs tests/regression/tts.test.mjs tests/regression/tts-http.test.mjs tests/regression/audio-routing.test.mjs",
     "test:distribution": "node tests/regression/distribution.test.mjs"
   },
   "dependencies": {

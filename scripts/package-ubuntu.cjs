@@ -20,7 +20,7 @@ fs.mkdirSync(path.dirname(appDir), { recursive: true });
 const manifest = exportSource(rootDir, appDir);
 fs.cpSync(path.join(rootDir, 'dist'), path.join(appDir, 'dist'), { recursive: true });
 const sourceHash = crypto.createHash('sha256').update(JSON.stringify(manifest.files)).digest('hex').slice(0, 8);
-const revision = `${manifest.version}+git.${manifest.commit.slice(0, 7)}.${sourceHash}`;
+const revision = manifest.commit ? `${manifest.version}+git.${manifest.commit.slice(0, 7)}.${sourceHash}` : `${manifest.version}+local.${sourceHash}`;
 const metaDir = path.join(debRoot, 'DEBIAN');
 const binDir = path.join(debRoot, 'usr/bin');
 const desktopDir = path.join(debRoot, 'usr/share/applications');
@@ -40,7 +40,7 @@ Version: ${revision}
 Section: devel
 Priority: optional
 Architecture: all
-Depends: nodejs (>= 22.13.0), npm, git
+Depends: nodejs (>= 22.13.0), npm, git, ripgrep
 Maintainer: Gemini CLI GUI Developer <developer@local>
 Description: Interface grafica local para o Gemini CLI.
  Inclui fonte versionada, build e suporte a atualizacao Git.

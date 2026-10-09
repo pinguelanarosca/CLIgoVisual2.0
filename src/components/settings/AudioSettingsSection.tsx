@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Volume2, Mic, Check, Cpu, Sparkles, Sliders, ShieldCheck, UserCheck } from 'lucide-react';
 import { AudioSettings } from '../../types.js';
 import { getSavedVoiceAgents, VoiceAgent } from '../../services/voice/voiceAgentsStore.js';
+import { TTS_DOCUMENTED_MODELS } from '../../services/voice/ttsUtils.js';
 import { formatModelName } from '../../utils/modelFormatter.js';
 
 interface AudioSettingsSectionProps {
@@ -32,10 +33,9 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
       onUpdateAudioSettings({
         activeTtsAgentId: target.id,
         ttsVoice: target.config.baseGeminiVoice || 'Kore',
-        ttsModel: target.config.model || 'gemini-3.1-flash-tts',
+        ttsModel: target.config.model || 'gemini-3.1-flash-tts-preview',
         ttsSpeed: target.config.speed || 1.0,
         ttsInstructions: target.directorPrompt || '',
-        sttInstructions: target.sttInstructions || '',
       });
     }
   };
@@ -244,16 +244,21 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
             onChange={(e) => onUpdateAudioSettings({ ttsModel: e.target.value })}
             className="w-full px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 text-xs text-zinc-900 dark:text-zinc-100 font-semibold"
           >
-            <option value="gemini-3.1-flash-tts">
-              Gemini 3.1 Flash TTS (Modelo Oficial de Síntese Neural Direct Voice — Recomendado)
-            </option>
-            <option value="gemini-3.5-flash-tts">
-              Gemini 3.5 Flash TTS (Modelo Especializado de Narração e Expressividade)
-            </option>
+            {!TTS_DOCUMENTED_MODELS.includes(audioSettings.ttsModel) && audioSettings.ttsModel !== 'browser-native' && <option value={audioSettings.ttsModel}>{audioSettings.ttsModel} (configurado)</option>}
+            {TTS_DOCUMENTED_MODELS.map(model => <option key={model} value={model}>{model}</option>)}
             <option value="browser-native">
               SpeechSynthesis Nativo (Execução Local do Navegador - Sem uso de API)
             </option>
           </select>
+
+          <label className="block text-[11px] text-zinc-500 mt-2">
+            Fallbacks TTS — prioridade da esquerda para a direita (IDs separados por vírgula)
+            <input key={JSON.stringify(audioSettings.ttsFallbackModels || [])}
+              defaultValue={(audioSettings.ttsFallbackModels || []).join(', ')}
+              onBlur={(e) => onUpdateAudioSettings({ ttsFallbackModels: [...new Set(e.target.value.split(',').map(id => id.trim()).filter(Boolean))] })}
+              placeholder="Sem fallback configurado"
+              className="w-full mt-1 px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 text-xs" />
+          </label>
 
           {audioSettings.ttsModel !== 'browser-native' && (
             <div className="grid grid-cols-2 gap-3 pt-1">
@@ -375,6 +380,15 @@ export const AudioSettingsSection: React.FC<AudioSettingsSectionProps> = ({
               Web Speech API Nativa (Conversão Local no Navegador - Atraso Zero)
             </option>
           </select>
+
+          <label className="block text-[11px] text-zinc-500 mt-2">
+            Fallbacks STT — prioridade da esquerda para a direita (IDs separados por vírgula)
+            <input key={JSON.stringify(audioSettings.sttFallbackModels || [])}
+              defaultValue={(audioSettings.sttFallbackModels || []).join(', ')}
+              onBlur={(e) => onUpdateAudioSettings({ sttFallbackModels: [...new Set(e.target.value.split(',').map(id => id.trim()).filter(Boolean))] })}
+              placeholder="Sem fallback configurado"
+              className="w-full mt-1 px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 text-xs" />
+          </label>
 
           <div className="mt-2">
             <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">

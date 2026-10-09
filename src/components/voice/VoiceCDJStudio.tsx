@@ -1,3 +1,4 @@
+import { resolveTtsSelection } from '../../services/voice/ttsUtils.js';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Mic,
@@ -63,7 +64,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
   const [deckConfig, setDeckConfig] = useState<VoiceDirectorConfig>({
     voiceId: 'Kore',
     baseGeminiVoice: 'Kore',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.1-flash-tts-preview',
     language: 'pt-BR',
     style: 'Conversacional',
     emotion: 'Amigável',
@@ -87,6 +88,8 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isBuffering, setIsBuffering] = useState<boolean>(false);
   const [activeAudioBase64, setActiveAudioBase64] = useState<string | null>(null);
+  const previewController = useRef<AbortController | null>(null);
+  useEffect(() => () => { previewController.current?.abort(); stopCurrentAudio(); }, []);
 
   // Agentes de Voz Salvos
   const [agents, setAgents] = useState<VoiceAgent[]>([]);
@@ -129,7 +132,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: agent.config.model || 'gemini-2.5-flash',
+          model: agent.config.model || 'gemini-3.1-flash-tts-preview',
           type: testType,
           voiceName: agent.config.baseGeminiVoice || 'Kore',
           customInstructions: isNarratorOrHybrid ? agent.directorPrompt : agent.sttInstructions,
@@ -201,7 +204,10 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
 
   // Reproduzir Prévia
   const handlePlayPreview = async () => {
+    previewController.current?.abort();
     stopCurrentAudio();
+    const controller = new AbortController();
+    previewController.current = controller;
     setIsBuffering(true);
     setIsPlaying(false);
 
@@ -210,9 +216,11 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
       deckConfig,
       audioSettings.audioApiKey,
       audioSettings.audioApiUrl,
-      editedPrompt
+      editedPrompt,
+      controller.signal,
+      { fallbackModels: audioSettings.ttsFallbackModels, fallback: resolveTtsSelection(audioSettings, getSavedVoiceAgents()).fallback }
     );
-
+    if (controller.signal.aborted || previewController.current !== controller) return;
     setIsBuffering(false);
 
     if (result.audioBase64) {
@@ -223,7 +231,8 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
         deckConfig.speed,
         deckConfig.volume,
         () => setIsPlaying(false),
-        () => setIsPlaying(false)
+        () => setIsPlaying(false),
+        result.mimeType
       );
     } else {
       setIsPlaying(false);
@@ -231,7 +240,10 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
   };
 
   const handleStopAudio = () => {
+    previewController.current?.abort();
+    previewController.current = null;
     stopCurrentAudio();
+    setIsBuffering(false);
     setIsPlaying(false);
   };
 
@@ -257,7 +269,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
     setAgentNameInput(agent.name);
     setAgentDescInput(agent.description);
     setAgentTypeInput(agent.type || 'narrator');
-    setEditingModel(agent.config.model || 'gemini-2.5-flash');
+    setEditingModel(agent.config.model || 'gemini-3.1-flash-tts-preview');
     setEditingVoice(agent.config.baseGeminiVoice || 'Kore');
     setEditingStyle(agent.config.style || 'Conversacional');
     setEditingEmotion(agent.config.emotion || 'Amigável');
@@ -290,6 +302,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
         directorPrompt: editingPrompt,
         sttInstructions: editingSttInstructions,
       });
+      if (editingAgentId === audioSettings.activeTtsAgentId) onUpdateAudioSettings({ activeTtsAgentId: editingAgentId });
     } else {
       const newAgent = createVoiceAgent(
         agentNameInput.trim(),
@@ -596,7 +609,7 @@ export const VoiceCDJStudio: React.FC<VoiceCDJStudioProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            {!isPlaying ? (
+            {!isPlaying && !isBuffering ? (
               <button
                 onClick={handlePlayPreview}
                 disabled={isBuffering}

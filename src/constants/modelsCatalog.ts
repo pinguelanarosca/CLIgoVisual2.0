@@ -172,8 +172,8 @@ export const MODELS_CATALOG: ModelCatalogItem[] = [
   },
   {
     order: 5,
-    id: 'gemini-3.1-flash-tts',
-    name: 'Gemini 3.1 Flash TTS',
+    id: 'gemini-3.1-flash-tts-preview',
+    name: 'Gemini 3.1 Flash TTS Preview',
     rpm: '0 / 30',
     tpm: '10K',
     rpd: '0 / 106',

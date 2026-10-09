@@ -25,6 +25,9 @@ export interface KeyModelStatus {
   httpStatus?: number | null;
   errorCode?: string;
   errorType?: string;
+  cooldownUntil?: string;
+  cooldownReason?: string;
+  compatibility?: { endpoint?: string; apiVersion?: string; group: KeyGroup; errorCode: string };
 }
 
 export interface KeyPoolState {
@@ -145,53 +148,38 @@ export function saveConfiguredKeys(newKeys: Record<string, string | null | undef
   }
 
   const envPath = getApiKeysEnvPath();
-  const lines: string[] = [
-    '# Gemini GUI - Key Pool Storage',
-    '# Arquivo seguro gerado automaticamente (chmod 600)',
-    '# Não compartilhe este arquivo.',
-    '',
-  ];
-
-  for (let i = 1; i <= 9; i++) {
-    const keyId = `K${i}`;
-    if (updated[keyId]) {
-      lines.push(`GEMINI_API_KEY_${i}="${updated[keyId]}"`);
-    }
+  // Do not rewrite credentials for cache refreshes or a no-op settings save.
+  if (JSON.stringify(current) === JSON.stringify(updated)) return { success: true, count: Object.keys(updated).length };
+  for (const value of Object.values(updated)) {
+    if (/[\r\n"'\\]/.test(value)) throw new Error('Formato de chave inválido.');
   }
-
-  lines.push('');
-
+  const original = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+  const seen = new Set<string>();
+  const lines = original.split('\n').flatMap(line => {
+    const match = line.match(/^\s*GEMINI_API_KEY_([1-9])\s*=/);
+    if (!match) return [line];
+    const id = `K${match[1]}`;
+    if (seen.has(id)) throw new Error('Chave duplicada no arquivo original; armazenamento preservado.');
+    seen.add(id);
+    return updated[id] ? [`GEMINI_API_KEY_${match[1]}="${updated[id]}"`] : [];
+  });
+  for (const [id, value] of Object.entries(updated)) {
+    if (!seen.has(id)) lines.push(`GEMINI_API_KEY_${id.slice(1)}="${value}"`);
+  }
+  const content = lines.join('\n');
+  const temporary = `${envPath}.tmp.${process.pid}.${Date.now()}`;
   try {
-    fs.writeFileSync(envPath, lines.join('\n'), { encoding: 'utf8', mode: 0o600 });
-    try {
-      fs.chmodSync(envPath, 0o600);
-    } catch {}
-
+    fs.writeFileSync(temporary, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    fs.chmodSync(temporary, 0o600);
+    if (fs.readFileSync(temporary, 'utf8') !== content || (fs.statSync(temporary).mode & 0o777) !== 0o600) throw new Error('Falha na validação do armazenamento.');
+    const fd = fs.openSync(temporary, 'r');
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    // Atomic commit: until rename succeeds, the original is untouched.
+    fs.renameSync(temporary, envPath);
     invalidateConfiguredKeysCache();
-    const count = Object.keys(updated).length;
-    if (count > 0) {
-      for (const baseDir of [path.join(os.homedir(), '.local', 'share', 'gemini-gui', '.gemini'), path.join(os.homedir(), '.gemini')]) {
-        try {
-          const sPath = path.join(baseDir, 'settings.json');
-          let sObj: any = {};
-          if (fs.existsSync(sPath)) {
-            try { sObj = JSON.parse(fs.readFileSync(sPath, 'utf8')) || {}; } catch {}
-          }
-          if (!sObj.security?.auth?.selectedType || sObj.security.auth.selectedType === 'gemini-api-key') {
-            sObj.security ??= {};
-            sObj.security.auth ??= {};
-            sObj.security.auth.selectedType = 'gemini-api-key';
-            if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
-            fs.writeFileSync(sPath, JSON.stringify(sObj, null, 2), 'utf8');
-          }
-        } catch {}
-      }
-    }
-    sysLog.info('KPOOL', `Chaves do Key Pool salvas com segurança em api-keys.env (${count} chaves ativas).`);
-    return { success: true, count };
-  } catch (err: any) {
-    sysLog.error('KPOOL', `Falha ao salvar api-keys.env: ${err.message}`);
-    throw err;
+    return { success: true, count: Object.keys(updated).length };
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
   }
 }
 
@@ -359,9 +347,15 @@ export function classifyKeyResult(
   httpStatus: number | null | undefined,
   errorCode: string | null | undefined,
   errorText = ''
-): { group: KeyGroup; errorCode: string; errorType: string } {
-  const text = (errorText || '').toLowerCase();
+): { group: KeyGroup; errorCode: string; errorType: string; affectsKey?: boolean } {
+  const text = `${errorCode || ''} ${errorText || ''}`.trim().toLowerCase();
   const status = httpStatus || null;
+  // Local/runtime and transport failures say nothing about credential health.
+  if (/heap out of memory|allocation failed|reached heap limit|\boom\b|err_worker_out_of_memory/.test(text)) return { group: 'G4', errorCode: 'LOCAL_OOM', errorType: 'Memória local esgotada', affectsKey: false };
+  if (!status && /gui_request_timeout/.test(text)) return { group: 'G4', errorCode: 'GUI_REQUEST_TIMEOUT', errorType: 'Timeout local da requisição', affectsKey: false };
+  if (!status && /gui_execution_cancelled|gui_request_aborted|aborterror|operation was aborted/.test(text)) return { group: 'G4', errorCode: /gui_execution_cancelled/.test(text) ? 'GUI_EXECUTION_CANCELLED' : 'GUI_REQUEST_ABORTED', errorType: 'Requisição abortada localmente', affectsKey: false };
+  if (/greplogic|globlogic|maximum call stack|error executing tool|gui_retry_budget|gui_request_timeout|runtime bridge|snapshot|enoent|gui_response_limit/.test(text)) return { group: 'G4', errorCode: 'LOCAL_FAILURE', errorType: 'Falha local de execução', affectsKey: false };
+  if (!status && /fetch failed|fetcherror|econnreset|econnrefused|enotfound|etimedout|network|socket|timeout|timed out/.test(text)) return { group: 'G4', errorCode: 'NETWORK_FAILURE', errorType: 'Falha de transporte', affectsKey: false };
 
   // 0. Execução bem-sucedida -> G1
   if (status === 200 || (!status && (!text || text === 'ok' || text === '200_ok' || text === 'success'))) {
@@ -378,19 +372,20 @@ export function classifyKeyResult(
     text.includes('high demand') ||
     text.includes('service unavailable') && text.includes('overload')
   ) {
-    return { group: 'G2', errorCode: '529_OVERLOAD', errorType: 'Sobrecarga Temporária' };
+    return { group: 'G2', errorCode: `${status || 529}_OVERLOAD`, errorType: 'Sobrecarga Temporária' };
   }
 
   // 2. Verificação de Rate Limit / Quota / 429 -> G3
   if (
-    status === 429 ||
+    status === 429 || (!status && (
     text.includes('429') ||
     text.includes('rate limit') ||
     text.includes('quota exceeded') ||
     text.includes('resource_exhausted') ||
     text.includes('terminalquotaerror') ||
     text.includes('tokens_per_model') ||
-    text.includes('requests_per_minute')
+    text.includes('requests_per_minute') ||
+    /quota.{0,40}exhaust|daily.{0,30}quota|tool.{0,30}(?:limit|exhaust)/.test(text)))
   ) {
     return { group: 'G3', errorCode: '429_QUOTA', errorType: 'Limite de Cota / Rate Limit' };
   }
@@ -403,7 +398,7 @@ export function classifyKeyResult(
     text.includes('503') ||
     text.includes('504') ||
     text.includes('internal server error') ||
-    text.includes('bad gateway') ||
+    text.includes('bad gateway') || text.includes('timeout') || text.includes('timed out') ||
     text.includes('service unavailable')
   ) {
     return { group: 'G4', errorCode: status ? `${status}_SERVER_ERROR` : '5XX_SERVER_ERROR', errorType: 'Erro de Servidor (5xx)' };
@@ -427,6 +422,8 @@ export function classifyKeyResult(
     return { group: 'G5', errorCode: status ? `${status}_AUTH` : 'AUTH_ERROR', errorType: 'Falha de Autenticação / Permissão' };
   }
 
+  if (isModelCompatibilityError(errorCode, errorText)) return { group: 'G6', errorCode: 'MODEL_NOT_FOUND', errorType: 'Modelo indisponível para endpoint/método' };
+
   // 5. Modelo Incompatível / Parâmetros Inválidos / 400 -> G6
   if (
     status === 400 ||
@@ -434,28 +431,35 @@ export function classifyKeyResult(
     text.includes('400') ||
     text.includes('invalid_argument') ||
     text.includes('invalid argument') ||
-    text.includes('not found') ||
-    text.includes('unsupported') ||
-    text.includes('not supported')
+    /(?:parameter|configuration|config|schema|argument).{0,60}(?:unsupported|not supported|invalid)/.test(text)
   ) {
     return { group: 'G6', errorCode: status ? `${status}_INCOMPATIBLE` : 'INCOMPATIBLE_CONFIG', errorType: 'Modelo ou Configuração Incompatível' };
   }
 
   // Se houver algum erro não categorizado
   if (text.length > 0) {
-    return { group: 'G4', errorCode: 'GENERIC_FAILURE', errorType: 'Falha Operacional Genérica' };
+    return { group: 'G4', errorCode: 'GENERIC_FAILURE', errorType: 'Falha Operacional Genérica', affectsKey: false };
   }
 
   return { group: 'G1', errorCode: '200_OK', errorType: 'Operacional' };
 }
 
+export function isModelCompatibilityError(code: string | null | undefined, message: string): boolean {
+  if (code === 'MODEL_NOT_FOUND') return true;
+  return /\bmodels?\s*[:=]?\s*[\w/.'"-]*\s+(?:is |was )?(?:not found|does not exist|not supported|unsupported|unavailable for)/i.test(message)
+    || /(?:not found|not supported|unsupported).{0,80}\b(?:model|generateContent|streamGenerateContent|API version)\b/i.test(message);
+}
+
 // 3. Persistência do Estado do Ranking (key-pool-state.json)
 let inMemoryState: KeyPoolState | null = null;
 let isBatteryTesting = false;
-let activeExecutionCheck: (() => boolean) | null = null;
-
-export function registerActiveExecutionCheck(fn: () => boolean) {
-  activeExecutionCheck = fn;
+let foregroundExecutions = 0;
+let batteryController: AbortController | null = null;
+export function beginForegroundExecution(): () => void {
+  foregroundExecutions++;
+  batteryController?.abort();
+  let released = false;
+  return () => { if (!released) { released = true; foregroundExecutions--; } };
 }
 
 export function loadKeyPoolState(): KeyPoolState {
@@ -504,7 +508,8 @@ async function testSingleKeyModel(
   model: string,
   keyId: string,
   rawKey: string,
-  cycleDate: string
+  cycleDate: string,
+  signal?: AbortSignal
 ): Promise<KeyModelStatus> {
   const start = Date.now();
   sysLog.info('KPOOL', `[KPOOL_TEST] model=${model} key=${keyId} START`);
@@ -530,6 +535,7 @@ async function testSingleKeyModel(
       model,
       contents: [{ parts: [{ text: 'ping' }] }],
       config: {
+        abortSignal: signal,
         maxOutputTokens: 2,
         temperature: 0.1,
       },
@@ -569,7 +575,7 @@ async function testSingleKeyModel(
     lastSuccessAt: group === 'G1' ? now : undefined,
     lastError: group !== 'G1' ? errorText : undefined,
     lastErrorAt: group !== 'G1' ? now : undefined,
-    consecutiveErrors: group !== 'G1' ? 1 : 0,
+    consecutiveErrors: group !== 'G1' && group !== 'G6' ? 1 : 0,
     cycleDate,
     httpStatus,
     errorCode,
@@ -584,20 +590,9 @@ export async function runDailyTestBattery(forceRefresh = false): Promise<{
   totalTested: number;
   results: KeyModelStatus[];
 }> {
+  if (foregroundExecutions > 0) return { success: false, cycleDate: loadKeyPoolState().lastCycleDate, totalTested: 0, results: [] };
   if (isBatteryTesting) {
     sysLog.warn('KPOOL', '[KPOOL] Bateria de testes já em andamento. Aguardando...');
-    const state = loadKeyPoolState();
-    return {
-      success: true,
-      cycleDate: state.lastCycleDate,
-      totalTested: Object.keys(state.items).length,
-      results: Object.values(state.items),
-    };
-  }
-
-  // Se houver execução ativa do usuário, adiar bateria para não disputar cota
-  if (activeExecutionCheck && activeExecutionCheck()) {
-    sysLog.info('KPOOL', '[KPOOL] Execução ativa detectada no chat. Bateria de testes adiada.');
     const state = loadKeyPoolState();
     return {
       success: true,
@@ -636,64 +631,27 @@ export async function runDailyTestBattery(forceRefresh = false): Promise<{
 
   const testResults: KeyModelStatus[] = [];
 
-  for (const model of OFFICIAL_POOL_MODELS) {
-    let modelNotFoundCount = 0;
-
-    for (const keyId of activeKeyIds) {
-      // Pausar se o usuário iniciou uma execução ativa no meio da bateria
-      if (activeExecutionCheck && activeExecutionCheck()) {
-        sysLog.warn('KPOOL', `[KPOOL] Execução de usuário iniciada durante a bateria. Interrompendo testes para ceder prioridade.`);
-        break;
+  batteryController = new AbortController();
+  state.isTesting = true;
+  try {
+    for (const model of OFFICIAL_POOL_MODELS) {
+      for (const keyId of activeKeyIds) {
+        if (foregroundExecutions || batteryController.signal.aborted) return { success: false, cycleDate: state.lastCycleDate, totalTested: testResults.length, results: testResults };
+        const status = await testSingleKeyModel(model, keyId, configuredKeys[keyId], todayStr, batteryController.signal);
+        if (batteryController.signal.aborted) return { success: false, cycleDate: state.lastCycleDate, totalTested: testResults.length, results: testResults };
+        state.items[`${model}:${keyId}`] = status;
+        testResults.push(status);
+        saveKeyPoolState(state);
       }
-
-      // Se o modelo retornou 404 para a primeira chave, evitar 8 testes adicionais inúteis
-      if (modelNotFoundCount >= 1) {
-        const skippedStatus: KeyModelStatus = {
-          model,
-          keyId,
-          dailyGroup: 'G6',
-          dailyLatency: null,
-          currentGroup: 'G6',
-          currentLatency: null,
-          cycleDate: todayStr,
-          lastTestAt: new Date().toISOString(),
-          httpStatus: 404,
-          errorCode: '404_MODEL_NOT_FOUND',
-          errorType: 'Modelo Inexistente no Endpoint',
-          consecutiveErrors: 1,
-          isTested: true,
-        };
-        state.items[`${model}:${keyId}`] = skippedStatus;
-        testResults.push(skippedStatus);
-        continue;
-      }
-
-      const rawKey = configuredKeys[keyId];
-      if (!rawKey) continue;
-
-      const itemKey = `${model}:${keyId}`;
-      const status = await testSingleKeyModel(model, keyId, rawKey, todayStr);
-      if (status.httpStatus === 404 || status.errorCode?.includes('404')) {
-        modelNotFoundCount++;
-      }
-      state.items[itemKey] = status;
-      testResults.push(status);
-      saveKeyPoolState(state);
     }
+    state.lastCycleDate = todayStr;
+    return { success: true, cycleDate: todayStr, totalTested: testResults.length, results: testResults };
+  } finally {
+    batteryController = null;
+    state.isTesting = false;
+    isBatteryTesting = false;
+    saveKeyPoolState(state);
   }
-
-  state.lastCycleDate = todayStr;
-  state.isTesting = false;
-  isBatteryTesting = false;
-  saveKeyPoolState(state);
-
-  sysLog.info('KPOOL', `[KPOOL] Ciclo diário concluído com sucesso (${testResults.length} combinações testadas).`);
-  return {
-    success: true,
-    cycleDate: todayStr,
-    totalTested: testResults.length,
-    results: testResults,
-  };
 }
 
 // 6. Obtenção do Ranking Ordenado por Modelo (getRankedKeys)
@@ -823,6 +781,40 @@ export function getPublicRankedKeys(model: string): PublicKeyRankItem[] {
   return ranked.map(({ key, ...publicItem }) => publicItem);
 }
 
+// Eligibility is distinct from ranking: keep every result visible, but do not
+// send requests to credentials/model pairs still in their retry window.
+export function getKeyRetryAt(status: KeyModelStatus, now = Date.now()): string | undefined {
+  if (status.cooldownUntil) return status.cooldownUntil;
+  if (!status.lastErrorAt || status.currentGroup === 'G1') return undefined;
+  return retryWindow(status.currentGroup, status.lastError || '', Date.parse(status.lastErrorAt));
+}
+function retryWindow(group: KeyGroup | null, message: string, now: number): string | undefined {
+  if (!['G2', 'G3', 'G4'].includes(group || '')) return undefined;
+  const retry = message.match(/retry(?:\s+after|\s+in|Delay)?[\\"':\s]*((?:[0-9.]+\s*(?:ms|h|m|s|seconds?))+)/i);
+  let delay = retry ? [...retry[1].matchAll(/([0-9.]+)\s*(ms|h|m|s|seconds?)/g)].reduce((sum, part) => sum + Number(part[1]) * ({ ms: 1, h: 3600000, m: 60000, s: 1000, second: 1000, seconds: 1000 }[part[2]] || 1000), 0) : group === 'G3' ? 60000 : 30000;
+  // The account's stated daily renewal is 04:00 Pacific. This only computes
+  // eligibility; no timer, background retry or scheduled API call is created.
+  if (group === 'G3' && /daily|per.?day|quota.{0,30}exhaust/i.test(message) && !retry) {
+    const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    for (let t = Math.floor(now / 60000) * 60000 + 60000; t <= now + 26 * 3600000; t += 60000) {
+      if (formatter.format(t) === '04:00') return new Date(t).toISOString();
+    }
+  }
+  return new Date(now + Math.max(1000, delay)).toISOString();
+}
+export function getEligibleRankedKeys(model: string, now = Date.now()) {
+  return getRankedKeys(model).filter(candidate => {
+    if (candidate.group === 'G5') return false;
+    const until = getKeyRetryAt(candidate.status, now);
+    return !until || Date.parse(until) <= now;
+  });
+}
+export function getModelAvailability(model: string, now = Date.now()) {
+  const ranked = getRankedKeys(model);
+  const retryDates = ranked.map(key => getKeyRetryAt(key.status, now)).filter((date): date is string => Boolean(date && Date.parse(date) > now)).sort();
+  return { eligible: getEligibleRankedKeys(model, now).length, configured: ranked.length, nextRetryAt: retryDates[0], quota: ranked.some(key => key.group === 'G3' && Date.parse(getKeyRetryAt(key.status, now) || '') > now) };
+}
+
 // 7. Seleção da Melhor Chave Elegível (Key Pool)
 export function getBestEligibleKey(
   model: string,
@@ -835,7 +827,7 @@ export function getBestEligibleKey(
   status: KeyModelStatus;
 } | null {
   const ranked = getRankedKeys(model);
-  const eligible = ranked.filter((k) => !excludedKeyIds.includes(k.keyId));
+  const eligible = getEligibleRankedKeys(model).filter((k) => !excludedKeyIds.includes(k.keyId));
 
   if (eligible.length === 0) return null;
   return eligible[0];
@@ -850,8 +842,12 @@ export function recordRuntimeExecutionResult(
     latencyMs?: number;
     httpStatus?: number | null;
     errorText?: string;
+    endpoint?: string;
+    apiVersion?: string;
+    executionId?: string; agentId?: string; invocationId?: string; requestId?: string;
   }
 ) {
+  if (!result.success && classifyKeyResult(result.httpStatus, null, result.errorText).affectsKey === false) return;
   const state = loadKeyPoolState();
   const itemKey = `${model}:${keyId}`;
   const now = new Date().toISOString();
@@ -875,6 +871,7 @@ export function recordRuntimeExecutionResult(
   current.isTested = true;
   if (result.success) {
     current.currentGroup = 'G1';
+    delete current.cooldownUntil; delete current.cooldownReason;
     current.consecutiveErrors = 0;
     current.lastSuccessAt = now;
     current.lastTestAt = now;
@@ -886,7 +883,10 @@ export function recordRuntimeExecutionResult(
   } else {
     const classified = classifyKeyResult(result.httpStatus, null, result.errorText);
     current.currentGroup = classified.group;
-    current.consecutiveErrors = (current.consecutiveErrors || 0) + 1;
+    current.cooldownUntil = retryWindow(classified.group, result.errorText || '', Date.parse(now));
+    current.cooldownReason = current.cooldownUntil ? classified.errorType : undefined;
+    if (classified.group === 'G6') current.compatibility = { endpoint: result.endpoint, apiVersion: result.apiVersion, group: classified.group, errorCode: classified.errorCode };
+    if (classified.group !== 'G6') current.consecutiveErrors = (current.consecutiveErrors || 0) + 1;
     current.lastError = result.errorText || classified.errorType;
     current.lastErrorAt = now;
     current.lastTestAt = now;
@@ -899,7 +899,8 @@ export function recordRuntimeExecutionResult(
 
     sysLog.warn(
       'KPOOL',
-      `[KPOOL] execução real ${model} / ${keyId} → ${result.httpStatus || classified.errorCode} / reclassificado ${classified.group}`
+      `[KPOOL] execução real ${model} / ${keyId} → ${result.httpStatus || classified.errorCode} / reclassificado ${classified.group}`,
+      { executionId: result.executionId, agentId: result.agentId, invocationId: result.invocationId, requestId: result.requestId, model, keyId, httpStatus: result.httpStatus, group: classified.group, errorCode: classified.errorCode, error: result.errorText, cooldownUntil: current.cooldownUntil }
     );
   }
 

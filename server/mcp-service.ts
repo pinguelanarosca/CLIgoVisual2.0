@@ -296,7 +296,7 @@ export async function testMcpServer(mcp: McpConfig, timeoutMs = 8000): Promise<{
   const expand = (text: string) => text.replace(/\$\{?([A-Z_][A-Z0-9_]*)\}?/g, (_, name) => mcp.env?.[name] && !mcp.env[name].includes('$') ? mcp.env[name] : process.env[name] || '');
   try {
     let request: (method: string, params?: any, notification?: boolean) => Promise<any>;
-    const initializeParams = { protocolVersion: MCP_PROTOCOLS[0], capabilities: {}, clientInfo: { name: 'gemini-gui-test', version: '2.1.0' } };
+    const initializeParams = { protocolVersion: MCP_PROTOCOLS[0], capabilities: {}, clientInfo: { name: 'gemini-gui-test', version: '2.2.0' } };
     if (mcp.url || mcp.httpUrl) {
       const headers: Record<string, string> = { ...Object.fromEntries(Object.entries(mcp.headers || {}).map(([name, value]) => [name, expand(value)])), Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json' };
       let nextId = 0;
